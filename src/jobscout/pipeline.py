@@ -1,0 +1,481 @@
+"""Ingestion pipeline: raw payloads in, deduplicated jobs out.
+
+Both the offline fixture path and the opt-in LinkedIn path funnel through here,
+so normalization, deduplication, provenance, and run accounting behave the same
+way regardless of where the data came from.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterable
+
+from .collectors.fixtures import load_fixture, postings_from_fixture
+from .collectors.linkedin import CollectorResult, LinkedInSearchConfig
+from .collectors.linkedin_details import DetailItem, DetailResult
+from .config import Settings, is_safe_to_store
+from .db import (
+    create_search_run,
+    finish_search_run,
+    get_job,
+    insert_detail_fetch,
+    insert_raw_document,
+    record_run_item,
+    store_posting,
+    update_job_content,
+)
+from .models import (
+    ContentStatus,
+    DetailFetchStatus,
+    DuplicateKind,
+    Job,
+    JobDetailFetch,
+    JobPosting,
+    RawDocument,
+    RawDocumentKind,
+    SearchRun,
+    SearchRunItem,
+    SearchRunStatus,
+)
+from .normalize import content_hash
+from .timeutil import to_iso, utcnow_iso
+
+
+@dataclass
+class IngestOutcome:
+    """Accounting for one ingestion."""
+
+    run_id: int | None = None
+    status: SearchRunStatus = SearchRunStatus.COMPLETED
+    items_found: int = 0
+    new_jobs: int = 0
+    duplicate_jobs: int = 0
+    new_job_ids: list[int] = field(default_factory=list)
+    matched_job_ids: list[int] = field(default_factory=list)
+    raw_document_ids: list[int] = field(default_factory=list)
+    notes: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "status": str(self.status),
+            "items_found": self.items_found,
+            "new_jobs": self.new_jobs,
+            "duplicate_jobs": self.duplicate_jobs,
+            "new_job_ids": list(self.new_job_ids),
+            "matched_job_ids": list(self.matched_job_ids),
+            "raw_document_ids": list(self.raw_document_ids),
+            "notes": self.notes,
+            "error": self.error,
+        }
+
+
+def persist_raw_documents(
+    conn: Any, documents: Iterable[RawDocument], *, run_id: int | None = None
+) -> list[int]:
+    """Store raw payloads, returning their ids (reusing identical rows)."""
+    ids: list[int] = []
+    for document in documents:
+        document.run_id = run_id if document.run_id is None else document.run_id
+        ids.append(insert_raw_document(conn, document))
+    return ids
+
+
+def ingest_postings(
+    conn: Any,
+    postings: list[JobPosting],
+    *,
+    provider: str,
+    query: str | None = None,
+    location: str | None = None,
+    label: str | None = None,
+    params: dict[str, Any] | None = None,
+    status: SearchRunStatus = SearchRunStatus.COMPLETED,
+    raw_document_ids: list[int] | None = None,
+    notes: str | None = None,
+    error: str | None = None,
+    items_found: int | None = None,
+    now: str | None = None,
+) -> IngestOutcome:
+    """Persist normalized postings under a new search run."""
+    timestamp = now or utcnow_iso()
+    run = create_search_run(
+        conn,
+        SearchRun(
+            provider=provider,
+            label=label,
+            query=query,
+            location=location,
+            params=params or {},
+            status=SearchRunStatus.RUNNING,
+            started_at=timestamp,
+            raw_document_id=(raw_document_ids or [None])[0],
+        ),
+    )
+    outcome = IngestOutcome(run_id=run.id, status=status, raw_document_ids=list(raw_document_ids or []))
+
+    for rank, posting in enumerate(postings, start=1):
+        doc_id = posting.raw_document_id
+        job, decision = store_posting(conn, posting, now=timestamp, raw_document_id=doc_id)
+        if job.id is None:  # pragma: no cover - defensive
+            continue
+        record_run_item(
+            conn,
+            SearchRunItem(
+                run_id=int(run.id),
+                job_id=job.id,
+                decision=decision.kind,
+                rank_in_run=rank,
+                created_at=timestamp,
+            ),
+        )
+        if decision.kind is DuplicateKind.NEW:
+            outcome.new_jobs += 1
+            outcome.new_job_ids.append(job.id)
+        else:
+            outcome.duplicate_jobs += 1
+            outcome.matched_job_ids.append(job.id)
+
+    outcome.items_found = items_found if items_found is not None else len(postings)
+    finish_search_run(
+        conn,
+        int(run.id),
+        status=status,
+        pages_fetched=None,
+        items_found=outcome.items_found,
+        new_jobs=outcome.new_jobs,
+        duplicate_jobs=outcome.duplicate_jobs,
+        error=error,
+        notes=notes or f"{outcome.new_jobs} new job(s), {outcome.duplicate_jobs} duplicate(s)",
+    )
+    outcome.notes = notes
+    outcome.error = error
+    return outcome
+
+
+def ingest_fixture(
+    conn: Any,
+    path: str | Path,
+    *,
+    source: str = "fixture",
+    label: str | None = None,
+    settings: Settings | None = None,
+    now: str | None = None,
+) -> IngestOutcome:
+    """Ingest a JSON fixture end to end: raw document, normalize, dedupe, store."""
+    payload = load_fixture(path)
+    provider = source or payload.provider
+    timestamp = now or utcnow_iso()
+
+    safe, reason = is_safe_to_store(
+        payload.text, max_bytes=(settings.raw_max_bytes if settings else 262_144)
+    )
+    document = RawDocument(
+        kind=RawDocumentKind.FIXTURE,
+        source=provider,
+        url=payload.path.resolve().as_uri(),
+        status_code=None,
+        content_type="application/json",
+        sha256=payload.sha256,
+        byte_size=payload.byte_size,
+        fetched_at=payload.fetched_at or _file_mtime_iso(payload.path),
+        stored_at=timestamp,
+        truncated=not safe,
+        notes=None if safe else f"fixture body not stored: {reason}",
+        body=payload.text if safe else None,
+    )
+    raw_ids = persist_raw_documents(conn, [document])
+
+    postings = postings_from_fixture(payload)
+    for posting in postings:
+        posting.raw_document_id = raw_ids[0] if raw_ids else None
+
+    outcome = ingest_postings(
+        conn,
+        postings,
+        provider=provider,
+        query=payload.query,
+        location=payload.location,
+        label=label or payload.label or f"fixture:{payload.path.name}",
+        params={"fixture_path": str(payload.path), "fixture_sha256": payload.sha256},
+        status=SearchRunStatus.COMPLETED,
+        raw_document_ids=raw_ids,
+        notes=f"fixture {payload.path.name}: {len(postings)} posting(s) normalized",
+        now=timestamp,
+    )
+    return outcome
+
+
+def ingest_collector_result(
+    conn: Any,
+    result: CollectorResult,
+    *,
+    config: LinkedInSearchConfig,
+    settings: Settings,
+    label: str | None = None,
+    now: str | None = None,
+) -> IngestOutcome:
+    """Persist a LinkedIn collector result, including refusals and dry runs."""
+    timestamp = now or utcnow_iso()
+    params = {
+        "keywords": config.keywords,
+        "location": config.location,
+        "max_pages": config.max_pages,
+        "max_items": config.max_items,
+        "page_size": config.page_size,
+        "planned_urls": list(result.planned_urls),
+        "network_enabled": result.status != SearchRunStatus.DRY_RUN,
+    }
+    raw_ids = persist_raw_documents(conn, result.raw_documents)
+    for posting in result.postings:
+        posting.raw_document_id = raw_ids[0] if raw_ids else None
+
+    outcome = ingest_postings(
+        conn,
+        result.postings,
+        provider="linkedin",
+        query=config.keywords,
+        location=config.location,
+        label=label or f"linkedin:{config.keywords}",
+        params=params,
+        status=result.status,
+        raw_document_ids=raw_ids,
+        notes=result.notes,
+        error=result.error,
+        items_found=result.items_found or len(result.postings),
+        now=timestamp,
+    )
+    if result.pages_fetched:
+        with conn:
+            conn.execute(
+                "UPDATE search_runs SET pages_fetched = ? WHERE id = ?",
+                (int(result.pages_fetched), int(outcome.run_id or 0)),
+            )
+    return outcome
+
+
+@dataclass
+class DetailIngestOutcome:
+    """Accounting for one detail-enrichment run."""
+
+    run_id: int | None = None
+    status: SearchRunStatus = SearchRunStatus.COMPLETED
+    requested: int = 0
+    enriched: int = 0
+    partial: int = 0
+    skipped: int = 0
+    failed: int = 0
+    changed: int = 0
+    preserved: int = 0
+    job_ids: list[int] = field(default_factory=list)
+    raw_document_ids: list[int] = field(default_factory=list)
+    notes: str | None = None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "status": str(self.status),
+            "requested": self.requested,
+            "enriched": self.enriched,
+            "partial": self.partial,
+            "skipped": self.skipped,
+            "failed": self.failed,
+            "changed": self.changed,
+            "preserved": self.preserved,
+            "job_ids": list(self.job_ids),
+            "raw_document_ids": list(self.raw_document_ids),
+            "notes": self.notes,
+            "error": self.error,
+        }
+
+
+def _description_content_hash(job: Job, description: str) -> str:
+    """Recompute a job's content hash exactly like :func:`finalize_posting`."""
+    return content_hash(
+        "\n".join(
+            [
+                job.title or "",
+                job.company or "",
+                job.location or "",
+                description,
+            ]
+        )
+    )
+
+
+def _merge_detail_description(
+    job: Job, item: DetailItem
+) -> tuple[str, ContentStatus, str]:
+    """Decide the description to persist for one detail result.
+
+    Returns ``(description, content_status, produced_hash)``. ``produced_hash``
+    is non-empty **only** when this attempt produced the description that should
+    be stored; when the attempt is preserved/failed/skipped it is empty, so the
+    provenance row never claims a hash this fetch did not create.
+
+    Invariant: a partial or failed fetch never replaces a previously successful
+    full description. A successful fetch replaces a shorter/partial one.
+    """
+    existing_description = job.description or ""
+    existing_status = job.content_status
+    existing_full = (
+        existing_status is ContentStatus.OK and bool(existing_description.strip())
+    )
+    new_description = item.description or ""
+
+    if item.status is DetailFetchStatus.OK and new_description:
+        if existing_full and len(new_description) <= len(existing_description):
+            return existing_description, existing_status, ""
+        return (
+            new_description,
+            ContentStatus.OK,
+            _description_content_hash(job, new_description),
+        )
+
+    if item.status is DetailFetchStatus.PARTIAL and new_description:
+        if existing_full:
+            return existing_description, existing_status, ""
+        if len(new_description) > len(existing_description):
+            return (
+                new_description,
+                ContentStatus.PARTIAL,
+                _description_content_hash(job, new_description),
+            )
+
+    return existing_description, existing_status, ""
+
+
+def ingest_detail_results(
+    conn: Any,
+    result: DetailResult,
+    *,
+    settings: Settings,
+    label: str | None = None,
+    now: str | None = None,
+) -> DetailIngestOutcome:
+    """Persist a detail-fetch result: provenance rows plus job enrichment."""
+    timestamp = now or utcnow_iso()
+    run = create_search_run(
+        conn,
+        SearchRun(
+            provider="linkedin-details",
+            label=label or "linkedin:job-details",
+            query="job-details",
+            params={
+                "requested": result.requested,
+                "requests_made": result.requests_made,
+                "planned_urls": list(result.planned_urls),
+                "truncated": result.truncated,
+            },
+            status=SearchRunStatus.RUNNING,
+            started_at=timestamp,
+        ),
+    )
+    raw_ids = persist_raw_documents(conn, result.raw_documents, run_id=run.id)
+    outcome = DetailIngestOutcome(
+        run_id=run.id,
+        status=result.status,
+        requested=result.requested,
+        raw_document_ids=raw_ids,
+        notes=result.notes,
+        error=result.error,
+    )
+
+    for item in result.items:
+        if item.raw_document_index is not None and item.raw_document_index < len(raw_ids):
+            item.raw_document_id = raw_ids[item.raw_document_index]
+
+        job = get_job(conn, item.job_id)
+        if job is None:
+            outcome.failed += 1
+            outcome.notes = (outcome.notes or "") + f" job #{item.job_id} disappeared"
+            continue
+
+        description, content_status, produced_hash = _merge_detail_description(job, item)
+        changed = (
+            description != (job.description or "")
+            or str(content_status) != str(job.content_status)
+        )
+        if changed:
+            update_job_content(
+                conn,
+                int(job.id),
+                description=description or None,
+                content_status=content_status,
+                content_hash=produced_hash or job.content_hash,
+            )
+            outcome.changed += 1
+
+        insert_detail_fetch(
+            conn,
+            JobDetailFetch(
+                job_id=int(job.id),
+                run_id=run.id,
+                source="linkedin",
+                url=item.url,
+                status=item.status,
+                http_status=item.http_status,
+                content_status=str(content_status),
+                description_chars=len(item.description or ""),
+                byte_size=item.byte_size,
+                sha256=item.sha256,
+                # Only record a hash this attempt actually produced. A failed or
+                # preserved attempt leaves it NULL instead of borrowing the
+                # job's existing hash.
+                content_hash=produced_hash or None,
+                fetched_at=item.fetched_at,
+                stored_at=timestamp,
+                raw_document_id=item.raw_document_id,
+                error=item.error,
+                notes=item.notes,
+            ),
+        )
+
+        if item.status is DetailFetchStatus.OK:
+            outcome.enriched += 1
+            outcome.job_ids.append(int(job.id))
+            if not changed:
+                outcome.preserved += 1
+        elif item.status is DetailFetchStatus.PARTIAL:
+            outcome.partial += 1
+            outcome.job_ids.append(int(job.id))
+        elif item.status is DetailFetchStatus.SKIPPED:
+            outcome.skipped += 1
+        else:
+            outcome.failed += 1
+
+    finish_search_run(
+        conn,
+        int(run.id),
+        status=result.status,
+        items_found=result.requested,
+        error=result.error,
+        notes=(
+            f"{outcome.enriched} enriched, {outcome.partial} partial, "
+            f"{outcome.skipped} skipped, {outcome.failed} failed"
+        ),
+    )
+    return outcome
+
+
+def _file_mtime_iso(path: Path) -> str | None:
+    from datetime import datetime, timezone
+
+    try:
+        return to_iso(datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc))
+    except OSError:  # pragma: no cover - filesystem dependent
+        return None
+
+
+__all__ = [
+    "DetailIngestOutcome",
+    "IngestOutcome",
+    "ingest_collector_result",
+    "ingest_detail_results",
+    "ingest_fixture",
+    "ingest_postings",
+    "persist_raw_documents",
+]

@@ -1,0 +1,79 @@
+# Example candidate profile for jobscout.
+#
+# Copy to `profile.yaml` and edit. The canonical fields are documented here;
+# any unknown key is ignored by scoring but preserved in the profile snapshot.
+#
+# Structured fields are extracted into the `profile_evidence` table so every
+# evaluation can be traced back to the exact profile version that produced it.
+
+name: example-profile
+summary: >-
+  Senior backend engineer focused on Python services, data pipelines, and
+  developer tooling. Prefers remote-first teams with written communication.
+
+# Roles you are targeting (informational; also used by future matching rules).
+target_roles:
+  - Senior Backend Engineer
+  - Platform Engineer
+  - Data Engineer
+
+# One of: internship | junior | mid | senior | lead | manager | director
+seniority: senior
+years_experience: 9
+
+# Locations you accept. Matching is normalized (case/accent insensitive).
+locations:
+  - Buenos Aires, Argentina
+  - Remote
+
+# One of: remote_only | remote_preferred | onsite_ok | any
+remote_preference: remote_preferred
+
+languages:
+  - name: Spanish
+    level: native
+  - name: English
+    level: advanced
+
+# Optional compensation floor. Only used when the posting states a number.
+min_salary: 4000
+salary_currency: USD
+
+# Missing must-have skills lower the score. With require_all_must_have: true
+# they become hard blockers instead.
+must_have_skills:
+  - Python
+  - SQL
+  - PostgreSQL
+nice_to_have_skills:
+  - FastAPI
+  - Airflow
+  - Docker
+  - Kubernetes
+  - TypeScript
+
+# Phrases that hard-block a posting when found in the job text.
+dealbreakers:
+  - 5 days in office
+  - unpaid
+  - commission only
+
+# Companies that are always blocked.
+excluded_companies:
+  - Example Staffing Agency
+
+require_all_must_have: false
+
+# Postings older than this lose recency points; `null` disables the check.
+max_posting_age_days: 30
+
+# Dimension weights. Missing dimensions are omitted and the remaining weights
+# are renormalized, so these values are relative, not absolute.
+weights:
+  must_have_skills: 0.15
+  skills: 0.35
+  seniority: 0.15
+  location: 0.15
+  language: 0.10
+  recency: 0.10
+  compensation: 0.05

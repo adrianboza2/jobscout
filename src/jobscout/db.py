@@ -1,0 +1,1069 @@
+"""SQLite persistence layer.
+
+Only the standard library is used (``sqlite3``). The schema is explicit and
+versioned through ``PRAGMA user_version`` so future migrations stay honest
+instead of silently drifting.
+
+Tables
+------
+``search_runs``      one collector invocation (dry-run or live)
+``raw_documents``    verbatim payloads kept for provenance (never required)
+``jobs``             deduplicated job postings
+``search_run_items`` one row per posting *observed* by a run (a run can observe
+                     the same job more than once), with its dedupe verdict
+``profiles``         versioned snapshots of the local candidate profile
+``profile_evidence`` the structured facts extracted from a profile snapshot
+``evaluations``      explainable scores, with full provenance
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any, Sequence
+
+from .dedupe import DedupeDecision, decide_duplicate
+from .models import (
+    ContentStatus,
+    DetailFetchStatus,
+    DimensionScore,
+    Evaluation,
+    Job,
+    JobDetailFetch,
+    JobPosting,
+    ProfileEvidence,
+    ProfileSnapshot,
+    RawDocument,
+    ScorerName,
+    SearchRun,
+    SearchRunItem,
+    SearchRunStatus,
+    _dumps,
+    _loads,
+)
+from .timeutil import utcnow_iso
+
+SCHEMA_VERSION = 2
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS search_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    label TEXT,
+    query TEXT,
+    location TEXT,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    pages_fetched INTEGER NOT NULL DEFAULT 0,
+    items_found INTEGER NOT NULL DEFAULT 0,
+    new_jobs INTEGER NOT NULL DEFAULT 0,
+    duplicate_jobs INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    raw_document_id INTEGER,
+    notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS raw_documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    source TEXT,
+    url TEXT,
+    status_code INTEGER,
+    content_type TEXT,
+    sha256 TEXT NOT NULL,
+    byte_size INTEGER NOT NULL DEFAULT 0,
+    fetched_at TEXT,
+    stored_at TEXT NOT NULL,
+    truncated INTEGER NOT NULL DEFAULT 0,
+    run_id INTEGER REFERENCES search_runs(id) ON DELETE SET NULL,
+    notes TEXT,
+    body TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_raw_documents_sha256 ON raw_documents(sha256);
+CREATE INDEX IF NOT EXISTS idx_raw_documents_kind ON raw_documents(kind);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    dedupe_key TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_job_id TEXT,
+    url TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    company TEXT NOT NULL DEFAULT '',
+    location TEXT,
+    description TEXT,
+    employment_type TEXT,
+    seniority TEXT,
+    salary TEXT,
+    language TEXT,
+    posted_at TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    content_status TEXT NOT NULL DEFAULT 'unknown',
+    content_hash TEXT NOT NULL DEFAULT '',
+    sighting_count INTEGER NOT NULL DEFAULT 1,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    raw_document_id INTEGER REFERENCES raw_documents(id) ON DELETE SET NULL,
+    extra_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_dedupe_key ON jobs(dedupe_key);
+CREATE INDEX IF NOT EXISTS idx_jobs_last_seen ON jobs(last_seen_at);
+
+CREATE TABLE IF NOT EXISTS search_run_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES search_runs(id) ON DELETE CASCADE,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    decision TEXT NOT NULL DEFAULT 'new',
+    rank_in_run INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_run_items_job ON search_run_items(job_id);
+
+CREATE TABLE IF NOT EXISTS profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    source_path TEXT,
+    loaded_at TEXT NOT NULL,
+    raw_json TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (name, fingerprint)
+);
+
+CREATE TABLE IF NOT EXISTS profile_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    value_json TEXT,
+    weight REAL NOT NULL DEFAULT 1.0,
+    source_text TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_profile_evidence_profile ON profile_evidence(profile_id);
+
+CREATE TABLE IF NOT EXISTS evaluations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    scorer TEXT NOT NULL,
+    model TEXT,
+    prompt_version TEXT,
+    profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL,
+    overall_score REAL,
+    recommendation TEXT NOT NULL DEFAULT 'need_more_info',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    dimensions_json TEXT NOT NULL DEFAULT '[]',
+    blockers_json TEXT NOT NULL DEFAULT '[]',
+    strengths_json TEXT NOT NULL DEFAULT '[]',
+    gaps_json TEXT NOT NULL DEFAULT '[]',
+    unknowns_json TEXT NOT NULL DEFAULT '[]',
+    rationale TEXT,
+    status TEXT NOT NULL DEFAULT 'ok',
+    error TEXT,
+    raw_document_id INTEGER REFERENCES raw_documents(id) ON DELETE SET NULL,
+    input_fingerprint TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evaluations_job ON evaluations(job_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_evaluations_scorer ON evaluations(scorer, status);
+
+CREATE VIEW IF NOT EXISTS latest_evaluations AS
+SELECT e.*
+FROM evaluations e
+WHERE e.id = (
+    SELECT MAX(x.id) FROM evaluations x
+    WHERE x.job_id = e.job_id AND x.status = 'ok'
+);
+
+CREATE TABLE IF NOT EXISTS job_detail_fetches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    run_id INTEGER REFERENCES search_runs(id) ON DELETE SET NULL,
+    source TEXT,
+    url TEXT,
+    status TEXT NOT NULL DEFAULT 'failed',
+    http_status INTEGER,
+    content_status TEXT,
+    description_chars INTEGER NOT NULL DEFAULT 0,
+    byte_size INTEGER NOT NULL DEFAULT 0,
+    sha256 TEXT,
+    content_hash TEXT,
+    fetched_at TEXT,
+    stored_at TEXT NOT NULL,
+    raw_document_id INTEGER REFERENCES raw_documents(id) ON DELETE SET NULL,
+    error TEXT,
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_detail_fetches_job ON job_detail_fetches(job_id, id);
+CREATE INDEX IF NOT EXISTS idx_detail_fetches_run ON job_detail_fetches(run_id);
+"""
+
+
+def connect(db_path: str | Path) -> sqlite3.Connection:
+    """Open (and create the parent directory of) a SQLite database."""
+    path = str(db_path)
+    if path != ":memory:":
+        Path(path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=15.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA busy_timeout = 15000")
+    if path != ":memory:":
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+        except sqlite3.DatabaseError:  # pragma: no cover - filesystem dependent
+            pass
+    return conn
+
+
+def init_db(conn: sqlite3.Connection) -> int:
+    """Create the schema if needed and return the schema version."""
+    current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if current > SCHEMA_VERSION:
+        raise RuntimeError(
+            f"database schema version {current} is newer than supported version {SCHEMA_VERSION}"
+        )
+    with conn:
+        conn.executescript(SCHEMA_SQL)
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    return SCHEMA_VERSION
+
+
+def ensure_initialized(conn: sqlite3.Connection) -> sqlite3.Connection:
+    """Convenience wrapper used by the CLI so every command self-initializes."""
+    init_db(conn)
+    return conn
+
+
+# ---------------------------------------------------------------------------
+# Row mapping
+# ---------------------------------------------------------------------------
+
+
+def _row_to_job(row: sqlite3.Row) -> Job:
+    return Job(
+        id=row["id"],
+        fingerprint=row["fingerprint"],
+        dedupe_key=row["dedupe_key"],
+        source=row["source"],
+        title=row["title"],
+        company=row["company"],
+        url=row["url"],
+        location=row["location"],
+        description=row["description"],
+        source_job_id=row["source_job_id"],
+        employment_type=row["employment_type"],
+        seniority=row["seniority"],
+        salary=row["salary"],
+        language=row["language"],
+        posted_at=row["posted_at"],
+        first_seen_at=row["first_seen_at"],
+        last_seen_at=row["last_seen_at"],
+        content_status=ContentStatus(row["content_status"]),
+        content_hash=row["content_hash"],
+        sighting_count=row["sighting_count"],
+        is_active=bool(row["is_active"]),
+        raw_document_id=row["raw_document_id"],
+        extra=_loads(row["extra_json"], {}),
+    )
+
+
+def _row_to_evaluation(row: sqlite3.Row) -> Evaluation:
+    dimensions = [
+        DimensionScore.from_dict(item)
+        for item in _loads(row["dimensions_json"], [])
+        if isinstance(item, dict)
+    ]
+    return Evaluation(
+        id=row["id"],
+        job_id=row["job_id"],
+        scorer=row["scorer"],
+        model=row["model"],
+        prompt_version=row["prompt_version"],
+        profile_id=row["profile_id"],
+        overall_score=row["overall_score"],
+        recommendation=row["recommendation"],
+        confidence=row["confidence"],
+        dimensions=dimensions,
+        blockers=_loads(row["blockers_json"], []),
+        strengths=_loads(row["strengths_json"], []),
+        gaps=_loads(row["gaps_json"], []),
+        unknowns=_loads(row["unknowns_json"], []),
+        rationale=row["rationale"] or "",
+        status=row["status"],
+        error=row["error"],
+        raw_document_id=row["raw_document_id"],
+        input_fingerprint=row["input_fingerprint"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_search_run(row: sqlite3.Row) -> SearchRun:
+    return SearchRun(
+        id=row["id"],
+        provider=row["provider"],
+        label=row["label"],
+        query=row["query"],
+        location=row["location"],
+        params=_loads(row["params_json"], {}),
+        status=SearchRunStatus(row["status"]),
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        pages_fetched=row["pages_fetched"],
+        items_found=row["items_found"],
+        new_jobs=row["new_jobs"],
+        duplicate_jobs=row["duplicate_jobs"],
+        error=row["error"],
+        raw_document_id=row["raw_document_id"],
+        notes=row["notes"],
+    )
+
+
+def _row_to_detail_fetch(row: sqlite3.Row) -> JobDetailFetch:
+    return JobDetailFetch(
+        id=row["id"],
+        job_id=row["job_id"],
+        run_id=row["run_id"],
+        source=row["source"],
+        url=row["url"],
+        status=DetailFetchStatus(row["status"]),
+        http_status=row["http_status"],
+        content_status=row["content_status"],
+        description_chars=row["description_chars"],
+        byte_size=row["byte_size"],
+        sha256=row["sha256"],
+        content_hash=row["content_hash"],
+        fetched_at=row["fetched_at"],
+        stored_at=row["stored_at"],
+        raw_document_id=row["raw_document_id"],
+        error=row["error"],
+        notes=row["notes"],
+    )
+
+
+def _row_to_profile(row: sqlite3.Row) -> ProfileSnapshot:
+    return ProfileSnapshot(
+        id=row["id"],
+        name=row["name"],
+        fingerprint=row["fingerprint"],
+        source_path=row["source_path"],
+        loaded_at=row["loaded_at"],
+        raw=_loads(row["raw_json"], {}),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Raw documents
+# ---------------------------------------------------------------------------
+
+
+def insert_raw_document(conn: sqlite3.Connection, document: RawDocument) -> int:
+    """Persist a raw payload, reusing an existing identical row when present."""
+    if document.notes == "":
+        document.notes = None
+    existing = conn.execute(
+        "SELECT id FROM raw_documents WHERE sha256 = ? AND kind = ? LIMIT 1",
+        (document.sha256, str(document.kind)),
+    ).fetchone()
+    if existing is not None:
+        return int(existing["id"])
+    stored_at = document.stored_at or utcnow_iso()
+    with conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO raw_documents (
+                kind, source, url, status_code, content_type, sha256, byte_size,
+                fetched_at, stored_at, truncated, run_id, notes, body
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(document.kind),
+                document.source,
+                document.url,
+                document.status_code,
+                document.content_type,
+                document.sha256,
+                document.byte_size,
+                document.fetched_at,
+                stored_at,
+                int(bool(document.truncated)),
+                document.run_id,
+                document.notes,
+                document.body,
+            ),
+        )
+    document.id = int(cursor.lastrowid)
+    return document.id
+
+
+def get_raw_document(conn: sqlite3.Connection, document_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM raw_documents WHERE id = ?", (document_id,)).fetchone()
+
+
+# ---------------------------------------------------------------------------
+# Search runs
+# ---------------------------------------------------------------------------
+
+
+def create_search_run(conn: sqlite3.Connection, run: SearchRun) -> SearchRun:
+    started = run.started_at or utcnow_iso()
+    with conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO search_runs (
+                provider, label, query, location, params_json, status, started_at,
+                finished_at, pages_fetched, items_found, new_jobs, duplicate_jobs,
+                error, raw_document_id, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run.provider,
+                run.label,
+                run.query,
+                run.location,
+                _dumps(run.params),
+                str(run.status),
+                started,
+                run.finished_at,
+                run.pages_fetched,
+                run.items_found,
+                run.new_jobs,
+                run.duplicate_jobs,
+                run.error,
+                run.raw_document_id,
+                run.notes,
+            ),
+        )
+    run.id = int(cursor.lastrowid)
+    run.started_at = started
+    return run
+
+
+def finish_search_run(
+    conn: sqlite3.Connection,
+    run_id: int,
+    *,
+    status: SearchRunStatus,
+    pages_fetched: int | None = None,
+    items_found: int | None = None,
+    new_jobs: int | None = None,
+    duplicate_jobs: int | None = None,
+    error: str | None = None,
+    notes: str | None = None,
+) -> None:
+    with conn:
+        conn.execute(
+            """
+            UPDATE search_runs
+            SET status = ?,
+                finished_at = ?,
+                pages_fetched = COALESCE(?, pages_fetched),
+                items_found = COALESCE(?, items_found),
+                new_jobs = COALESCE(?, new_jobs),
+                duplicate_jobs = COALESCE(?, duplicate_jobs),
+                error = COALESCE(?, error),
+                notes = COALESCE(?, notes)
+            WHERE id = ?
+            """,
+            (
+                str(status),
+                utcnow_iso(),
+                pages_fetched,
+                items_found,
+                new_jobs,
+                duplicate_jobs,
+                error,
+                notes,
+                run_id,
+            ),
+        )
+
+
+def get_search_run(conn: sqlite3.Connection, run_id: int) -> SearchRun | None:
+    row = conn.execute("SELECT * FROM search_runs WHERE id = ?", (run_id,)).fetchone()
+    return _row_to_search_run(row) if row else None
+
+
+def list_search_runs(conn: sqlite3.Connection, limit: int = 20) -> list[SearchRun]:
+    rows = conn.execute(
+        "SELECT * FROM search_runs ORDER BY id DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [_row_to_search_run(row) for row in rows]
+
+
+def record_run_item(conn: sqlite3.Connection, item: SearchRunItem) -> None:
+    """Record one observation of a job inside a search run.
+
+    A run may observe the same job more than once (for example when a later page
+    repeats a posting); each observation is kept with its own dedupe verdict.
+    """
+    with conn:
+        conn.execute(
+            """
+            INSERT INTO search_run_items (run_id, job_id, decision, rank_in_run, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                item.run_id,
+                item.job_id,
+                str(item.decision),
+                item.rank_in_run,
+                item.created_at or utcnow_iso(),
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+
+
+def find_duplicate(conn: sqlite3.Connection, posting: JobPosting) -> DedupeDecision:
+    """Look up strong/weak identity keys and delegate to the pure policy."""
+    fingerprint_row = conn.execute(
+        "SELECT id FROM jobs WHERE fingerprint = ? LIMIT 1", (posting.fingerprint,)
+    ).fetchone()
+    dedupe_row = conn.execute(
+        "SELECT id FROM jobs WHERE dedupe_key = ? ORDER BY id LIMIT 1", (posting.dedupe_key,)
+    ).fetchone()
+    fingerprints = (
+        {posting.fingerprint: int(fingerprint_row["id"])} if fingerprint_row else {}
+    )
+    dedupe_keys = {posting.dedupe_key: int(dedupe_row["id"])} if dedupe_row else {}
+    return decide_duplicate(posting, fingerprints, dedupe_keys)
+
+
+def store_posting(
+    conn: sqlite3.Connection,
+    posting: JobPosting,
+    *,
+    now: str | None = None,
+    raw_document_id: int | None = None,
+) -> tuple[Job, DedupeDecision]:
+    """Persist a posting, deduplicating against existing rows.
+
+    Returns the stored (or matched) job plus the dedupe decision so callers can
+    report counts and reasons.
+    """
+    if not posting.fingerprint:
+        raise ValueError("posting must be finalized before storage")
+    timestamp = now or utcnow_iso()
+    posting.raw_document_id = raw_document_id or posting.raw_document_id
+
+    decision = find_duplicate(conn, posting)
+    if decision.is_new:
+        job = Job.from_posting(posting, now=timestamp)
+        with conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO jobs (
+                    fingerprint, dedupe_key, source, source_job_id, url, title, company,
+                    location, description, employment_type, seniority, salary, language,
+                    posted_at, first_seen_at, last_seen_at, content_status, content_hash,
+                    sighting_count, is_active, raw_document_id, extra_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job.fingerprint,
+                    job.dedupe_key,
+                    job.source,
+                    job.source_job_id,
+                    job.url,
+                    job.title,
+                    job.company,
+                    job.location,
+                    job.description,
+                    job.employment_type,
+                    job.seniority,
+                    job.salary,
+                    job.language,
+                    job.posted_at,
+                    job.first_seen_at,
+                    job.last_seen_at,
+                    str(job.content_status),
+                    job.content_hash,
+                    job.sighting_count,
+                    int(job.is_active),
+                    job.raw_document_id,
+                    _dumps(job.extra),
+                ),
+            )
+        job.id = int(cursor.lastrowid)
+        return job, decision
+
+    existing_id = int(decision.existing_job_id or 0)
+    job = get_job(conn, existing_id)
+    if job is None:  # pragma: no cover - defensive, FK integrity guarantees this
+        raise RuntimeError(f"duplicate decision pointed at missing job {existing_id}")
+    updated = _merge_seen_job(job, posting, timestamp)
+    with conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET last_seen_at = ?, sighting_count = sighting_count + 1, is_active = 1,
+                description = ?, content_status = ?, content_hash = ?,
+                url = COALESCE(url, ?), location = COALESCE(location, ?),
+                salary = COALESCE(salary, ?), posted_at = COALESCE(posted_at, ?),
+                raw_document_id = COALESCE(?, raw_document_id)
+            WHERE id = ?
+            """,
+            (
+                timestamp,
+                updated.description,
+                str(updated.content_status),
+                updated.content_hash,
+                posting.url,
+                posting.location,
+                posting.salary,
+                posting.posted_at,
+                raw_document_id,
+                job.id,
+            ),
+        )
+    refreshed = get_job(conn, existing_id)
+    return (refreshed or job), decision
+
+
+def _merge_seen_job(job: Job, posting: JobPosting, timestamp: str) -> Job:
+    """Return an in-memory view of the merged row (no I/O)."""
+    merged = replace(job, extra=dict(job.extra))
+    merged.last_seen_at = timestamp
+    merged.sighting_count = job.sighting_count + 1
+    merged.is_active = True
+    # Prefer richer content when the new fetch actually carries more text.
+    if posting.content_hash and posting.content_hash != job.content_hash:
+        new_length = len(posting.description or "")
+        old_length = len(job.description or "")
+        if new_length > old_length:
+            merged.description = posting.description
+            merged.content_hash = posting.content_hash
+            merged.content_status = posting.content_status
+    return merged
+
+
+def get_job(conn: sqlite3.Connection, job_id: int) -> Job | None:
+    row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    return _row_to_job(row) if row else None
+
+
+def count_jobs(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COUNT(*) FROM jobs").fetchone()[0])
+
+
+@dataclass
+class JobListItem:
+    """A job joined with its latest successful evaluation."""
+
+    job: Job
+    score: float | None = None
+    recommendation: str | None = None
+    confidence: float | None = None
+    evaluation_id: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "job": self.job.to_dict(),
+            "score": self.score,
+            "recommendation": self.recommendation,
+            "confidence": self.confidence,
+            "evaluation_id": self.evaluation_id,
+        }
+
+
+def list_jobs(
+    conn: sqlite3.Connection,
+    *,
+    limit: int = 50,
+    min_score: float | None = None,
+    include_inactive: bool = False,
+    scored_only: bool = False,
+    rank_by_score: bool = False,
+    job_ids: Sequence[int] | None = None,
+) -> list[JobListItem]:
+    """List jobs with their latest successful evaluation attached."""
+    clauses: list[str] = []
+    params: list[Any] = []
+    if not include_inactive:
+        clauses.append("j.is_active = 1")
+    if min_score is not None:
+        clauses.append("e.overall_score IS NOT NULL AND e.overall_score >= ?")
+        params.append(float(min_score))
+    if scored_only:
+        clauses.append("e.id IS NOT NULL")
+    if job_ids:
+        placeholders = ",".join("?" for _ in job_ids)
+        clauses.append(f"j.id IN ({placeholders})")
+        params.extend(int(job_id) for job_id in job_ids)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    order = (
+        "ORDER BY (e.overall_score IS NULL), e.overall_score DESC, "
+        "COALESCE(e.confidence, 0) DESC, j.last_seen_at DESC"
+        if rank_by_score
+        else "ORDER BY j.last_seen_at DESC, j.id DESC"
+    )
+    params.append(int(limit))
+    rows = conn.execute(
+        f"""
+        SELECT j.*,
+               e.overall_score AS score,
+               e.recommendation AS recommendation,
+               e.confidence AS confidence,
+               e.id AS evaluation_id
+        FROM jobs j
+        LEFT JOIN latest_evaluations e ON e.job_id = j.id
+        {where}
+        {order}
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+    return [
+        JobListItem(
+            job=_row_to_job(row),
+            score=row["score"],
+            recommendation=row["recommendation"],
+            confidence=row["confidence"],
+            evaluation_id=row["evaluation_id"],
+        )
+        for row in rows
+    ]
+
+
+def jobs_needing_evaluation(
+    conn: sqlite3.Connection,
+    *,
+    scorer: ScorerName | str,
+    limit: int | None = None,
+) -> list[Job]:
+    """Jobs with no successful evaluation from ``scorer`` yet."""
+    sql = """
+        SELECT j.* FROM jobs j
+        WHERE j.is_active = 1
+          AND NOT EXISTS (
+              SELECT 1 FROM evaluations e
+              WHERE e.job_id = j.id AND e.scorer = ? AND e.status = 'ok'
+          )
+        ORDER BY j.last_seen_at DESC, j.id DESC
+    """
+    params: list[Any] = [str(scorer)]
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def all_active_jobs(conn: sqlite3.Connection, *, limit: int | None = None) -> list[Job]:
+    sql = "SELECT * FROM jobs WHERE is_active = 1 ORDER BY id"
+    params: list[Any] = []
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def _jobs_needing_details_predicate() -> str:
+    return "(content_status != 'ok' OR description IS NULL OR TRIM(description) = '')"
+
+
+def count_active_jobs(conn: sqlite3.Connection) -> int:
+    """Number of active jobs, used to report ``--max-items`` truncation."""
+    return int(
+        conn.execute("SELECT COUNT(*) FROM jobs WHERE is_active = 1").fetchone()[0]
+    )
+
+
+def count_jobs_needing_details(conn: sqlite3.Connection) -> int:
+    """Number of active jobs that still lack a successful full description."""
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM jobs WHERE is_active = 1 AND "
+            + _jobs_needing_details_predicate()
+        ).fetchone()[0]
+    )
+
+
+def jobs_needing_details(
+    conn: sqlite3.Connection,
+    *,
+    limit: int | None = None,
+    job_ids: Sequence[int] | None = None,
+) -> list[Job]:
+    """Active jobs that still lack a successful full description.
+
+    A job counts as enriched when it is ``content_status = 'ok'`` *and* has a
+    non-empty description, so search cards (``partial``) are always selected.
+    """
+    clauses = [
+        "is_active = 1",
+        _jobs_needing_details_predicate(),
+    ]
+    params: list[Any] = []
+    if job_ids:
+        placeholders = ",".join("?" for _ in job_ids)
+        clauses.append(f"id IN ({placeholders})")
+        params.extend(int(job_id) for job_id in job_ids)
+    sql = (
+        "SELECT * FROM jobs WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY last_seen_at DESC, id DESC"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def update_job_content(
+    conn: sqlite3.Connection,
+    job_id: int,
+    *,
+    description: str | None,
+    content_status: ContentStatus | str,
+    content_hash: str,
+    raw_document_id: int | None = None,
+) -> None:
+    """Replace a stored job's description without touching unrelated columns.
+
+    ``raw_document_id`` is only written when provided, so enriching a job keeps
+    the provenance of the original search payload intact.
+    """
+    with conn:
+        conn.execute(
+            """
+            UPDATE jobs
+            SET description = ?, content_status = ?, content_hash = ?,
+                raw_document_id = COALESCE(?, raw_document_id)
+            WHERE id = ?
+            """,
+            (
+                description,
+                str(content_status),
+                content_hash,
+                raw_document_id,
+                int(job_id),
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Job detail fetches
+# ---------------------------------------------------------------------------
+
+
+def insert_detail_fetch(
+    conn: sqlite3.Connection, fetch: JobDetailFetch
+) -> JobDetailFetch:
+    stored_at = fetch.stored_at or utcnow_iso()
+    with conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO job_detail_fetches (
+                job_id, run_id, source, url, status, http_status, content_status,
+                description_chars, byte_size, sha256, content_hash, fetched_at,
+                stored_at, raw_document_id, error, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(fetch.job_id),
+                fetch.run_id,
+                fetch.source,
+                fetch.url,
+                str(fetch.status),
+                fetch.http_status,
+                fetch.content_status,
+                int(fetch.description_chars),
+                int(fetch.byte_size),
+                fetch.sha256,
+                fetch.content_hash,
+                fetch.fetched_at,
+                stored_at,
+                fetch.raw_document_id,
+                fetch.error,
+                fetch.notes,
+            ),
+        )
+    fetch.id = int(cursor.lastrowid)
+    fetch.stored_at = stored_at
+    return fetch
+
+
+def detail_fetches_for_job(
+    conn: sqlite3.Connection, job_id: int
+) -> list[JobDetailFetch]:
+    rows = conn.execute(
+        "SELECT * FROM job_detail_fetches WHERE job_id = ? ORDER BY id DESC",
+        (int(job_id),),
+    ).fetchall()
+    return [_row_to_detail_fetch(row) for row in rows]
+
+
+def latest_detail_fetch(
+    conn: sqlite3.Connection, job_id: int
+) -> JobDetailFetch | None:
+    row = conn.execute(
+        "SELECT * FROM job_detail_fetches WHERE job_id = ? ORDER BY id DESC LIMIT 1",
+        (int(job_id),),
+    ).fetchone()
+    return _row_to_detail_fetch(row) if row else None
+
+
+def job_detail_fetch_count(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COUNT(*) FROM job_detail_fetches").fetchone()[0])
+
+
+# ---------------------------------------------------------------------------
+# Profiles
+# ---------------------------------------------------------------------------
+
+
+def upsert_profile(conn: sqlite3.Connection, snapshot: ProfileSnapshot) -> ProfileSnapshot:
+    """Insert a profile snapshot once; identical snapshots are reused."""
+    existing = conn.execute(
+        "SELECT * FROM profiles WHERE name = ? AND fingerprint = ?",
+        (snapshot.name, snapshot.fingerprint),
+    ).fetchone()
+    if existing is not None:
+        stored = _row_to_profile(existing)
+        stored.evidence = profile_evidence(conn, int(stored.id or 0))
+        return stored
+
+    loaded_at = snapshot.loaded_at or utcnow_iso()
+    with conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO profiles (name, fingerprint, source_path, loaded_at, raw_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                snapshot.name,
+                snapshot.fingerprint,
+                snapshot.source_path,
+                loaded_at,
+                _dumps(snapshot.raw),
+            ),
+        )
+        profile_id = int(cursor.lastrowid)
+        for evidence in snapshot.evidence:
+            conn.execute(
+                """
+                INSERT INTO profile_evidence (profile_id, kind, label, value_json, weight, source_text)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    profile_id,
+                    evidence.kind,
+                    evidence.label,
+                    _dumps(evidence.value),
+                    float(evidence.weight),
+                    evidence.source_text,
+                ),
+            )
+    snapshot.id = profile_id
+    snapshot.loaded_at = loaded_at
+    for evidence in snapshot.evidence:
+        evidence.profile_id = profile_id
+    return snapshot
+
+
+def profile_evidence(conn: sqlite3.Connection, profile_id: int) -> list[ProfileEvidence]:
+    rows = conn.execute(
+        "SELECT * FROM profile_evidence WHERE profile_id = ? ORDER BY id", (profile_id,)
+    ).fetchall()
+    return [
+        ProfileEvidence(
+            id=row["id"],
+            profile_id=row["profile_id"],
+            kind=row["kind"],
+            label=row["label"],
+            value=_loads(row["value_json"], None),
+            weight=row["weight"],
+            source_text=row["source_text"],
+        )
+        for row in rows
+    ]
+
+
+def get_profile(conn: sqlite3.Connection, profile_id: int) -> ProfileSnapshot | None:
+    row = conn.execute("SELECT * FROM profiles WHERE id = ?", (profile_id,)).fetchone()
+    if row is None:
+        return None
+    snapshot = _row_to_profile(row)
+    snapshot.evidence = profile_evidence(conn, profile_id)
+    return snapshot
+
+
+# ---------------------------------------------------------------------------
+# Evaluations
+# ---------------------------------------------------------------------------
+
+
+def insert_evaluation(conn: sqlite3.Connection, evaluation: Evaluation) -> Evaluation:
+    created_at = evaluation.created_at or utcnow_iso()
+    with conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO evaluations (
+                job_id, scorer, model, prompt_version, profile_id, overall_score,
+                recommendation, confidence, dimensions_json, blockers_json,
+                strengths_json, gaps_json, unknowns_json, rationale, status, error,
+                raw_document_id, input_fingerprint, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                evaluation.job_id,
+                str(evaluation.scorer),
+                evaluation.model,
+                evaluation.prompt_version,
+                evaluation.profile_id,
+                evaluation.overall_score,
+                str(evaluation.recommendation),
+                float(evaluation.confidence),
+                _dumps([dimension.to_dict() for dimension in evaluation.dimensions]),
+                _dumps(list(evaluation.blockers)),
+                _dumps(list(evaluation.strengths)),
+                _dumps(list(evaluation.gaps)),
+                _dumps(list(evaluation.unknowns)),
+                evaluation.rationale,
+                str(evaluation.status),
+                evaluation.error,
+                evaluation.raw_document_id,
+                evaluation.input_fingerprint,
+                created_at,
+            ),
+        )
+    evaluation.id = int(cursor.lastrowid)
+    evaluation.created_at = created_at
+    return evaluation
+
+
+def evaluations_for_job(conn: sqlite3.Connection, job_id: int) -> list[Evaluation]:
+    rows = conn.execute(
+        "SELECT * FROM evaluations WHERE job_id = ? ORDER BY id DESC", (job_id,)
+    ).fetchall()
+    return [_row_to_evaluation(row) for row in rows]
+
+
+def latest_evaluation(
+    conn: sqlite3.Connection, job_id: int, *, scorer: ScorerName | str | None = None
+) -> Evaluation | None:
+    if scorer is None:
+        row = conn.execute(
+            "SELECT * FROM evaluations WHERE job_id = ? AND status = 'ok' ORDER BY id DESC LIMIT 1",
+            (job_id,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            """
+            SELECT * FROM evaluations
+            WHERE job_id = ? AND scorer = ? AND status = 'ok'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (job_id, str(scorer)),
+        ).fetchone()
+    return _row_to_evaluation(row) if row else None
+
+
+def evaluation_count(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0])
