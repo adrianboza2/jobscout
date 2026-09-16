@@ -1,0 +1,32 @@
+# Test profile: deterministic, minimal, and independent of the example profile.
+name: test-profile
+summary: Test candidate used by the offline test suite.
+target_roles:
+  - Senior Backend Engineer
+seniority: senior
+years_experience: 9
+locations:
+  - Buenos Aires, Argentina
+  - Remote
+remote_preference: remote_preferred
+languages:
+  - name: Spanish
+    level: native
+  - name: English
+    level: advanced
+min_salary: 4000
+salary_currency: USD
+must_have_skills:
+  - Python
+  - SQL
+  - PostgreSQL
+nice_to_have_skills:
+  - FastAPI
+  - Docker
+dealbreakers:
+  - 5 days in office
+  - unpaid
+excluded_companies:
+  - Globex Corporation
+require_all_must_have: false
+max_posting_age_days: 30

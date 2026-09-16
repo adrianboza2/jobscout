@@ -1,0 +1,20 @@
+Sure! Here is my evaluation of this role.
+
+```json
+{
+  "overall_score": "74.5 points",
+  "recommendation": "Strong Apply",
+  "confidence": 82,
+  "dimensions": {
+    "skills": {"score": 0.8, "rationale": "Most must-have skills present"},
+    "seniority": 70
+  },
+  "hard_blockers": "none",
+  "pros": ["Great team", 42],
+  "cons": [],
+  "uncertainties": ["salary"],
+  "reasoning": "Good fit overall."
+}
+```
+
+Let me know if you want more detail.

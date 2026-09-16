@@ -1,0 +1,746 @@
+"""Optional OpenCode CLI scorer.
+
+This backend shells out to the locally installed ``opencode`` CLI instead of
+talking to an HTTP endpoint. Authentication stays entirely inside OpenCode's own
+credential store (``opencode auth login``); jobscout never uses
+``JOBSCOUT_LLM_API_KEY`` to authenticate this path, never places it in the CLI
+argument array or in project files, removes any configured secret value from the
+child process environment, and scrubs captured output against it before it could
+be persisted.
+
+Design rules:
+
+* **Local CLI, no endpoint.** The scorer runs ``opencode run [--pure] --model
+  <model> [--variant <variant>] --format json <prompt>`` through a subprocess
+  argument array. ``--pure`` disables external plugins and is on by default
+  (``JOBSCOUT_OPENCODE_PURE``); ``--variant`` is only added when
+  ``JOBSCOUT_OPENCODE_VARIANT`` is configured (default ``minimal``). There is no
+  ``shell=True`` and no network client in this module.
+* **Resolved executable.** The CLI is only ever launched through an absolute
+  path from :func:`resolve_executable` (an absolute path, or a
+  :func:`shutil.which` hit). A relative path is never resolved against the
+  process cwd, so a planted executable cannot hijack the invocation.
+* **Bounded while running.** Output is captured with :class:`subprocess.Popen`
+  and reader threads that enforce ``JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES`` as the
+  bytes arrive; crossing the ceiling kills the child instead of buffering an
+  unbounded response in memory. The same supervisor enforces the timeout.
+* **Hardened prompt is reused.** The system/user messages from
+  :mod:`jobscout.scoring.llm` are composed into one CLI prompt, so the
+  untrusted-posting framing and delimiter neutralization are identical to the
+  HTTP scorer.
+* **Robust extraction.** OpenCode can emit formatted text, a single JSON object,
+  or a stream of raw JSON events (``--format json``). The scorer collects the
+  assistant's text parts from events, then reuses
+  :func:`jobscout.scoring.schema.parse_llm_evaluation` to extract and validate
+  exactly one canonical evaluation.
+* **Fail closed, never crash a batch.** Missing executable, timeout, non-zero
+  exit, and malformed output become evaluations with ``status != ok`` and an
+  operator-readable, secret-redacted error.
+* **Bounded and conditional provenance.** Captured output is truncated to a
+  configured ceiling, and the raw output is persisted only when it is small
+  enough, contains no configured secret, and contains no credential-looking
+  content.
+* **Secrets never reach the child or the database.** The CLI runs with a copy of
+  the inherited environment that keeps ``PATH``, ``HOME``/``APPDATA``, and
+  ``XDG_*`` (so OpenCode still finds its own config and credentials) but drops
+  any variable carrying a configured secret. Persisted output is additionally
+  checked against the configured secret list and discarded when one is present.
+* **Model-derived text is redacted.** The rationale, dimension text, and the
+  schema repair/error diagnostics (which quote model-supplied values) are
+  redacted against the configured secrets through
+  :func:`jobscout.scoring.schema.parse_llm_evaluation` before they can be
+  persisted or printed.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from ..config import PREFIX, Settings, is_safe_to_store, redact_secrets
+from ..db import insert_raw_document
+from ..models import (
+    Evaluation,
+    EvaluationStatus,
+    RawDocument,
+    RawDocumentKind,
+    Recommendation,
+    ScorerName,
+)
+from ..timeutil import utcnow_iso
+from .llm import build_messages, input_fingerprint, sha256_text
+from .profile import Profile
+from .schema import PROMPT_VERSION, parse_llm_evaluation
+
+SCORER_NAME = ScorerName.OPENCODE
+MAX_ERROR_CHARS = 500
+
+#: Bytes read per OS pipe read while capturing child output.
+_READ_CHUNK_BYTES = 8192
+#: How often the supervisor re-checks the child for exit/overflow/timeout.
+_POLL_INTERVAL_SECONDS = 0.05
+#: Grace period for reader threads to drain after the child is stopped.
+_READER_JOIN_SECONDS = 2.0
+
+
+class OpenCodeError(RuntimeError):
+    """Base class for OpenCode CLI scorer failures."""
+
+
+class OpenCodeNotConfiguredError(OpenCodeError):
+    """Raised when the CLI cannot be located or started."""
+
+
+class OpenCodeTimeoutError(OpenCodeError):
+    """Raised when the CLI exceeds the configured timeout."""
+
+
+class OpenCodeExecutionError(OpenCodeError):
+    """Raised when the CLI exits non-zero or returns unusable output."""
+
+
+@dataclass
+class CommandOutcome:
+    """Raw result of one CLI invocation."""
+
+    returncode: int
+    stdout: str = ""
+    stderr: str = ""
+    timed_out: bool = False
+    #: True when the child exceeded the output ceiling and was terminated.
+    overflowed: bool = False
+
+
+@dataclass
+class OpenCodeResponse:
+    """An extracted evaluation plus bounded provenance for one CLI call."""
+
+    text: str
+    raw: str
+    model: str
+    truncated: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "model": self.model,
+            "chars": len(self.text),
+            "raw_chars": len(self.raw),
+            "truncated": self.truncated,
+        }
+
+
+# A runner has the same keyword signature as the default and returns a
+# :class:`CommandOutcome`. Tests inject one so no real process is ever started.
+Runner = Callable[..., CommandOutcome]
+
+
+# Appended to the hardened CLI prompt. OpenCode sometimes stops after a valid
+# JSON prefix without closing the object (observed live: ``reason=stop`` with a
+# truncated payload), which the schema correctly rejects as ``parse_error``.
+# This contract asks for a completed, compact object so the model does not spend
+# its budget on prose, pretty-printing, or list padding. It never weakens the
+# security framing or the schema from :mod:`jobscout.scoring.llm`.
+OPENCODE_OUTPUT_CONTRACT = (
+    "\n\nOPENCODE OUTPUT CONTRACT (applies to this CLI call):\n"
+    "- Reply with exactly one JSON object and nothing else. No prose, no\n"
+    "  markdown fences, and no commentary before or after the object.\n"
+    "- Keep the JSON compact: single line or minimal whitespace, no\n"
+    "  pretty-printing, and no repeating the schema in your answer.\n"
+    "- Keep \"rationale\" to at most two short sentences.\n"
+    "- Include only dimensions and list entries that materially change the\n"
+    "  evaluation. Do not pad dimensions, blockers, strengths, gaps, or\n"
+    "  unknowns to fill space; empty lists are allowed.\n"
+    "- Close the JSON object completely before you stop.\n"
+)
+
+
+def build_cli_prompt(job: Any, profile: Profile) -> str:
+    """Compose the hardened scoring messages into a single CLI prompt.
+
+    The messages keep the untrusted-posting framing and delimiter
+    neutralization from :mod:`jobscout.scoring.llm`; the OpenCode-specific
+    output contract is appended without replacing the system schema.
+    """
+    messages = build_messages(job, profile)
+    composed = "\n\n".join(
+        f"{message['role'].upper()}:\n{message['content']}" for message in messages
+    )
+    return composed + OPENCODE_OUTPUT_CONTRACT
+
+
+def build_command(
+    settings: Settings,
+    prompt: str,
+    *,
+    command: str | None = None,
+) -> list[str]:
+    """Build the ``opencode run`` argument array (never a shell string).
+
+    ``command`` overrides the configured executable so the caller can pass a
+    fully resolved absolute path (see :func:`resolve_executable`). ``--pure`` is
+    added by default to disable external plugins, and ``--variant`` is included
+    only when a non-empty variant is configured, so an empty setting reproduces
+    the previous command exactly.
+    """
+    argv = [
+        command or settings.opencode_command,
+        "run",
+    ]
+    if settings.opencode_pure:
+        argv.append("--pure")
+    argv += [
+        "--model",
+        settings.opencode_model,
+    ]
+    variant = (settings.opencode_variant or "").strip()
+    if variant:
+        argv += ["--variant", variant]
+    if settings.opencode_json_events:
+        argv += ["--format", "json"]
+    argv.append(prompt)
+    return argv
+
+
+def resolve_executable(command: str | None) -> str | None:
+    """Resolve ``command`` to an absolute executable path, or return ``None``.
+
+    Only two forms are accepted:
+
+    * an **absolute** path to a real file, or
+    * a bare command name resolved through :func:`shutil.which`.
+
+    A *relative* path (``./opencode``, ``bin/opencode``, or a bare name that
+    happens to exist in the current working directory) is deliberately rejected.
+    Resolving relative paths against the process cwd would let a planted
+    ``opencode`` file in whatever directory the scorer is launched from hijack
+    the invocation and run arbitrary code.
+    """
+    if not command:
+        return None
+    raw = str(command).strip()
+    if not raw:
+        return None
+    candidate = Path(raw)
+    if candidate.is_absolute():
+        return str(candidate) if candidate.is_file() else None
+    # Reject any relative path: it would be resolved against the process cwd.
+    if "/" in raw or "\\" in raw or (os.altsep and os.altsep in raw):
+        return None
+    found = shutil.which(raw)
+    if not found:
+        return None
+    # On Windows, ``shutil.which`` implicitly searches the current directory and
+    # returns a *relative* result (``.\name.EXE``) for a planted executable, so
+    # an absolute result is required.
+    resolved = Path(found)
+    if not resolved.is_absolute():
+        return None
+    return str(resolved)
+
+
+def bound_output(text: str, *, max_bytes: int) -> tuple[str, bool]:
+    """Truncate captured output to ``max_bytes`` UTF-8 bytes."""
+    encoded = (text or "").encode("utf-8", errors="replace")
+    if len(encoded) <= max_bytes:
+        return text or "", False
+    return encoded[:max_bytes].decode("utf-8", errors="replace"), True
+
+
+# Environment variables that carry jobscout's own LLM credential. They are
+# dropped from the child environment by name as well as by value, because a key
+# loaded from ``.env`` may not be reflected in ``os.environ``.
+_SECRET_ENV_NAMES = (f"{PREFIX}LLM_API_KEY",)
+
+
+def scrubbed_subprocess_env(
+    settings: Settings,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Copy the inherited environment with configured secrets removed.
+
+    OpenCode keeps its authentication in its own local store
+    (``opencode auth login``), so it does not need a jobscout API key. This
+    preserves every inherited variable — including ``PATH`` and
+    ``HOME``/``APPDATA``/``XDG_*``, which OpenCode uses to locate its executable,
+    configuration, and credentials — and removes only the variables that carry a
+    configured secret (matched by name or by exact value). Captured output is
+    still scrubbed against the same secrets before it could be persisted.
+    """
+    source = os.environ if environ is None else environ
+    secrets = tuple(secret for secret in settings.llm_secrets if secret)
+    scrubbed: dict[str, str] = {}
+    for key, value in source.items():
+        if key in _SECRET_ENV_NAMES:
+            continue
+        candidate = value.strip() if isinstance(value, str) else value
+        if candidate and any(candidate == secret for secret in secrets):
+            continue
+        scrubbed[key] = value
+    return scrubbed
+
+
+def _drain_stream(
+    stream: Any,
+    sink: list[bytes],
+    *,
+    limit: int | None,
+    overflow: threading.Event,
+) -> None:
+    """Read ``stream`` in chunks into ``sink`` without exceeding ``limit`` bytes.
+
+    Runs on a reader thread. When the ceiling is crossed it stops reading and
+    raises ``overflow`` so the supervisor can terminate the child instead of
+    letting it keep producing output that would be buffered in memory.
+    """
+    total = 0
+    try:
+        while True:
+            chunk = stream.read(_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            if limit is not None:
+                remaining = limit - total
+                if remaining <= 0:
+                    overflow.set()
+                    return
+                if len(chunk) > remaining:
+                    sink.append(chunk[:remaining])
+                    overflow.set()
+                    return
+            sink.append(chunk)
+            total += len(chunk)
+    except Exception:  # pragma: no cover - stream closed by termination
+        pass
+    finally:
+        try:
+            stream.close()
+        except Exception:  # pragma: no cover - best effort
+            pass
+
+
+def run_command(
+    argv: list[str],
+    *,
+    cwd: str | None,
+    timeout: float,
+    env: Mapping[str, str] | None = None,
+    max_output_bytes: int | None = None,
+) -> CommandOutcome:
+    """Run one child process with the output bounded *while it runs*.
+
+    ``subprocess.run(capture_output=True)`` buffers the entire stdout/stderr in
+    memory before returning, so a runaway CLI can exhaust memory before any
+    ceiling is applied. This runner uses :class:`subprocess.Popen` plus reader
+    threads and enforces ``max_output_bytes`` as the bytes arrive: when either
+    stream crosses the ceiling the child is killed and ``overflowed`` is set.
+    ``timeout`` is enforced by the same supervisor loop, so a hung child is
+    terminated instead of blocking the batch.
+
+    The command is always an argument array with ``shell=False``; ``env`` is the
+    deliberately scrubbed environment built by :func:`scrubbed_subprocess_env`.
+    """
+    limit = int(max_output_bytes) if max_output_bytes and max_output_bytes > 0 else None
+    process = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=dict(env) if env is not None else None,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        shell=False,
+    )
+
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    overflow = threading.Event()
+    readers = [
+        threading.Thread(
+            target=_drain_stream,
+            args=(process.stdout, stdout_chunks),
+            kwargs={"limit": limit, "overflow": overflow},
+            name="jobscout-opencode-stdout",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_drain_stream,
+            args=(process.stderr, stderr_chunks),
+            kwargs={"limit": limit, "overflow": overflow},
+            name="jobscout-opencode-stderr",
+            daemon=True,
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+
+    timed_out = False
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while True:
+        if overflow.is_set():
+            process.kill()
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            process.kill()
+            break
+        try:
+            process.wait(timeout=min(_POLL_INTERVAL_SECONDS, remaining))
+            break
+        except subprocess.TimeoutExpired:
+            continue
+
+    try:
+        process.wait(timeout=_READER_JOIN_SECONDS)
+    except subprocess.TimeoutExpired:  # pragma: no cover - kill is not ignorable
+        pass
+    for reader in readers:
+        reader.join(timeout=_READER_JOIN_SECONDS)
+
+    # Release the pipes even if a reader thread is still blocked on a stream
+    # that never reached EOF, so the descriptor cannot leak into the next call.
+    for stream in (process.stdout, process.stderr):
+        try:
+            if stream is not None:
+                stream.close()
+        except Exception:  # pragma: no cover - best effort
+            pass
+
+    return CommandOutcome(
+        returncode=int(process.returncode if process.returncode is not None else -1),
+        stdout=b"".join(stdout_chunks).decode("utf-8", errors="replace"),
+        stderr=b"".join(stderr_chunks).decode("utf-8", errors="replace"),
+        timed_out=timed_out,
+        overflowed=overflow.is_set(),
+    )
+
+
+def _iter_json_documents(text: str) -> list[Any]:
+    """Decode whole output as one JSON value, else as newline-delimited JSON."""
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    try:
+        return [json.loads(raw)]
+    except (json.JSONDecodeError, ValueError):
+        pass
+    documents: list[Any] = []
+    for line in raw.splitlines():
+        candidate = line.strip()
+        if not candidate:
+            continue
+        try:
+            documents.append(json.loads(candidate))
+        except (json.JSONDecodeError, ValueError):
+            continue
+    return documents
+
+
+def _collect_text_parts(value: Any, out: list[str]) -> None:
+    """Collect assistant text from OpenCode JSON events.
+
+    OpenCode emits ``{"type": "text", ..., "part": {"type": "text", "text":
+    "..."}}``. Only parts explicitly typed ``text`` are collected, so a stray
+    ``text`` field inside an evaluation object cannot shadow the evaluation and
+    reasoning/thinking parts are skipped.
+    """
+    if isinstance(value, dict):
+        text = value.get("text")
+        node_type = value.get("type")
+        if isinstance(text, str) and node_type == "text":
+            out.append(text)
+            return
+        for child in value.values():
+            _collect_text_parts(child, out)
+    elif isinstance(value, list):
+        for child in value:
+            _collect_text_parts(child, out)
+
+
+def extract_evaluation_text(raw_output: str) -> str:
+    """Return the text that should contain the evaluation JSON.
+
+    Handles three shapes: a JSON event stream (text parts are joined), a single
+    JSON document, and plain prose. When nothing structured is found the raw
+    output is returned so the schema extractor can still scan it.
+    """
+    documents = _iter_json_documents(raw_output)
+    if not documents:
+        return raw_output or ""
+    collected: list[str] = []
+    for document in documents:
+        _collect_text_parts(document, collected)
+    if not collected:
+        return raw_output or ""
+    return "\n".join(collected)
+
+
+class OpenCodeScorer:
+    """Run the local OpenCode CLI and map its answer to an evaluation."""
+
+    name = SCORER_NAME
+
+    def __init__(self, settings: Settings, *, runner: Runner | None = None) -> None:
+        self.settings = settings
+        self.runner = runner
+
+    # -- configuration ----------------------------------------------------
+    def executable_available(self) -> bool:
+        return resolve_executable(self.settings.opencode_command) is not None
+
+    def require_configured(self) -> None:
+        """Fail early when no runner is injected and the CLI is missing."""
+        if self.runner is not None:
+            return
+        if not self.executable_available():
+            raise OpenCodeNotConfiguredError(self._missing_cli_message())
+
+    def _missing_cli_message(self) -> str:
+        return (
+            f"OpenCode CLI '{self.settings.opencode_command}' was not found. "
+            "Install OpenCode and run 'opencode auth login' once; this scorer "
+            "relies on that local authentication and does not use "
+            "JOBSCOUT_LLM_API_KEY for authentication. Set "
+            "JOBSCOUT_OPENCODE_COMMAND to an absolute path or a name on PATH "
+            "(a path relative to the current working directory is never used)."
+        )
+
+    def resolve_command(self) -> str:
+        """Resolve the executable for a real invocation.
+
+        Only an absolute path or a :func:`shutil.which` hit is accepted, so a
+        relative path can never be resolved against the process cwd.
+        """
+        resolved = resolve_executable(self.settings.opencode_command)
+        if resolved is None:
+            raise OpenCodeNotConfiguredError(self._missing_cli_message())
+        return resolved
+
+    # -- transport --------------------------------------------------------
+    def complete(self, job: Any, profile: Profile) -> OpenCodeResponse:
+        """Run one CLI call and return the extracted evaluation text."""
+        self.require_configured()
+        prompt = build_cli_prompt(job, profile)
+        # An injected runner is a test double and keeps whatever command the
+        # settings name; a real invocation always uses the resolved absolute
+        # path so a cwd-relative planted executable cannot be picked up.
+        command = None if self.runner is not None else self.resolve_command()
+        argv = build_command(self.settings, prompt, command=command)
+        timeout = self.settings.opencode_timeout_seconds
+        cwd = self.settings.opencode_workdir or None
+        env = scrubbed_subprocess_env(self.settings)
+        active_runner = self.runner or run_command
+
+        try:
+            outcome = active_runner(
+                argv,
+                cwd=cwd,
+                timeout=timeout,
+                env=env,
+                max_output_bytes=self.settings.opencode_max_output_bytes,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise OpenCodeTimeoutError(
+                f"OpenCode CLI timed out after {timeout:g}s"
+            ) from exc
+        except FileNotFoundError as exc:
+            raise OpenCodeNotConfiguredError(
+                f"OpenCode CLI '{self.settings.opencode_command}' could not be "
+                "started. Install it and run 'opencode auth login' once."
+            ) from exc
+        except OSError as exc:
+            raise OpenCodeExecutionError(
+                f"OpenCode CLI could not be started: {exc}"
+            ) from exc
+
+        if getattr(outcome, "timed_out", False):
+            raise OpenCodeTimeoutError(f"OpenCode CLI timed out after {timeout:g}s")
+
+        if getattr(outcome, "overflowed", False):
+            raise OpenCodeExecutionError(
+                "OpenCode CLI produced more than "
+                f"{self.settings.opencode_max_output_bytes} byte(s) of output; "
+                "the process was terminated"
+            )
+
+        if outcome.returncode != 0:
+            detail = redact_secrets(
+                (outcome.stderr or outcome.stdout or "").strip(),
+                self.settings.llm_secrets,
+            )[:MAX_ERROR_CHARS]
+            raise OpenCodeExecutionError(
+                f"OpenCode CLI exited with code {outcome.returncode}"
+                + (f": {detail}" if detail else "")
+            )
+
+        raw, truncated = bound_output(
+            outcome.stdout or "", max_bytes=self.settings.opencode_max_output_bytes
+        )
+        text = extract_evaluation_text(raw)
+        if not text.strip():
+            raise OpenCodeExecutionError("OpenCode CLI returned no output")
+        return OpenCodeResponse(
+            text=text,
+            raw=raw,
+            model=self.settings.opencode_model,
+            truncated=truncated,
+        )
+
+    # -- evaluation -------------------------------------------------------
+    def score(
+        self,
+        job: Any,
+        profile: Profile,
+        *,
+        job_id: int | None = None,
+        profile_id: int | None = None,
+        conn: Any = None,
+        now: Any = None,
+    ) -> Evaluation:
+        """Evaluate one job, always returning an explainable :class:`Evaluation`.
+
+        Failures are represented as evaluations with ``status != ok`` instead of
+        raising, so a batch run can continue. ``now`` exists for interface parity
+        with the other scorers and is unused.
+        """
+        try:
+            response = self.complete(job, profile)
+        except OpenCodeError as exc:
+            return Evaluation(
+                job_id=int(job_id or 0),
+                scorer=SCORER_NAME,
+                status=EvaluationStatus.ERROR,
+                error=redact_secrets(str(exc), self.settings.llm_secrets)[:MAX_ERROR_CHARS],
+                recommendation=Recommendation.NEED_MORE_INFO,
+                confidence=0.0,
+                model=self.settings.opencode_model,
+                prompt_version=PROMPT_VERSION,
+                profile_id=profile_id,
+                input_fingerprint=input_fingerprint(job, profile),
+                rationale="OpenCode evaluation could not be completed.",
+            )
+
+        outcome = parse_llm_evaluation(
+            response.text, secrets=self.settings.llm_secrets
+        )
+        raw_document_id = self._store_raw_response(conn, response, outcome.ok, profile)
+
+        if not outcome.ok or outcome.payload is None:
+            return Evaluation(
+                job_id=int(job_id or 0),
+                scorer=SCORER_NAME,
+                status=EvaluationStatus.PARSE_ERROR,
+                error="; ".join(outcome.errors) or "unparseable OpenCode response",
+                recommendation=Recommendation.NEED_MORE_INFO,
+                confidence=0.0,
+                model=response.model,
+                prompt_version=PROMPT_VERSION,
+                profile_id=profile_id,
+                raw_document_id=raw_document_id,
+                input_fingerprint=input_fingerprint(job, profile),
+                rationale="OpenCode response could not be validated as structured JSON.",
+            )
+
+        payload = outcome.payload
+        from ..models import DimensionScore
+
+        dimensions = [
+            DimensionScore.from_dict(item)
+            for item in payload.get("dimensions", [])
+            if isinstance(item, dict)
+        ]
+        rationale = str(payload.get("rationale") or "")
+        if outcome.repairs:
+            rationale = (rationale + " [repaired: " + "; ".join(outcome.repairs) + "]").strip()
+        return Evaluation(
+            job_id=int(job_id or 0),
+            scorer=SCORER_NAME,
+            overall_score=payload.get("overall_score"),
+            recommendation=payload.get("recommendation") or Recommendation.NEED_MORE_INFO,
+            confidence=float(payload.get("confidence") or 0.0),
+            dimensions=dimensions,
+            blockers=list(payload.get("blockers") or []),
+            strengths=list(payload.get("strengths") or []),
+            gaps=list(payload.get("gaps") or []),
+            unknowns=list(payload.get("unknowns") or []),
+            rationale=rationale,
+            status=EvaluationStatus.OK,
+            model=response.model,
+            prompt_version=PROMPT_VERSION,
+            profile_id=profile_id,
+            raw_document_id=raw_document_id,
+            input_fingerprint=input_fingerprint(job, profile),
+        )
+
+    def _store_raw_response(
+        self,
+        conn: Any,
+        response: OpenCodeResponse,
+        parsed_ok: bool,
+        profile: Profile,
+    ) -> int | None:
+        """Persist the bounded CLI output when it is safe and enabled.
+
+        Raw responses are stored under the existing ``llm_response`` kind so the
+        schema and provenance queries stay unchanged; ``source`` marks the
+        backend. A credential-looking or oversized payload is recorded with
+        metadata only.
+        """
+        if conn is None or not self.settings.llm_store_raw:
+            return None
+        raw_text = response.raw
+        safe, reason = is_safe_to_store(
+            raw_text,
+            secrets=self.settings.llm_secrets,
+            max_bytes=self.settings.raw_max_bytes,
+        )
+        if safe:
+            notes = f"profile={profile.name}; parsed_ok={parsed_ok}; backend=opencode"
+            if response.truncated:
+                notes += "; output truncated by JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES"
+        else:
+            notes = (
+                f"response not stored: {reason}; parsed_ok={parsed_ok}; backend=opencode"
+            )
+        document = RawDocument(
+            kind=RawDocumentKind.LLM_RESPONSE,
+            source="opencode",
+            url=None,
+            status_code=None,
+            content_type="application/x-ndjson",
+            sha256=sha256_text(raw_text),
+            byte_size=len(raw_text.encode("utf-8", errors="replace")),
+            fetched_at=utcnow_iso(),
+            stored_at=utcnow_iso(),
+            truncated=(not safe) or response.truncated,
+            notes=notes,
+            body=raw_text if safe else None,
+        )
+        return insert_raw_document(conn, document)
+
+
+__all__ = [
+    "CommandOutcome",
+    "OPENCODE_OUTPUT_CONTRACT",
+    "OpenCodeError",
+    "OpenCodeExecutionError",
+    "OpenCodeNotConfiguredError",
+    "OpenCodeResponse",
+    "OpenCodeScorer",
+    "OpenCodeTimeoutError",
+    "SCORER_NAME",
+    "bound_output",
+    "build_cli_prompt",
+    "build_command",
+    "extract_evaluation_text",
+    "resolve_executable",
+    "run_command",
+    "scrubbed_subprocess_env",
+]
