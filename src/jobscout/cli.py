@@ -40,9 +40,16 @@ from .collectors.linkedin_details import (
     plan_detail_targets,
 )
 from .config import ConfigError, Settings
+from .dashboard import (
+    DEFAULT_OUTPUT as DASHBOARD_DEFAULT_OUTPUT,
+    DEFAULT_TOP as DASHBOARD_DEFAULT_TOP,
+    DashboardError,
+    generate_dashboard,
+)
 from .db import (
     all_active_jobs,
     connect,
+    connect_readonly,
     count_active_jobs,
     count_jobs,
     count_jobs_needing_details,
@@ -326,6 +333,26 @@ def build_parser() -> argparse.ArgumentParser:
     runs_parser.add_argument("--limit", type=int, default=10)
     runs_parser.set_defaults(handler=cmd_runs)
 
+    dashboard_parser = add_common(
+        subparsers.add_parser(
+            "dashboard",
+            help="write a self-contained local HTML report (read-only, offline)",
+        )
+    )
+    dashboard_parser.add_argument(
+        "--output",
+        metavar="PATH",
+        default=None,
+        help=f"output HTML path (default: {DASHBOARD_DEFAULT_OUTPUT})",
+    )
+    dashboard_parser.add_argument(
+        "--top",
+        type=int,
+        default=None,
+        help=f"maximum offers to embed, best scored first (default: {DASHBOARD_DEFAULT_TOP})",
+    )
+    dashboard_parser.set_defaults(handler=cmd_dashboard)
+
     return parser
 
 
@@ -470,21 +497,17 @@ def _open_existing_readonly(db_path: Path) -> sqlite3.Connection | None:
     """Open an existing database for reading only, or return ``None``.
 
     A dry run must not create a database or write schema/data. This helper only
-    opens a database that already exists and pins it to ``PRAGMA query_only`` so
-    no write can slip through. It intentionally bypasses
-    :func:`jobscout.db.connect`, which would create the parent directory, a new
-    file, and WAL journals.
+    opens a database that already exists through the read-only URI in
+    :func:`jobscout.db.connect_readonly` (``file:...?mode=ro``, plus
+    ``PRAGMA query_only``) so no write can slip through. It intentionally
+    bypasses :func:`jobscout.db.connect`, which would create the parent
+    directory, a new file, and WAL journals. A file that exists but cannot be
+    opened read-only is treated as "nothing to plan" rather than a crash.
     """
-    if str(db_path) == ":memory:":
+    try:
+        return connect_readonly(db_path)
+    except sqlite3.Error:
         return None
-    path = Path(db_path)
-    if not path.is_file():
-        return None
-    conn = sqlite3.connect(str(path), timeout=15.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA query_only = ON")
-    return conn
 
 
 def _run_detail_dry_run(
@@ -758,6 +781,43 @@ def cmd_runs(args: argparse.Namespace, settings: Settings) -> int:
     return EXIT_OK
 
 
+def cmd_dashboard(args: argparse.Namespace, settings: Settings) -> int:
+    """Write the self-contained HTML report.
+
+    The database is only ever read (read-only URI plus ``PRAGMA query_only``)
+    and the output parent directory is created; no SQLite row is written. A
+    missing database is an error, while an empty one still produces a report
+    with a visible warning so the operator can see *why* it is empty. An explicit
+    ``--output ""`` is rejected rather than silently redirected to the default,
+    and an output that resolves to the database is refused.
+    """
+    # ``None`` means "not passed"; an explicit empty string is preserved so the
+    # generator can reject it instead of quietly using the default.
+    output = DASHBOARD_DEFAULT_OUTPUT if args.output is None else args.output
+    top = args.top if args.top is not None else DASHBOARD_DEFAULT_TOP
+    try:
+        summary = generate_dashboard(settings.db_path, output, top=top)
+    except DashboardError as exc:
+        _write_line(f"dashboard error: {exc}", stream=sys.stderr)
+        return EXIT_ERROR
+
+    text = (
+        f"wrote {summary.output}: {summary.offers} offer(s), {summary.scored} scored, "
+        f"{summary.keywords} keyword(s), {summary.bytes_written} byte(s)"
+    )
+    text += "\n" + "\n".join(f"note: {warning}" for warning in summary.warnings)
+    text += (
+        "\nmanual feedback is stored in your browser (localStorage) and is not part of "
+        "this file; it never reaches LinkedIn or SQLite"
+    )
+    _emit(
+        summary.to_dict(),
+        as_json=getattr(args, "as_json", False),
+        text=text,
+    )
+    return EXIT_OK
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -788,6 +848,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_FAIL_CLOSED
     except ConfigError as exc:
         _write_line(f"configuration error: {exc}", stream=sys.stderr)
+        return EXIT_ERROR
+    except DashboardError as exc:
+        _write_line(f"dashboard error: {exc}", stream=sys.stderr)
         return EXIT_ERROR
     except KeyboardInterrupt:  # pragma: no cover - interactive only
         _write_line("interrupted", stream=sys.stderr)

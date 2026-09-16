@@ -28,6 +28,7 @@ These are enforced by the code, not just documented:
 | The OpenCode executable is resolved only through an **absolute path or `shutil.which`**; a cwd-relative planted binary is never used | `scoring/opencode.resolve_executable` |
 | OpenCode child output is bounded **while the process runs** (Popen + reader threads); overflow or timeout kills the child | `scoring/opencode.run_command` |
 | Job text is treated as untrusted data; the LLM is instructed never to follow instructions inside it, and prompt delimiters are neutralized | `scoring/llm.py` |
+| The HTML dashboard reads the database with `PRAGMA query_only` and never creates a missing database; it emits no external asset, CDN, or network request, escapes all embedded data, and builds the DOM with `textContent` only | `dashboard.py`, `db.connect_readonly` |
 | The OpenCode CLI scorer shells out with an argument array (no `shell=True`), runs `--pure`, bounds time and output, removes configured secrets from the child environment, and redacts/refuses to persist any output containing them | `scoring/opencode.py` |
 
 Operators are responsible for complying with the target site's terms of service
@@ -178,6 +179,9 @@ python -m jobscout score --all --rescore --scorer heuristic --profile profile.ex
 # 6. Rank the scored jobs
 python -m jobscout rank --top 10
 
+# 7. Write a self-contained HTML report you can open in a browser (no server)
+python -m jobscout dashboard --top 10
+
 # Machine-readable output for any command
 python -m jobscout rank --top 5 --json
 ```
@@ -204,6 +208,7 @@ subcommand.
 | `rank [--top N] [--min-score S]` | Jobs that have a successful score, best first. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--rescore]` | Evaluate jobs and print the explainable result. |
 | `runs [--limit N]` | Recent search runs and stored counts. |
+| `dashboard [--output PATH] [--top N]` | Write a self-contained local HTML report of scored jobs and keyword performance. Read-only and offline. |
 
 Exit codes: `0` success, `1` error, `2` refusal (collector disabled, access
 denied, or a request that was intentionally not performed).
@@ -402,6 +407,91 @@ directory so OpenCode cannot pick up this repository's `AGENTS.md`/`opencode.jso
 instructions and derail the strict JSON prompt. Point it at a project directory if
 you want those instructions.
 
+## Local HTML dashboard (offline, read-only)
+
+`dashboard` reads the existing SQLite database and writes **one** HTML file. That
+file embeds its own CSS, JavaScript, and data: it needs no CDN, no external
+asset, no server, and no network request. Open it directly, or double-click it.
+
+```bash
+# POSIX (bash/zsh)
+python -m jobscout dashboard --output reports/jobscout-dashboard.html --top 25
+xdg-open reports/jobscout-dashboard.html    # Linux
+open reports/jobscout-dashboard.html        # macOS
+```
+
+```powershell
+# Windows PowerShell
+python -m jobscout dashboard --output reports\jobscout-dashboard.html --top 25
+start reports\jobscout-dashboard.html
+```
+
+```bat
+:: Windows cmd.exe (default output path is used when --output is omitted)
+python -m jobscout dashboard --top 25
+start "" reports\jobscout-dashboard.html
+```
+
+`--output` defaults to `reports/jobscout-dashboard.html` (already git-ignored)
+and `--top` to `25`. Forward slashes work on Windows too:
+`--output reports/dashboard.html`.
+
+What the report contains, per ranked offer:
+
+- the score and the **model recommendation** (`apply` / `consider` / `skip` /
+  `need_more_info`), with the scorer name, model, and confidence;
+- title, company, location, posting age/date (falling back to first-seen when the
+  posting date is unknown), content status, and the direct LinkedIn URL;
+- every **source keyword** that surfaced the job and the **observed result rank**
+  for that keyword, alongside the dedupe verdict;
+- strengths, gaps, blockers, unknowns, and a bounded rationale.
+
+Client-side controls filter and search the embedded data: free text over title,
+company, and location; recommendation; minimum score; keyword; reviewed /
+unreviewed state; and sorting by score or freshness. Summary counts are shown at
+the top.
+
+A **keyword performance** section is computed from stored search provenance and
+the latest successful evaluation: sightings, unique jobs, duplicate sightings,
+average score, scored/unscored counts, and apply/consider counts, plus two
+top-10 tables (by score quality, and by positive recommendations) that only
+include keywords the data can actually rank. Observed rank is shown as
+provenance only — LinkedIn result order is *not* treated as a quality signal.
+
+### Model recommendation vs. human feedback
+
+These are two different things, and the report keeps them apart:
+
+| | Model recommendation | Human feedback |
+|---|---|---|
+| Produced by | `score` (heuristic, LLM, or OpenCode scorer) | you, clicking in the report |
+| Stored in | SQLite `evaluations` table, with full provenance | this browser's `localStorage`, keyed by project + job id |
+| Visible to `jobscout` | yes | no — the CLI never reads it |
+| Portable | yes, it is in the database | only via the **Export local feedback (JSON)** button |
+
+Each offer has local **apply / consider / reject** buttons and an optional reason
+box. Feedback survives a page reload in the same browser, and the export button
+downloads a `jobscout-feedback.json` document (`jobscout.feedback.v1`) that can
+be imported later. Feedback is **local only**: it does not submit an application,
+does not touch LinkedIn, and does not write to the SQLite database. There is no
+import yet — the export exists so the data can be carried forward.
+
+Browser-local feedback is keyed by a hash of the database path (not the path
+itself), so the report never contains an absolute local path and two databases
+never share feedback. Some browsers restrict `localStorage` on `file://` pages;
+if yours does, the page still renders and filters, but the export button is the
+only way to keep your decisions. Serve the file from a loopback static server
+(`python -m http.server`) if you need storage to persist there.
+
+### What the report deliberately excludes
+
+The report never embeds the job description, raw payloads, the candidate profile
+or any contact data, API keys, or absolute local paths. It reads the database
+with `PRAGMA query_only`, so generating it cannot insert, update, or delete a
+row; only the output's parent directory is created. A missing database is an
+error, while an empty or unscored one still produces a report with a visible
+warning explaining why it is empty.
+
 ## Configuration
 
 Every knob is a `JOBSCOUT_*` environment variable (see `.env.example`):
@@ -500,6 +590,11 @@ rate-limit/backoff decisions, retry and fail-closed behaviour, URL and redirect
 policy, bounded error-body reads, fixture ingestion, detail-page parsing, detail
 content preservation, heuristic scoring, prompt hardening, malformed LLM output,
 executable resolution, subprocess output bounds, and the OpenCode CLI scorer.
+Dashboard coverage adds HTML escaping/XSS safety (a hostile job title cannot
+close its script tag or reach the DOM as markup), data minimization (no
+description, profile, absolute path, or raw payload), generation and read-only
+behaviour, filter/feedback surface, keyword aggregation, and the CLI error and
+success paths.
 
 Run the CLI smoke test against the fixtures (the `data/` directory is
 git-ignored, so the smoke database never gets committed):
@@ -510,6 +605,7 @@ python -m jobscout --db data/smoke.sqlite3 ingest-fixture tests/fixtures/linkedi
 python -m jobscout --db data/smoke.sqlite3 fetch-details --fixture tests/fixtures/linkedin_detail_responses.json
 python -m jobscout --db data/smoke.sqlite3 --profile tests/fixtures/profile_test.yaml score --all --rescore
 python -m jobscout --db data/smoke.sqlite3 rank --top 5
+python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/smoke.html
 ```
 
 Run a dry run of the LinkedIn plan (still no network):
@@ -547,4 +643,8 @@ python -m jobscout search-linkedin --keywords "senior backend engineer" --max-pa
   working directory can never be used.
 - Salary parsing is heuristic (largest number in the text) and only used when
   the profile defines a minimum.
+- The dashboard embeds only the top `--top` offers, but keyword analytics are
+  always computed over the whole database. Manual feedback lives in browser
+  `localStorage` and there is no import command yet: the export JSON is the
+  carry-forward format, and a future work unit can consume it.
 - No scheduler, notification, or application automation — by design.
