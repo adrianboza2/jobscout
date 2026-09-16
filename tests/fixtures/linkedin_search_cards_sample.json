@@ -1,0 +1,36 @@
+{
+  "provider": "linkedin",
+  "query": "senior backend engineer",
+  "location": "Buenos Aires, Argentina",
+  "fetched_at": "2026-09-10T12:00:00Z",
+  "note": "Synthetic search-card fixture (summaries only, no descriptions) for offline detail-enrichment tests. Not real LinkedIn data.",
+  "jobs": [
+    {
+      "source_job_id": "3911111111",
+      "jobUrl": "https://www.linkedin.com/jobs/view/3911111111/senior-backend-engineer-at-acme",
+      "jobTitle": "Senior Backend Engineer",
+      "companyName": "Acme Data Inc.",
+      "location": "Remote, Argentina",
+      "listedAt": "2026-09-08T09:30:00Z",
+      "employment_type": "Full-time",
+      "seniority": "Senior level"
+    },
+    {
+      "source_job_id": "3912222222",
+      "jobUrl": "https://www.linkedin.com/jobs/view/3912222222/data-engineer-globex",
+      "jobTitle": "Data Engineer",
+      "companyName": "Globex Corporation",
+      "location": "Buenos Aires, Argentina",
+      "listedAt": "2026-09-05T11:00:00Z",
+      "employment_type": "Full-time"
+    },
+    {
+      "source_job_id": "3913333333",
+      "jobUrl": "https://www.linkedin.com/jobs/view/3913333333/platform-engineer-northwind",
+      "jobTitle": "Platform Engineer",
+      "companyName": "Northwind Traders",
+      "location": "Buenos Aires, Argentina",
+      "listedAt": "2026-09-07T15:45:00Z"
+    }
+  ]
+}

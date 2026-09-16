@@ -1,0 +1,66 @@
+{
+  "provider": "linkedin",
+  "query": "senior backend engineer",
+  "location": "Buenos Aires, Argentina",
+  "fetched_at": "2026-09-10T12:00:00Z",
+  "note": "Synthetic fixture for offline tests. Not real LinkedIn data.",
+  "jobs": [
+    {
+      "source_job_id": "3901234567",
+      "jobUrl": "https://www.linkedin.com/jobs/view/3901234567/senior-backend-engineer-at-acme?trk=public_jobs_jserp-result_search-card&position=1",
+      "jobTitle": "Senior Backend Engineer",
+      "companyName": "Acme Data Inc.",
+      "location": "Remote, Argentina",
+      "listedAt": "2026-09-08T09:30:00Z",
+      "description": "<p>We are hiring a <strong>Senior Backend Engineer</strong> to build data services.</p><ul><li>Strong Python and SQL required</li><li>PostgreSQL modelling experience</li><li>FastAPI and Docker are a plus</li></ul>",
+      "employment_type": "Full-time",
+      "seniority": "Senior level"
+    },
+    {
+      "source_job_id": "3901234567",
+      "jobUrl": "https://www.linkedin.com/jobs/view/3901234567/?refId=abc123&trackingId=xyz",
+      "jobTitle": "senior backend engineer",
+      "companyName": "Acme Data, Inc",
+      "location": "remote, argentina",
+      "listedAt": "2026-09-08T09:30:00Z",
+      "description": "<p>Duplicate of the first posting, published with tracking parameters.</p>"
+    },
+    {
+      "source_job_id": "3907777777",
+      "jobUrl": "https://www.linkedin.com/jobs/view/3907777777/data-engineer-globex",
+      "jobTitle": "Data Engineer",
+      "companyName": "Globex Corporation",
+      "location": "Buenos Aires, Argentina",
+      "listedAt": "2026-09-05T11:00:00Z",
+      "description": "Data Engineer role. Python, SQL and Airflow. This role requires 5 days in office attendance.",
+      "employment_type": "Full-time"
+    },
+    {
+      "source_job_id": "3905555555",
+      "jobUrl": "https://www.linkedin.com/jobs/view/3905555555/platform-engineer-northwind",
+      "jobTitle": "Platform Engineer",
+      "companyName": "Northwind Traders",
+      "location": "Buenos Aires, Argentina",
+      "listedAt": null,
+      "description": null
+    },
+    {
+      "source_job_id": "3906666666",
+      "jobUrl": "https://www.linkedin.com/jobs/view/3906666666/junior-frontend-developer-umbrella",
+      "jobTitle": "Junior Frontend Developer",
+      "companyName": "Umbrella Labs",
+      "location": "Cordoba, Argentina",
+      "listedAt": "2026-09-01T08:00:00Z",
+      "description": "Junior role. TypeScript and CSS. No backend work.",
+      "employment_type": "Part-time"
+    },
+    {
+      "jobUrl": "https://www.linkedin.com/jobs/view/platform-engineer-at-northwind-traders",
+      "jobTitle": "Platform Engineer",
+      "companyName": "Northwind Traders",
+      "location": "Buenos Aires, Argentina",
+      "listedAt": "2026-09-07T15:45:00Z",
+      "description": "Platform work: Kubernetes, Terraform, CI/CD and internal tooling."
+    }
+  ]
+}
