@@ -65,6 +65,12 @@ FEEDBACK_SCHEMA = "jobscout.feedback.v1"
 #: response cannot dominate the page. The stored evaluation keeps the full text.
 MAX_RATIONALE_CHARS = 800
 
+#: A posting counts as *fresh* in keyword analytics when it is at most this many
+#: days old. jobscout has no verified "expired on LinkedIn" signal, so freshness
+#: is the honest, schema-supported proxy for how apply-able a keyword's results
+#: still are.
+FRESH_WINDOW_DAYS = 21
+
 #: Recommendation values shown in the UI. ``unscored`` is not a stored value; it
 #: is the display bucket for jobs with no successful evaluation.
 RECOMMENDATION_ORDER: tuple[str, ...] = ("apply", "consider", "skip", "need_more_info")
@@ -139,7 +145,13 @@ def _require_schema(conn: sqlite3.Connection, db_path: str | Path) -> None:
             f"database at {db_path} could not be read (is it a valid SQLite file?): {exc}"
         ) from exc
     names = {str(row["name"]) for row in rows}
-    missing = {"jobs", "search_runs", "search_run_items", "latest_evaluations"} - names
+    missing = {
+        "jobs",
+        "search_runs",
+        "search_run_items",
+        "latest_evaluations",
+        "job_feedback",
+    } - names
     if missing:
         raise DashboardError(
             f"database at {db_path} is not a jobscout database "
@@ -327,16 +339,45 @@ def _fetch_job_keywords(
     return grouped
 
 
-def _fetch_keyword_stats(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """Sightings, yield, and score quality per source keyword.
+def _rate(numerator: int, denominator: int) -> float | None:
+    """A 0..1 ratio rounded for display, or ``None`` when it is undefined.
 
-    ``sightings`` counts observations (a run can observe one job more than once),
-    ``unique_jobs`` counts distinct postings, and the score columns come from the
-    latest successful evaluation of each distinct job, so a keyword that surfaces
-    the same posting twice is not double-counted in the averages.
+    A zero denominator has no honest value, so it returns ``None`` instead of an
+    invented ``0.0``. Callers render that as "sin dato".
+    """
+    if denominator <= 0:
+        return None
+    return round(numerator / denominator, 4)
 
-    Only active jobs count, matching the offers list and the summary. A keyword
-    that only ever surfaced deactivated postings must not look productive.
+
+def _mean(values: Sequence[float]) -> float | None:
+    """Rounded mean of ``values``, or ``None`` when there is nothing to average."""
+    if not values:
+        return None
+    return round(sum(values) / len(values), 2)
+
+
+def _fetch_keyword_stats(
+    conn: sqlite3.Connection, *, now: datetime
+) -> list[dict[str, Any]]:
+    """Per-keyword provenance, quality, human verdict, and freshness metrics.
+
+    Only active jobs feed sightings, quality, and freshness, matching the offers
+    list and the summary: a keyword that only ever surfaced deactivated postings
+    must not look productive. ``inactive_jobs``/``inactive_rate`` look at the
+    deactivated postings separately, because that share is exactly what makes a
+    keyword's active numbers look better than they are.
+
+    Every rate is computed from stored rows only. A metric with no data behind it
+    (no scored job, no imported human decision, no usable date) stays ``None``
+    instead of being guessed as zero.
+
+    ``jobscout`` has no verified "posting expired on LinkedIn" signal, so
+    freshness is measured from the stored dates it actually has: a posting counts
+    as fresh when it is at most :data:`FRESH_WINDOW_DAYS` days old, using
+    ``posted_at`` and falling back to ``first_seen_at``. ``unknown_age_jobs``
+    counts jobs where neither date is usable, so a keyword is never credited with
+    freshness it cannot prove.
     """
     sighting_rows = conn.execute(
         """
@@ -354,7 +395,21 @@ def _fetch_keyword_stats(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         """
     ).fetchall()
 
-    score_rows = conn.execute(
+    inactive_rows = conn.execute(
+        """
+        SELECT r.query AS keyword,
+               COUNT(DISTINCT i.job_id) AS all_jobs,
+               COUNT(DISTINCT CASE WHEN j.is_active = 0 THEN i.job_id END) AS inactive_jobs
+        FROM search_run_items i
+        JOIN search_runs r ON r.id = i.run_id
+        JOIN jobs j ON j.id = i.job_id
+        WHERE r.query IS NOT NULL AND TRIM(r.query) <> ''
+        GROUP BY r.query
+        """
+    ).fetchall()
+    inactive = {str(row["keyword"]): row for row in inactive_rows}
+
+    observation_rows = conn.execute(
         """
         WITH keyword_jobs AS (
             SELECT DISTINCT r.query AS keyword, i.job_id AS job_id
@@ -365,36 +420,94 @@ def _fetch_keyword_stats(conn: sqlite3.Connection) -> list[dict[str, Any]]:
               AND j.is_active = 1
         )
         SELECT kj.keyword AS keyword,
-               COUNT(*) AS unique_jobs,
-               COUNT(e.id) AS scored_jobs,
-               AVG(e.overall_score) AS avg_score,
-               SUM(CASE WHEN e.recommendation = 'apply' THEN 1 ELSE 0 END) AS apply_count,
-               SUM(CASE WHEN e.recommendation = 'consider' THEN 1 ELSE 0 END) AS consider_count
+               j.posted_at AS posted_at,
+               j.first_seen_at AS first_seen_at,
+               e.overall_score AS score,
+               e.recommendation AS recommendation,
+               f.decision AS human_decision
         FROM keyword_jobs kj
+        JOIN jobs j ON j.id = kj.job_id
         LEFT JOIN latest_evaluations e ON e.job_id = kj.job_id
-        GROUP BY kj.keyword
+        LEFT JOIN job_feedback f ON f.job_id = kj.job_id
+        ORDER BY kj.keyword, kj.job_id
         """
     ).fetchall()
-    scores = {str(row["keyword"]): row for row in score_rows}
+
+    observations: dict[str, list[sqlite3.Row]] = {}
+    for row in observation_rows:
+        observations.setdefault(str(row["keyword"]), []).append(row)
 
     stats: list[dict[str, Any]] = []
     for row in sighting_rows:
         keyword = str(row["keyword"])
-        score = scores.get(keyword)
+        rows_for_keyword = observations.get(keyword, [])
+
+        scores = sorted(
+            (float(item["score"]) for item in rows_for_keyword if item["score"] is not None),
+            reverse=True,
+        )
+        recommendations = [
+            str(item["recommendation"])
+            for item in rows_for_keyword
+            if item["score"] is not None and item["recommendation"]
+        ]
+        decisions = [
+            str(item["human_decision"])
+            for item in rows_for_keyword
+            if item["human_decision"]
+        ]
+
+        ages: list[float] = []
+        unknown_age_jobs = 0
+        for item in rows_for_keyword:
+            age = _age_days(item["posted_at"], now=now)
+            if age is None:
+                age = _age_days(item["first_seen_at"], now=now)
+            if age is None:
+                unknown_age_jobs += 1
+            else:
+                ages.append(age)
+        fresh_jobs = sum(1 for age in ages if age <= FRESH_WINDOW_DAYS)
+
         unique_jobs = int(row["unique_jobs"] or 0)
-        scored_jobs = int(score["scored_jobs"] or 0) if score is not None else 0
-        avg_score = score["avg_score"] if score is not None else None
+        scored_jobs = len(scores)
+        count_row = inactive.get(keyword)
+        all_jobs = int(count_row["all_jobs"] or 0) if count_row is not None else unique_jobs
+        inactive_jobs = int(count_row["inactive_jobs"] or 0) if count_row is not None else 0
+        human_reviewed = len(decisions)
+        human_apply = decisions.count("apply")
+        human_consider = decisions.count("consider")
+        human_reject = decisions.count("reject")
+        duplicate_sightings = int(row["duplicate_sightings"] or 0)
+        sightings = int(row["sightings"] or 0)
+
         stats.append(
             {
                 "keyword": keyword,
-                "sightings": int(row["sightings"] or 0),
+                "sightings": sightings,
                 "unique_jobs": unique_jobs,
-                "duplicate_sightings": int(row["duplicate_sightings"] or 0),
+                "duplicate_sightings": duplicate_sightings,
+                "duplicate_rate": _rate(duplicate_sightings, sightings),
+                "inactive_jobs": inactive_jobs,
+                "inactive_rate": _rate(inactive_jobs, all_jobs),
                 "scored_jobs": scored_jobs,
                 "unscored_jobs": max(0, unique_jobs - scored_jobs),
-                "avg_score": round(float(avg_score), 2) if avg_score is not None else None,
-                "apply_count": int(score["apply_count"] or 0) if score is not None else 0,
-                "consider_count": int(score["consider_count"] or 0) if score is not None else 0,
+                "avg_score": _mean(scores),
+                "top5_avg_score": _mean(scores[:5]),
+                "top10_avg_score": _mean(scores[:10]),
+                "apply_count": recommendations.count("apply"),
+                "consider_count": recommendations.count("consider"),
+                "human_reviewed": human_reviewed,
+                "human_apply": human_apply,
+                "human_consider": human_consider,
+                "human_reject": human_reject,
+                "human_apply_rate": _rate(human_apply, human_reviewed),
+                "human_positive_yield": _rate(
+                    human_apply + human_consider, human_reviewed
+                ),
+                "fresh_jobs": fresh_jobs,
+                "unknown_age_jobs": unknown_age_jobs,
+                "fresh_share": _rate(fresh_jobs, len(ages)),
             }
         )
     return stats
@@ -402,12 +515,13 @@ def _fetch_keyword_stats(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 def _top_keywords(
     stats: Sequence[dict[str, Any]], *, limit: int = 10
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(top by score quality, top by positive-recommendation yield).
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(top by model score quality, top by model yield, top by human approval).
 
-    Both lists only include keywords the data can actually rank: a keyword with
-    no scored job is absent from quality, and one with no apply/consider is
-    absent from yield.
+    Each list only includes keywords the data can actually rank: a keyword with no
+    scored job is absent from quality, one with no apply/consider is absent from
+    model yield, and one with no imported human decision is absent from human
+    approval. An empty list is the honest answer, never a placeholder row.
     """
     quality = sorted(
         (item for item in stats if item["scored_jobs"] > 0 and item["avg_score"] is not None),
@@ -421,7 +535,19 @@ def _top_keywords(
             item["keyword"],
         ),
     )[:limit]
-    return quality, yield_ranked
+    human = sorted(
+        (
+            item
+            for item in stats
+            if item["human_reviewed"] > 0 and item["human_apply_rate"] is not None
+        ),
+        key=lambda item: (
+            -float(item["human_apply_rate"]),
+            -item["human_reviewed"],
+            item["keyword"],
+        ),
+    )[:limit]
+    return quality, yield_ranked, human
 
 
 def _summary(
@@ -436,6 +562,7 @@ def _summary(
         else:
             counts["need_more_info"] += 1
     total = int(conn.execute("SELECT COUNT(*) FROM jobs WHERE is_active = 1").fetchone()[0])
+    human_reviewed_jobs = int(conn.execute("SELECT COUNT(*) FROM job_feedback").fetchone()[0])
     return {
         "active_jobs": total,
         "jobs_shown": len(offers),
@@ -443,6 +570,9 @@ def _summary(
         "unscored": len(offers) - len(scored),
         "recommendations": counts,
         "keywords": keyword_count,
+        # Imported human decisions, a different signal from the model
+        # recommendation and the only source of the human rate columns.
+        "human_reviewed_jobs": human_reviewed_jobs,
     }
 
 
@@ -468,6 +598,12 @@ def _warnings(summary: dict[str, Any], *, keyword_count: int) -> list[str]:
             "no hay procedencia de palabras clave registrada; los ítems de búsqueda "
             "guardan la palabra clave de origen y la posición observada, así que la "
             "analítica de palabras clave queda vacía hasta que se ingiera una ejecución"
+        )
+    if keyword_count and not summary["human_reviewed_jobs"]:
+        warnings.append(
+            "no hay feedback humano importado; las columnas de decisión humana "
+            "(revisadas, tasa aplicar) quedan 'sin dato' hasta ejecutar "
+            "'jobscout import-feedback' con una exportación del tablero"
         )
     return warnings
 
@@ -539,8 +675,8 @@ def build_payload(
             }
         )
 
-    keyword_stats = _fetch_keyword_stats(conn)
-    top_quality, top_yield = _top_keywords(keyword_stats)
+    keyword_stats = _fetch_keyword_stats(conn, now=reference)
+    top_quality, top_yield, top_human = _top_keywords(keyword_stats)
     summary = _summary(conn, offers, keyword_count=len(keyword_stats))
 
     return {
@@ -556,6 +692,7 @@ def build_payload(
         "keywords": keyword_stats,
         "top_quality": top_quality,
         "top_yield": top_yield,
+        "top_human": top_human,
     }
 
 
@@ -753,6 +890,10 @@ __STYLE__
     <section aria-labelledby="top-yield-title">
       <h3 id="top-yield-title">Top 10 por recomendaciones positivas</h3>
       <div id="top-yield"></div>
+    </section>
+    <section aria-labelledby="top-human-title">
+      <h3 id="top-human-title">Top 10 por aprobación humana</h3>
+      <div id="top-human"></div>
     </section>
   </div>
 </section>
@@ -1297,6 +1438,16 @@ _SCRIPT = r"""
 
   function cell(text) { return el("td", null, text); }
 
+  // A rate the stored data cannot support is rendered as "sin dato", never as 0.
+  function pct(value) {
+    return (value === null || value === undefined)
+      ? "sin dato" : Math.round(value * 100) + "%";
+  }
+
+  function score(value) {
+    return (value === null || value === undefined) ? "sin dato" : value;
+  }
+
   function renderKeywordTable() {
     var host = document.getElementById("keyword-table");
     host.textContent = "";
@@ -1306,11 +1457,16 @@ _SCRIPT = r"""
     }
     var table = el("table");
     table.appendChild(el("caption", null,
-      "Métricas por palabra clave de origen, calculadas solo sobre ofertas activas"));
+      "Métricas por palabra clave de origen, calculadas solo sobre ofertas activas. " +
+      "Tasa duplicados = apariciones repetidas sobre apariciones totales; Tasa aplicar = " +
+      "decisiones humanas de aplicar sobre ofertas revisadas; Frescura = ofertas de " +
+      "21 días o menos entre las que tienen fecha conocida; No activas = proporción de " +
+      "ofertas ya desactivadas."));
     var thead = el("thead");
     var headRow = el("tr");
-    ["Palabra clave", "Apariciones", "Ofertas únicas", "Apariciones duplicadas",
-     "Puntaje promedio", "Con puntaje", "Aplicar", "Considerar"].forEach(function (label) {
+    ["Palabra clave", "Apariciones", "Ofertas únicas", "Tasa duplicados",
+     "Puntaje promedio", "Top 5", "Top 10", "Con puntaje", "Aplicar", "Considerar",
+     "Revisadas", "Tasa aplicar (humano)", "Frescura", "No activas"].forEach(function (label) {
       headRow.appendChild(el("th", null, label));
     });
     thead.appendChild(headRow);
@@ -1321,30 +1477,33 @@ _SCRIPT = r"""
       row.appendChild(cell(item.keyword));
       row.appendChild(cell(item.sightings));
       row.appendChild(cell(item.unique_jobs));
-      row.appendChild(cell(item.duplicate_sightings));
-      row.appendChild(cell(item.avg_score === null ? "sin dato" : item.avg_score));
+      row.appendChild(cell(pct(item.duplicate_rate)));
+      row.appendChild(cell(score(item.avg_score)));
+      row.appendChild(cell(score(item.top5_avg_score)));
+      row.appendChild(cell(score(item.top10_avg_score)));
       row.appendChild(cell(item.scored_jobs));
       row.appendChild(cell(item.apply_count));
       row.appendChild(cell(item.consider_count));
+      row.appendChild(cell(item.human_reviewed));
+      row.appendChild(cell(pct(item.human_apply_rate)));
+      row.appendChild(cell(pct(item.fresh_share)));
+      row.appendChild(cell(pct(item.inactive_rate)));
       tbody.appendChild(row);
     });
     table.appendChild(tbody);
     host.appendChild(table);
   }
 
-  function renderTopList(hostId, items) {
+  function renderTopList(hostId, items, describe) {
     var host = document.getElementById(hostId);
+    host.textContent = "";
     if (!items.length) {
       host.appendChild(el("p", "muted", "Todavía no hay datos suficientes."));
       return;
     }
     var list = el("ol");
     items.forEach(function (item) {
-      var average = (item.avg_score === null) ? "sin dato" : item.avg_score;
-      var label = item.keyword + " \u2014 promedio " + average +
-        ", " + item.unique_jobs + " oferta(s), " + (item.apply_count + item.consider_count) +
-        " con recomendación de aplicar o considerar";
-      list.appendChild(el("li", null, label));
+      list.appendChild(el("li", null, describe(item)));
     });
     host.appendChild(list);
   }
@@ -1374,7 +1533,8 @@ _SCRIPT = r"""
       "Ofertas activas en la base: " + summary.active_jobs +
       " \u00b7 Sin puntaje entre las mostradas: " + summary.unscored +
       " \u00b7 Requieren más información: " + (recommendations.need_more_info || 0) +
-      " \u00b7 Palabras clave analizadas: " + summary.keywords;
+      " \u00b7 Palabras clave analizadas: " + summary.keywords +
+      " \u00b7 Feedback humano importado: " + (summary.human_reviewed_jobs || 0);
   }
 
   function populateKeywordFilter() {
@@ -1450,8 +1610,22 @@ _SCRIPT = r"""
   renderSummary();
   populateKeywordFilter();
   renderKeywordTable();
-  renderTopList("top-quality", payload.top_quality);
-  renderTopList("top-yield", payload.top_yield);
+  renderTopList("top-quality", payload.top_quality, function (item) {
+    return item.keyword + " \u2014 promedio " + score(item.avg_score) +
+      ", top 5 " + score(item.top5_avg_score) + ", " +
+      item.scored_jobs + " de " + item.unique_jobs + " oferta(s) con puntaje";
+  });
+  renderTopList("top-yield", payload.top_yield, function (item) {
+    return item.keyword + " \u2014 " + (item.apply_count + item.consider_count) +
+      " con recomendación de aplicar o considerar de " +
+      item.scored_jobs + " oferta(s) con puntaje";
+  });
+  renderTopList("top-human", payload.top_human, function (item) {
+    return item.keyword + " \u2014 " + pct(item.human_apply_rate) +
+      " de aprobación humana (" + item.human_apply + " aplicar, " +
+      item.human_consider + " considerar, " + item.human_reject + " descartar, " +
+      item.human_reviewed + " revisada(s))";
+  });
   bindFilters();
   refreshFeedbackCount();
   renderOffers();

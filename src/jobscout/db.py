@@ -14,6 +14,7 @@ Tables
 ``profiles``         versioned snapshots of the local candidate profile
 ``profile_evidence`` the structured facts extracted from a profile snapshot
 ``evaluations``      explainable scores, with full provenance
+``job_feedback``     the human's own decision, imported from the dashboard export
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ from .models import (
     Evaluation,
     Job,
     JobDetailFetch,
+    JobFeedback,
     JobPosting,
     ProfileEvidence,
     ProfileSnapshot,
@@ -44,7 +46,7 @@ from .models import (
 )
 from .timeutil import utcnow_iso
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS search_runs (
@@ -198,6 +200,24 @@ CREATE TABLE IF NOT EXISTS job_detail_fetches (
 );
 CREATE INDEX IF NOT EXISTS idx_detail_fetches_job ON job_detail_fetches(job_id, id);
 CREATE INDEX IF NOT EXISTS idx_detail_fetches_run ON job_detail_fetches(run_id);
+
+-- The human's verdict on an offer. Kept in its own table, never inside
+-- ``evaluations``: the model recommendation and the human decision are two
+-- different signals and must be quotable separately. One row per job (the
+-- latest decision wins); ``decision_updated_at`` is the dashboard's timestamp
+-- for the decision, so an older export can never replace a newer stored one.
+CREATE TABLE IF NOT EXISTS job_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
+    decision TEXT NOT NULL,
+    reason TEXT,
+    decision_updated_at TEXT,
+    project_id TEXT NOT NULL DEFAULT '',
+    source TEXT,
+    imported_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_job_feedback_decision ON job_feedback(decision);
+CREATE INDEX IF NOT EXISTS idx_job_feedback_updated ON job_feedback(decision_updated_at);
 """
 
 
@@ -397,6 +417,19 @@ def _row_to_profile(row: sqlite3.Row) -> ProfileSnapshot:
         source_path=row["source_path"],
         loaded_at=row["loaded_at"],
         raw=_loads(row["raw_json"], {}),
+    )
+
+
+def _row_to_feedback(row: sqlite3.Row) -> JobFeedback:
+    return JobFeedback(
+        id=row["id"],
+        job_id=row["job_id"],
+        decision=row["decision"],
+        reason=row["reason"],
+        decision_updated_at=row["decision_updated_at"],
+        project_id=row["project_id"],
+        source=row["source"],
+        imported_at=row["imported_at"],
     )
 
 
@@ -1113,3 +1146,110 @@ def latest_evaluation(
 
 def evaluation_count(conn: sqlite3.Connection) -> int:
     return int(conn.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0])
+
+
+# ---------------------------------------------------------------------------
+# Human feedback
+# ---------------------------------------------------------------------------
+
+#: Outcome of one feedback upsert. ``stale`` means the stored row was kept
+#: because the incoming entry was not strictly newer (older timestamp, an equal
+#: timestamp with different text, or no timestamp against a timestamped row).
+FEEDBACK_INSERTED = "inserted"
+FEEDBACK_UPDATED = "updated"
+FEEDBACK_UNCHANGED = "unchanged"
+FEEDBACK_STALE = "stale"
+
+
+def get_feedback(conn: sqlite3.Connection, job_id: int) -> JobFeedback | None:
+    """Return the stored human decision for a job, or ``None``."""
+    row = conn.execute(
+        "SELECT * FROM job_feedback WHERE job_id = ?", (int(job_id),)
+    ).fetchone()
+    return _row_to_feedback(row) if row else None
+
+
+def list_feedback(conn: sqlite3.Connection, *, limit: int | None = None) -> list[JobFeedback]:
+    """Every stored human decision, newest decision first."""
+    sql = (
+        "SELECT * FROM job_feedback "
+        "ORDER BY (decision_updated_at IS NULL), decision_updated_at DESC, job_id"
+    )
+    params: list[Any] = []
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return [_row_to_feedback(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def feedback_count(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("SELECT COUNT(*) FROM job_feedback").fetchone()[0])
+
+
+def upsert_feedback(
+    conn: sqlite3.Connection, feedback: JobFeedback
+) -> tuple[JobFeedback, str]:
+    """Store one human decision, returning ``(stored_row, outcome)``.
+
+    The write only happens when the incoming entry is strictly newer than the
+    stored one, which is what makes a re-import idempotent and keeps an older
+    export from overwriting a newer decision. Timestamps are compared as the
+    normalized UTC ISO strings the storage layer already writes, so the
+    comparison is a plain lexicographic one. A stored row without a timestamp is
+    always replaceable; an incoming entry without one never is.
+    """
+    job_id = int(feedback.job_id)
+    existing = get_feedback(conn, job_id)
+    if existing is None:
+        imported_at = feedback.imported_at or utcnow_iso()
+        with conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO job_feedback (
+                    job_id, decision, reason, decision_updated_at, project_id,
+                    source, imported_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    str(feedback.decision),
+                    feedback.reason,
+                    feedback.decision_updated_at,
+                    feedback.project_id,
+                    feedback.source,
+                    imported_at,
+                ),
+            )
+        feedback.id = int(cursor.lastrowid)
+        feedback.imported_at = imported_at
+        return feedback, FEEDBACK_INSERTED
+
+    incoming_at = feedback.decision_updated_at
+    stored_at = existing.decision_updated_at
+    if incoming_at is None or (stored_at is not None and incoming_at <= stored_at):
+        same = (
+            str(feedback.decision) == str(existing.decision)
+            and (feedback.reason or None) == (existing.reason or None)
+        )
+        return existing, FEEDBACK_UNCHANGED if same else FEEDBACK_STALE
+
+    with conn:
+        conn.execute(
+            """
+            UPDATE job_feedback
+            SET decision = ?, reason = ?, decision_updated_at = ?, project_id = ?,
+                source = ?, imported_at = ?
+            WHERE job_id = ?
+            """,
+            (
+                str(feedback.decision),
+                feedback.reason,
+                incoming_at,
+                feedback.project_id,
+                feedback.source,
+                feedback.imported_at or utcnow_iso(),
+                job_id,
+            ),
+        )
+    updated = get_feedback(conn, job_id)
+    return (updated or existing), FEEDBACK_UPDATED

@@ -20,7 +20,7 @@ Nada sale de tu equipo salvo las solicitudes que autorizas explícitamente.
 | Enriquece ofertas con la descripción completa (opt-in y acotado) | No postula, no contacta a nadie, no automatiza candidaturas |
 | Deduplica y guarda todo en SQLite local | No envía datos a ningún servidor propio |
 | Puntúa con heurística, LLM compatible con OpenAI u OpenCode CLI | No programa ejecuciones ni envía notificaciones |
-| Genera un tablero HTML local en español | No escribe el feedback humano en la base de datos |
+| Genera un tablero HTML local en español | No escribe el feedback humano en la base por su cuenta |
 
 ## Inicio rápido (solo fixtures, sin red)
 
@@ -134,19 +134,38 @@ Son dos señales distintas y el informe las mantiene separadas:
 | | Recomendación del modelo | Feedback humano |
 |---|---|---|
 | Lo produce | `score` (heurística, LLM u OpenCode) | tú, haciendo clic en el informe |
-| Se guarda en | tabla `evaluations` de SQLite, con procedencia completa | `localStorage` del navegador, indexado por proyecto + id de oferta |
-| ¿`jobscout` lo lee? | sí | no — la CLI nunca lo lee |
-| ¿Es portable? | sí, está en la base | solo con el botón **Exportar feedback local (JSON)** |
+| Se guarda en | tabla `evaluations` de SQLite, con procedencia completa | `localStorage` del navegador, indexado por proyecto + id de oferta; luego, la tabla `job_feedback` de SQLite |
+| ¿`jobscout` lo lee? | sí | solo con `import-feedback`, que copia una exportación a `job_feedback` |
+| ¿Es portable? | sí, está en la base | con **Exportar feedback local (JSON)** más `import-feedback` |
 
 Cada oferta tiene botones de feedback local (**Aplicar / Revisar / Descartar**,
 almacenados como `apply` / `consider` / `reject`) y un motivo opcional. La
 etiqueta humana *Revisar* es deliberadamente distinta de la recomendación
-*Considerar* del modelo. El feedback es **solo local**: no postula, no toca
-LinkedIn y no escribe en SQLite. La exportación descarga
-`jobscout-feedback.json` con el esquema `jobscout.feedback.v1`.
+*Considerar* del modelo. Los botones son **solo del navegador**: no postulan, no
+tocan LinkedIn y no escriben en SQLite. **Exportar feedback local (JSON)**
+descarga `jobscout-feedback.json` con el esquema `jobscout.feedback.v1`.
 
-**Aún no existe importación de feedback** ni programación automática: el JSON
-exportado es el formato para transportarlo a mano.
+Importa esa exportación para que las decisiones queden guardadas:
+
+```bash
+python -m jobscout import-feedback jobscout-feedback.json
+```
+
+- Escribe una fila por oferta en `job_feedback`, junto a la recomendación del
+  modelo en `evaluations`, nunca en su lugar.
+- Valida primero el envoltorio: un esquema ajeno, la falta de `project_id` o un
+  `project_id` que no coincide con esta base hacen fallar el comando sin escribir
+  nada. `--project-id ID` acepta el id de la exportación de forma explícita, para
+  una base que se movió de lugar.
+- Rechaza entradas individuales (id de oferta desconocido, decisión desconocida,
+  marca de tiempo mal formada) con un mensaje en stderr, mientras las entradas
+  válidas sí se importan, igual que `score --job-id` con una oferta inexistente.
+- Es idempotente: reimportar el mismo archivo no cambia nada y una entrada más
+  antigua que la decisión guardada nunca la sobrescribe. Una entrada sin decisión
+  (el estado "sin revisar" del tablero) se omite y nunca borra una decisión
+  guardada.
+
+Todavía no hay programación automática: importar es un comando que ejecutas tú.
 
 ## Referencia de CLI
 
@@ -158,12 +177,14 @@ subcomando) y `--version`.
 | `init-db` | Crea o verifica el esquema. Idempotente. |
 | `ingest-fixture PATH [--source S] [--label L]` | Normaliza, deduplica y guarda un fixture JSON (sin red). |
 | `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--dry-run \| --confirm-network]` | Búsqueda pública acotada. Deshabilitada sin `--confirm-network`. |
+| `keyword-plan [--family ID…] [--location L] [--remote]` | Lista las familias de palabras clave y el comando exacto por consulta (sin red, sin base de datos). |
 | `fetch-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas con la descripción completa. Por defecto, las que aún no están enriquecidas. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje. |
 | `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. |
 | `runs [--limit N]` | Ejecuciones de búsqueda recientes y conteos almacenados. |
 | `dashboard [--output PATH] [--top N]` | Escribe un informe HTML local autocontenido (solo lectura, sin red). |
+| `import-feedback PATH [--project-id ID]` | Guarda una exportación de feedback del tablero en SQLite (sin red, idempotente). |
 
 Códigos de salida: `0` éxito, `1` error, `2` rechazo (collector deshabilitado,
 acceso denegado o solicitud que no se realizó a propósito).
@@ -185,6 +206,14 @@ python -m jobscout fetch-details --all --max-items 10 --confirm-network         
 
 `fetch-details` no vuelve a puntuar por sí solo: ejecuta
 `score --all --rescore` después de enriquecer.
+
+Importación de feedback:
+
+```bash
+python -m jobscout import-feedback jobscout-feedback.json            # importa la exportación de esta base
+python -m jobscout import-feedback jobscout-feedback.json --json     # informe legible por máquina
+python -m jobscout import-feedback old-export.json --project-id ID   # acepta la exportación de una base movida
+```
 
 ## Puntuación
 
@@ -227,7 +256,7 @@ respuestas se analizan de forma defensiva; una salida ilegible se registra como
 # Una sola vez: autentica OpenCode con el proveedor del modelo
 opencode auth login
 
-# Modelo predeterminado: opencode-go/deepseek-v4.1-flash
+# Modelo predeterminado gratuito: opencode/mimo-v2.5-free
 python -m jobscout score --all --scorer opencode --profile profile.yaml
 ```
 
@@ -243,21 +272,62 @@ ejecutar el puntuador para intentar de nuevo.
 
 ## Flujo de optimización de palabras clave
 
+La cobertura de búsqueda vive en un catálogo explícito
+(`src/jobscout/keywords.py`): familias acotadas de consultas, sin generación
+automática ni expansión más allá de esa lista. Las familias `baseline` son las que
+ya funcionaban (`Junior Cloud Engineer`, `Junior DevOps Engineer`, `Platform
+Engineer`); las familias `security` agregan cobertura de Cloud Security y
+DevSecOps (`Cloud Security Engineer`, `Junior Cloud Security Engineer`, `DevSecOps
+Engineer`, `Junior DevSecOps Engineer`, `Azure Cloud Security`, `Azure DevSecOps`,
+IAM y seguridad de infraestructura). Cada familia declara como máximo
+`HARD_MAX_QUERIES_PER_FAMILY` consultas.
+
+```bash
+python -m jobscout keyword-plan                          # todas las familias, sin red
+python -m jobscout keyword-plan --family cloud-security --family devsecops
+python -m jobscout keyword-plan --family cloud-security --location "Madrid, Spain" --remote
+python -m jobscout keyword-plan --json                   # informe legible por máquina
+```
+
+Cada línea impresa es un comando de vista previa (`--dry-run`). Convertirlo en una
+búsqueda real es reemplazar `--dry-run` por `--confirm-network`, siempre una
+acción humana explícita. `JOBSCOUT_KEYWORD_FAMILIES` fija qué familias se listan
+cuando no pasas `--family`; un id desconocido falla al iniciar.
+
 La procedencia de cada palabra clave (qué búsqueda trajo cada oferta y en qué
 posición) se guarda en SQLite, y el tablero la agrega:
 
-1. Ejecuta búsquedas acotadas con las palabras clave que quieras evaluar
+1. Ejecuta búsquedas acotadas con las palabras clave del plan
    (`search-linkedin ... --confirm-network`) o ingiere fixtures con etiquetas.
 2. Enriquece con `fetch-details` y puntúa con `score --all --rescore`.
-3. Genera el tablero y abre la sección de **rendimiento de palabras clave**: una
-   fila por palabra clave con *Apariciones*, *Ofertas únicas*, *Apariciones
-   duplicadas*, *Puntaje promedio*, *Con puntaje*, *Aplicar* y *Considerar*.
-4. Prioriza las palabras clave con mejor puntaje promedio y más
-   aplicar/considerar; descarta las que solo aportan apariciones duplicadas.
-   *Puntaje promedio* solo promedia ofertas con evaluación exitosa y muestra
-   *sin dato* si no hay ninguna.
-5. Ajusta las palabras clave y repite. **Cada corrida es manual**: no hay
+3. Exporta tu feedback desde el tablero e impórtalo con `import-feedback`. Sin
+   feedback importado, las columnas de decisión humana quedan en *sin dato*.
+4. Genera el tablero y abre la sección de **rendimiento de palabras clave**: una
+   fila por palabra clave con *Apariciones*, *Ofertas únicas*, *Tasa duplicados*,
+   *Puntaje promedio*, *Top 5*, *Top 10*, *Con puntaje*, *Aplicar*, *Considerar*,
+   *Revisadas*, *Tasa aplicar (humano)*, *Frescura* y *No activas*.
+5. Prioriza las palabras clave con mejor puntaje promedio, más aplicar/considerar
+   del modelo y mejor tasa de aprobación humana; descarta las que solo aportan
+   apariciones duplicadas o ya no producen ofertas activas.
+6. Ajusta las palabras clave y repite. **Cada corrida es manual**: no hay
    programación automática ni notificaciones.
+
+Cómo leer las métricas:
+
+- *Puntaje promedio*, *Top 5* y *Top 10* solo promedian ofertas activas con
+  evaluación exitosa y muestran *sin dato* si no hay ninguna. *Top 5*/*Top 10*
+  responden "¿qué tan buenas son mis mejores ofertas para esta búsqueda?", no
+  "¿qué tan bueno es el promedio?".
+- *Tasa duplicados* es apariciones repetidas sobre apariciones totales: una
+  palabra clave que solo repite lo que ya trajeron otras aporta poco.
+- *Tasa aplicar (humano)* usa únicamente las decisiones importadas
+  (`apply`/`consider`/`reject`), nunca la recomendación del modelo. Se muestra
+  como *sin dato* mientras no haya decisiones para esa palabra clave, y `0 %` solo
+  cuando hubo decisiones reales y ninguna fue aplicar.
+- *Frescura* es la proporción de ofertas de 21 días o menos entre las que tienen
+  fecha conocida. jobscout **no** tiene una señal verificada de "oferta expirada
+  en LinkedIn", así que no la inventa: *No activas* es la proporción de ofertas
+  que jobscout ya desactivó, y es lo único que se afirma sobre ofertas caídas.
 
 La posición observada es solo procedencia: el orden de resultados de LinkedIn
 **no** se trata como señal de calidad.
@@ -322,6 +392,7 @@ forma de conservar tus decisiones.
 │   ├── cli.py                # Comandos, validación de argumentos y códigos de salida
 │   ├── config.py             # Settings, validación de URLs y redacción de secretos
 │   ├── db.py                 # Esquema SQLite, consultas y conexión de solo lectura
+│   ├── keywords.py           # Catálogo acotado de familias y consultas de búsqueda
 │   ├── normalize.py          # Normalización de ofertas
 │   ├── dedupe.py             # Huellas y deduplicación exacta/probable
 │   ├── pipeline.py           # Ingesta de fixtures, búsquedas y detalles
@@ -387,5 +458,13 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
   mínimo.
 - El tablero embebe solo las `--top` mejores ofertas, pero la analítica de
   palabras clave se calcula sobre toda la base.
-- **No hay importación de feedback, programador de tareas, notificaciones ni
-  postulación automática** — por diseño.
+- `keyword-plan` no ejecuta búsquedas: imprime el plan acotado y el comando por
+  consulta. No existe una corrida por lote que dispare varias búsquedas en vivo;
+  cada query es un `search-linkedin` explícito con `--confirm-network`.
+- Las métricas humanas del tablero (frecuencia de aprobación) requieren importar
+  la exportación de feedback; mientras no se importe, quedan en *sin dato*. La
+  comparación/calibración entre recomendación del modelo y decisión humana sigue
+  pendiente (ver `NEXT_STEPS.md`, Prioridad 4).
+- **No hay programador de tareas, notificaciones ni postulación automática** — por
+  diseño. La importación de feedback existe, pero solo se ejecuta cuando invocas
+  `import-feedback`.

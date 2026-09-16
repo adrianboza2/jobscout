@@ -9,6 +9,8 @@ Commands
 ``list``             recent jobs with their latest score
 ``rank``             jobs ordered by score
 ``score``            evaluate jobs offline, via an LLM endpoint, or via OpenCode CLI
+``keyword-plan``     list the bounded keyword families and the command per query (offline)
+``import-feedback``  store a dashboard feedback export in SQLite (offline, local)
 
 Exit codes: ``0`` success, ``1`` error, ``2`` refusal (collector disabled,
 access denied, or an unsafe request that was intentionally not performed).
@@ -45,6 +47,7 @@ from .dashboard import (
     DEFAULT_TOP as DASHBOARD_DEFAULT_TOP,
     DashboardError,
     generate_dashboard,
+    project_key,
 )
 from .db import (
     all_active_jobs,
@@ -54,6 +57,7 @@ from .db import (
     count_jobs,
     count_jobs_needing_details,
     evaluation_count,
+    feedback_count,
     get_job,
     init_db,
     job_detail_fetch_count,
@@ -61,6 +65,13 @@ from .db import (
     jobs_needing_evaluation,
     list_jobs,
     list_search_runs,
+)
+from .feedback import FeedbackError, import_feedback
+from .keywords import (
+    UnknownKeywordFamily,
+    planned_queries,
+    resolve_families,
+    search_command,
 )
 from .models import EvaluationStatus, ScorerName, SearchRunStatus
 from .pipeline import ingest_collector_result, ingest_detail_results, ingest_fixture
@@ -333,6 +344,37 @@ def build_parser() -> argparse.ArgumentParser:
     runs_parser.add_argument("--limit", type=int, default=10)
     runs_parser.set_defaults(handler=cmd_runs)
 
+    keyword_plan_parser = add_common(
+        subparsers.add_parser(
+            "keyword-plan",
+            help=(
+                "list the bounded keyword families and the exact search command per "
+                "query (offline, no request)"
+            ),
+        )
+    )
+    keyword_plan_parser.add_argument(
+        "--family",
+        action="append",
+        default=None,
+        metavar="ID",
+        help=(
+            "keyword family id to include (repeatable; default: "
+            "JOBSCOUT_KEYWORD_FAMILIES, or every family when that is unset)"
+        ),
+    )
+    keyword_plan_parser.add_argument(
+        "--location",
+        default=None,
+        help="location to include in the printed preview commands",
+    )
+    keyword_plan_parser.add_argument(
+        "--remote",
+        action="store_true",
+        help="include the remote-only flag in the printed preview commands",
+    )
+    keyword_plan_parser.set_defaults(handler=cmd_keyword_plan)
+
     dashboard_parser = add_common(
         subparsers.add_parser(
             "dashboard",
@@ -352,6 +394,23 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"maximum offers to embed, best scored first (default: {DASHBOARD_DEFAULT_TOP})",
     )
     dashboard_parser.set_defaults(handler=cmd_dashboard)
+
+    feedback_parser = add_common(
+        subparsers.add_parser(
+            "import-feedback",
+            help="import a dashboard feedback export (jobscout.feedback.v1) into SQLite",
+        )
+    )
+    feedback_parser.add_argument("path", help="path to the exported jobscout-feedback.json")
+    feedback_parser.add_argument(
+        "--project-id",
+        default=None,
+        help=(
+            "expected project id (default: derived from --db); pass the export's own "
+            "id only when the database moved and the dashboard cannot be regenerated"
+        ),
+    )
+    feedback_parser.set_defaults(handler=cmd_import_feedback)
 
     return parser
 
@@ -781,6 +840,55 @@ def cmd_runs(args: argparse.Namespace, settings: Settings) -> int:
     return EXIT_OK
 
 
+def cmd_keyword_plan(args: argparse.Namespace, settings: Settings) -> int:
+    """Print the bounded keyword plan. Offline: no request, no database access.
+
+    The catalog is the whole search surface, so this command makes the coverage
+    reviewable before any live run. Each printed command is a ``--dry-run``
+    preview; turning one into a real search means replacing ``--dry-run`` with
+    ``--confirm-network``, which stays an explicit human action.
+    """
+    requested = list(args.family) if args.family else list(settings.keyword_families)
+    try:
+        families = resolve_families(requested or None)
+    except UnknownKeywordFamily as exc:
+        _write_line(str(exc), stream=sys.stderr)
+        return EXIT_ERROR
+
+    planned = planned_queries(
+        [family.id for family in families],
+        location=args.location,
+        remote=args.remote,
+    )
+    lines = [
+        f"keyword plan: {len(families)} family(ies), {len(planned)} bounded query(ies); "
+        "no request was performed"
+    ]
+    for family in families:
+        lines.append(f"[{family.id}] {family.label} ({family.group})")
+        lines.append(f"  {family.focus}")
+        for query in family.queries:
+            lines.append(f"  - {query}")
+            lines.append(
+                f"    {search_command(query, location=args.location, remote=args.remote)}"
+            )
+    lines.append(
+        "note: replace --dry-run with --confirm-network to run one query for real; "
+        "queries are never expanded beyond this list"
+    )
+    _emit(
+        {
+            "families": [family.to_dict() for family in families],
+            "planned": planned,
+            "family_count": len(families),
+            "query_count": len(planned),
+        },
+        as_json=getattr(args, "as_json", False),
+        text="\n".join(lines),
+    )
+    return EXIT_OK
+
+
 def cmd_dashboard(args: argparse.Namespace, settings: Settings) -> int:
     """Write the self-contained HTML report.
 
@@ -807,12 +915,72 @@ def cmd_dashboard(args: argparse.Namespace, settings: Settings) -> int:
     )
     text += "\n" + "\n".join(f"note: {warning}" for warning in summary.warnings)
     text += (
-        "\nmanual feedback is stored in your browser (localStorage) and is not part of "
-        "this file; it never reaches LinkedIn or SQLite"
+        "\nmanual feedback stays in your browser (localStorage) until you run "
+        "'jobscout import-feedback <export>' to store it in SQLite; it never reaches "
+        "LinkedIn"
     )
     _emit(
         summary.to_dict(),
         as_json=getattr(args, "as_json", False),
+        text=text,
+    )
+    return EXIT_OK
+
+
+def cmd_import_feedback(args: argparse.Namespace, settings: Settings) -> int:
+    """Store a dashboard export in SQLite.
+
+    The export's envelope is validated first (schema and project id); a document
+    that fails that check writes nothing and exits ``1``. Entry-level problems
+    are rejected one by one and reported to stderr while the valid entries are
+    imported, following the same convention as ``score --job-id`` for a job that
+    does not exist.
+
+    The database must already exist: an import has nothing to attach feedback to
+    without a job corpus, so this refuses to create one (unlike ``list``, which
+    is happy to create an empty database and report zero rows).
+    """
+    db_path = Path(settings.db_path)
+    if str(db_path) != ":memory:" and not db_path.is_file():
+        _write_line(
+            f"no database found at {db_path}; run 'jobscout init-db', ingest a "
+            "fixture or a search, and score a job before importing feedback",
+            stream=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    expected_project = args.project_id or project_key(db_path)
+    conn = connect(db_path)
+    try:
+        init_db(conn)
+        try:
+            outcome = import_feedback(
+                conn, args.path, expected_project_id=expected_project
+            )
+        except FeedbackError as exc:
+            _write_line(f"feedback import error: {exc}", stream=sys.stderr)
+            return EXIT_ERROR
+        stored_total = feedback_count(conn)
+    finally:
+        conn.close()
+
+    for rejection in outcome.rejected:
+        _write_line(
+            f"feedback entry {rejection.job_id}: rejected: {rejection.reason}",
+            stream=sys.stderr,
+        )
+
+    as_json = getattr(args, "as_json", False)
+    text = (
+        f"feedback import [{outcome.project_id}]: {outcome.entries} entr(ies), "
+        f"{outcome.imported} imported, {outcome.updated} updated, "
+        f"{outcome.unchanged} unchanged, {outcome.stale} stale, "
+        f"{outcome.skipped_no_decision} without decision, "
+        f"{len(outcome.rejected)} rejected; {stored_total} decision(s) stored"
+    )
+    _emit(
+        {**outcome.to_dict(), "stored_total": stored_total},
+        as_json=as_json,
         text=text,
     )
     return EXIT_OK

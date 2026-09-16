@@ -127,7 +127,7 @@ class LLMResponse:
         }
 
 
-def neutralize_untrusted_text(text: str) -> str:
+def neutralize_untrusted_text(text: str, *, max_chars: int = MAX_JOB_TEXT_CHARS) -> str:
     """Defuse delimiter forgery and control characters in untrusted job text.
 
     This is *not* a sandbox; it only prevents the posting from forging the
@@ -139,12 +139,17 @@ def neutralize_untrusted_text(text: str) -> str:
     prepared = "".join(
         char if char in "\n\t" or ord(char) >= 32 else " " for char in prepared
     )
-    if len(prepared) > MAX_JOB_TEXT_CHARS:
-        prepared = prepared[:MAX_JOB_TEXT_CHARS] + "\n[TRUNCATED FOR PROMPT]"
+    if len(prepared) > max_chars:
+        prepared = prepared[:max_chars] + "\n[TRUNCATED FOR PROMPT]"
     return prepared
 
 
-def build_messages(job: Any, profile: Profile) -> list[dict[str, str]]:
+def build_messages(
+    job: Any,
+    profile: Profile,
+    *,
+    max_job_text_chars: int = MAX_JOB_TEXT_CHARS,
+) -> list[dict[str, str]]:
     """Build the chat messages for one evaluation."""
     content_status = getattr(job, "content_status", ContentStatus.UNKNOWN)
     if isinstance(content_status, ContentStatus):
@@ -162,7 +167,9 @@ def build_messages(job: Any, profile: Profile) -> list[dict[str, str]]:
     }
     profile_json = json.dumps(profile_summary_for_prompt(profile), ensure_ascii=False, indent=2)
     job_json = json.dumps(job_view, ensure_ascii=False, indent=2)
-    description = neutralize_untrusted_text(getattr(job, "description", "") or "")
+    description = neutralize_untrusted_text(
+        getattr(job, "description", "") or "", max_chars=max_job_text_chars
+    )
     user_content = (
         "CANDIDATE PROFILE (trusted, provided by the user):\n"
         f"{profile_json}\n\n"

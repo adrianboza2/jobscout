@@ -50,6 +50,7 @@ REQUIRED_TABLES = {
     "profiles",
     "profile_evidence",
     "job_detail_fetches",
+    "job_feedback",
 }
 
 

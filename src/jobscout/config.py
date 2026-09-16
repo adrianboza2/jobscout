@@ -15,6 +15,7 @@ import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+from .keywords import UnknownKeywordFamily, get_family
 from .url_policy import (
     UrlPolicyError,
     validate_linkedin_url,
@@ -35,7 +36,9 @@ DEFAULT_LLM_MODEL = "deepseek-v4.1-flash"
 # OpenCode CLI scorer. The model id matches the locally configured OpenCode
 # provider; authentication is handled entirely by the CLI's own credential
 # store, so no API key ever flows through jobscout.
-DEFAULT_OPENCODE_MODEL = "opencode-go/deepseek-v4.1-flash"
+# Free OpenCode model selected for job scoring. Keep scoring outside the paid
+# OpenCode Go subscription unless the user explicitly changes this setting.
+DEFAULT_OPENCODE_MODEL = "opencode/mimo-v2.5-free"
 DEFAULT_OPENCODE_COMMAND = "opencode"
 # Low-reasoning variant passed to ``opencode run --variant``. A smaller reasoning
 # budget makes the CLI more likely to close the JSON object instead of stopping
@@ -283,6 +286,23 @@ def _env_float(env: dict[str, str], name: str, default: float) -> float:
         raise ConfigError(f"{PREFIX}{name} must be a number, got {raw!r}") from exc
 
 
+def _env_str_list(env: dict[str, str], name: str) -> tuple[str, ...]:
+    """Parse a comma-separated list, dropping blanks and duplicates.
+
+    Order is preserved so a documented family order survives a round trip
+    through the environment; an unset or empty variable yields an empty tuple.
+    """
+    raw = _raw(env, name)
+    if raw is None:
+        return ()
+    items: list[str] = []
+    for chunk in raw.split(","):
+        value = chunk.strip()
+        if value and value not in items:
+            items.append(value)
+    return tuple(items)
+
+
 _TRUE = {"1", "true", "yes", "y", "on"}
 _FALSE = {"0", "false", "no", "n", "off"}
 
@@ -316,6 +336,10 @@ class Settings:
     request_jitter_seconds: float = 2.0
     max_pages: int = 2
     max_items: int = 40
+    #: Default families for ``keyword-plan``. Empty means "every family in the
+    #: catalog". Ids are validated against the catalog so a typo fails at
+    #: startup instead of silently planning nothing.
+    keyword_families: tuple[str, ...] = ()
     linkedin_search_url: str = DEFAULT_LINKEDIN_SEARCH_URL
     # Download ceiling for a live search response as well as the limit above
     # which a raw body is not stored verbatim: the search transport reads at most
@@ -382,6 +406,13 @@ class Settings:
             raise ConfigError("detail_timeout_seconds must be > 0")
         if self.detail_max_bytes < 1:
             raise ConfigError("detail_max_bytes must be >= 1")
+        # Keyword families are a closed catalog: an unknown id is a
+        # configuration error, never a silently empty plan.
+        for family_id in self.keyword_families:
+            try:
+                get_family(family_id)
+            except UnknownKeywordFamily as exc:
+                raise ConfigError(str(exc)) from exc
         if not self.opencode_command or not self.opencode_command.strip():
             raise ConfigError("opencode_command must be a non-empty executable name or path")
         if not self.opencode_model or not self.opencode_model.strip():
@@ -443,6 +474,7 @@ class Settings:
             request_jitter_seconds=_env_float(merged, "REQUEST_JITTER_SECONDS", 2.0),
             max_pages=_env_int(merged, "MAX_PAGES", 2),
             max_items=_env_int(merged, "MAX_ITEMS", 40),
+            keyword_families=_env_str_list(merged, "KEYWORD_FAMILIES"),
             linkedin_search_url=_env_str(
                 merged, "LINKEDIN_SEARCH_URL", DEFAULT_LINKEDIN_SEARCH_URL
             ),

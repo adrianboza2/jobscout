@@ -38,11 +38,14 @@ from jobscout.db import (
     insert_evaluation,
     record_run_item,
     store_posting,
+    upsert_feedback,
     upsert_profile,
 )
 from jobscout.models import (
     DuplicateKind,
     Evaluation,
+    FeedbackDecision,
+    JobFeedback,
     JobPosting,
     Recommendation,
     ScorerName,
@@ -939,21 +942,37 @@ def test_keyword_aggregation_counts_and_quality(db_file: Path) -> None:
     assert keyword_a["sightings"] == 3
     assert keyword_a["unique_jobs"] == 2
     assert keyword_a["duplicate_sightings"] == 1
+    assert keyword_a["duplicate_rate"] == 0.3333
     assert keyword_a["scored_jobs"] == 2
     assert keyword_a["unscored_jobs"] == 0
     assert keyword_a["avg_score"] == 60.0
+    assert keyword_a["top5_avg_score"] == 60.0
+    assert keyword_a["top10_avg_score"] == 60.0
     assert keyword_a["apply_count"] == 1
     assert keyword_a["consider_count"] == 1
+    # No human decision was imported, so every human metric stays unknown.
+    assert keyword_a["human_reviewed"] == 0
+    assert keyword_a["human_apply_rate"] is None
+    assert keyword_a["human_positive_yield"] is None
 
     keyword_b = stats["data platform"]
     assert keyword_b["sightings"] == 2
     assert keyword_b["unique_jobs"] == 2
     assert keyword_b["duplicate_sightings"] == 0
+    assert keyword_b["duplicate_rate"] == 0.0
     assert keyword_b["scored_jobs"] == 1
     assert keyword_b["unscored_jobs"] == 1
     assert keyword_b["avg_score"] == 40.0
+    assert keyword_b["top5_avg_score"] == 40.0
     assert keyword_b["apply_count"] == 0
     assert keyword_b["consider_count"] == 1
+
+    # Nothing was deactivated and every job has a usable recent date.
+    assert keyword_a["inactive_jobs"] == 0
+    assert keyword_a["inactive_rate"] == 0.0
+    assert keyword_a["fresh_jobs"] == 2
+    assert keyword_a["unknown_age_jobs"] == 0
+    assert keyword_a["fresh_share"] == 1.0
 
     # Quality ranks by average score; a duplicate sighting must not double-count.
     assert [item["keyword"] for item in payload["top_quality"]] == [
@@ -965,13 +984,132 @@ def test_keyword_aggregation_counts_and_quality(db_file: Path) -> None:
         "senior backend engineer",
         "data platform",
     ]
+    # A keyword with no imported human decision cannot rank in human approval.
+    assert payload["top_human"] == []
+
+
+def _record_feedback(
+    conn: sqlite3.Connection, job_id: int, decision: str, *, updated_at: str
+) -> None:
+    upsert_feedback(
+        conn,
+        JobFeedback(
+            job_id=job_id,
+            decision=decision,
+            decision_updated_at=updated_at,
+            project_id="test-project",
+            source="test",
+        ),
+    )
+
+
+def test_keyword_human_metrics_use_the_imported_feedback(db_file: Path) -> None:
+    """Human rates come from ``job_feedback``, kept apart from the model signal."""
+    jobs = _seed_dashboard_db(db_file)
+    conn = connect(db_file)
+    try:
+        _record_feedback(
+            conn, jobs["job1"], FeedbackDecision.APPLY, updated_at="2026-09-15T11:00:00.000000Z"
+        )
+        _record_feedback(
+            conn, jobs["job2"], FeedbackDecision.REJECT, updated_at="2026-09-15T11:05:00.000000Z"
+        )
+    finally:
+        conn.close()
+
+    payload = _payload(db_file)
+    stats = {item["keyword"]: item for item in payload["keywords"]}
+
+    keyword_a = stats["senior backend engineer"]
+    assert keyword_a["human_reviewed"] == 2
+    assert keyword_a["human_apply"] == 1
+    assert keyword_a["human_consider"] == 0
+    assert keyword_a["human_reject"] == 1
+    assert keyword_a["human_apply_rate"] == 0.5
+    assert keyword_a["human_positive_yield"] == 0.5
+
+    # A real zero is kept distinct from "no data": job2 was reviewed and rejected.
+    keyword_b = stats["data platform"]
+    assert keyword_b["human_reviewed"] == 1
+    assert keyword_b["human_apply"] == 0
+    assert keyword_b["human_apply_rate"] == 0.0
+    assert keyword_b["human_positive_yield"] == 0.0
+
+    assert [item["keyword"] for item in payload["top_human"]] == [
+        "senior backend engineer",
+        "data platform",
+    ]
+    assert payload["summary"]["human_reviewed_jobs"] == 2
+    # With feedback imported, the missing-feedback warning must not appear.
+    assert not any("no hay feedback humano importado" in item for item in payload["warnings"])
+
+
+def test_keyword_analytics_report_inactive_and_freshness_honestly(db_file: Path) -> None:
+    """Inactive share and freshness use only stored, provable facts."""
+    before = _payload(db_file)
+    stats_before = {item["keyword"]: item for item in before["keywords"]}
+    assert stats_before["data platform"]["inactive_jobs"] == 0
+
+    conn = connect(db_file)
+    try:
+        with conn:
+            conn.execute("UPDATE jobs SET is_active = 0 WHERE title = 'Platform Engineer'")
+    finally:
+        conn.close()
+
+    after = _payload(db_file)
+    stats_after = {item["keyword"]: item for item in after["keywords"]}
+
+    keyword_b = stats_after["data platform"]
+    # The deactivated posting leaves the active metrics but is still counted.
+    assert keyword_b["unique_jobs"] == 1
+    assert keyword_b["inactive_jobs"] == 1
+    assert keyword_b["inactive_rate"] == 0.5
+    assert keyword_b["fresh_share"] == 1.0
+    assert keyword_b["unknown_age_jobs"] == 0
+
+    # A keyword whose only postings were deactivated disappears from the active
+    # analytics rather than looking productive with empty numbers.
+    assert set(stats_after) == {"senior backend engineer", "data platform"}
+    # No human feedback was imported for this database.
+    assert after["summary"]["human_reviewed_jobs"] == 0
+    assert any("no hay feedback humano importado" in item for item in after["warnings"])
+
+
+def test_keyword_freshness_is_unknown_without_usable_dates(tmp_path: Path) -> None:
+    """No stored date means no freshness claim, not an invented 0%."""
+    path = tmp_path / "undated.sqlite3"
+    conn = connect(path)
+    try:
+        init_db(conn)
+        job, _ = store_posting(
+            conn,
+            _posting(posted_at=None),
+            now="2026-09-15T10:00:00Z",
+        )
+        # Erase the fallback date so neither posted_at nor first_seen_at is usable.
+        with conn:
+            conn.execute("UPDATE jobs SET first_seen_at = '' WHERE id = ?", (job.id,))
+        run = _run(conn, "undated keyword")
+        _observe(conn, run.id, job.id, rank=1)
+    finally:
+        conn.close()
+
+    payload = _payload(path)
+    stats = {item["keyword"]: item for item in payload["keywords"]}
+    keyword = stats["undated keyword"]
+
+    assert keyword["unknown_age_jobs"] == 1
+    assert keyword["fresh_jobs"] == 0
+    assert keyword["fresh_share"] is None
 
 
 def test_keyword_table_renders_the_documented_columns(db_file: Path) -> None:
     """The rendered header row is the surface the README documents.
 
-    ``unscored_jobs`` stays in the payload but has no column of its own, so the
-    documentation must not promise an unscored column.
+    ``unscored_jobs`` and ``inactive_jobs`` stay in the payload but have no column
+    of their own (the table shows the inactive *rate*), so the documentation must
+    not promise those columns.
     """
     html_text = generate_and_read(db_file)
 
@@ -981,17 +1119,28 @@ def test_keyword_table_renders_the_documented_columns(db_file: Path) -> None:
         "Palabra clave",
         "Apariciones",
         "Ofertas únicas",
-        "Apariciones duplicadas",
+        "Tasa duplicados",
         "Puntaje promedio",
+        "Top 5",
+        "Top 10",
         "Con puntaje",
         "Aplicar",
         "Considerar",
+        "Revisadas",
+        "Tasa aplicar (humano)",
+        "Frescura",
+        "No activas",
     ]
-    # The average column reads "sin dato" when no job of the keyword is scored.
-    assert 'cell(item.avg_score === null ? "sin dato" : item.avg_score)' in html_text
+    # Metrics the data cannot support read "sin dato", never a fabricated zero.
+    assert 'function pct(value)' in html_text
+    assert '? "sin dato" : Math.round(value * 100) + "%"' in html_text
+    assert 'function score(value)' in html_text
+    assert 'id="top-human"' in html_text
 
     payload = _extract_payload(html_text)
     assert "unscored_jobs" in payload["keywords"][0]
+    assert "inactive_jobs" in payload["keywords"][0]
+    assert "human_apply_rate" in payload["keywords"][0]
 
 
 def test_inactive_jobs_are_excluded_from_keyword_analytics(db_file: Path) -> None:
@@ -1032,6 +1181,7 @@ def test_keyword_analytics_are_empty_without_provenance(tmp_path: Path) -> None:
     assert payload["keywords"] == []
     assert payload["top_quality"] == []
     assert payload["top_yield"] == []
+    assert payload["top_human"] == []
     assert any("procedencia de palabras clave" in warning for warning in payload["warnings"])
 
 
@@ -1097,8 +1247,10 @@ def test_top_quality_ignores_keywords_without_scores(tmp_path: Path) -> None:
 
     assert [item["keyword"] for item in payload["top_quality"]] == ["scored keyword"]
     assert payload["top_yield"] == []
+    assert payload["top_human"] == []
     stats = {item["keyword"]: item for item in payload["keywords"]}
     assert stats["unscored keyword"]["avg_score"] is None
+    assert stats["unscored keyword"]["top5_avg_score"] is None
     assert stats["unscored keyword"]["scored_jobs"] == 0
 
 

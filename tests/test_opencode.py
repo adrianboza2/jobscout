@@ -72,10 +72,10 @@ def make_scorer(settings: Settings, outcomes):
 # ---------------------------------------------------------------------------
 
 
-def test_default_model_is_opencode_go_deepseek_v41_flash() -> None:
+def test_default_model_is_free_mimo() -> None:
     defaults = Settings.from_env(env={}, dotenv_path=None)
-    assert DEFAULT_OPENCODE_MODEL == "opencode-go/deepseek-v4.1-flash"
-    assert defaults.opencode_model == "opencode-go/deepseek-v4.1-flash"
+    assert DEFAULT_OPENCODE_MODEL == "opencode/mimo-v2.5-free"
+    assert defaults.opencode_model == "opencode/mimo-v2.5-free"
     assert defaults.opencode_command == "opencode"
     assert defaults.opencode_timeout_seconds == 180.0
     assert DEFAULT_OPENCODE_VARIANT == "minimal"
@@ -268,7 +268,7 @@ def test_prompt_requires_compact_closed_json_without_padding(strong_posting, pro
 
     # The rationale is explicitly bounded so the response stays small.
     assert '"rationale"' in prompt
-    assert "two short sentences" in lowered
+    assert "one short sentence" in lowered
 
     # The contract adds to, and never replaces, the security framing/schema.
     assert prompt.count(UNTRUSTED_BEGIN) == 1

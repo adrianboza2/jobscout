@@ -53,6 +53,19 @@ class Recommendation(StrEnum):
     NEED_MORE_INFO = "need_more_info"
 
 
+class FeedbackDecision(StrEnum):
+    """The human's own decision about an offer.
+
+    Deliberately a separate vocabulary from :class:`Recommendation`: the model
+    recommendation is evidence, the human decision is the verdict, and the two
+    are stored apart so they can be compared later.
+    """
+
+    APPLY = "apply"
+    CONSIDER = "consider"
+    REJECT = "reject"
+
+
 class ScorerName(StrEnum):
     HEURISTIC = "heuristic"
     LLM = "llm"
@@ -366,6 +379,38 @@ class Evaluation:
 
 
 @dataclass
+class JobFeedback:
+    """A human decision about one job, imported from the dashboard export.
+
+    One row per job (the latest decision wins), stored next to — never instead
+    of — the model's evaluation. ``decision_updated_at`` is the timestamp the
+    dashboard recorded when the human last changed the entry, so an older
+    export can never overwrite a newer stored decision.
+    """
+
+    job_id: int
+    decision: FeedbackDecision | str
+    reason: str | None = None
+    decision_updated_at: str | None = None
+    project_id: str = ""
+    source: str | None = None
+    imported_at: str = ""
+    id: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "job_id": self.job_id,
+            "decision": str(self.decision),
+            "reason": self.reason,
+            "decision_updated_at": self.decision_updated_at,
+            "project_id": self.project_id,
+            "source": self.source,
+            "imported_at": self.imported_at,
+        }
+
+
+@dataclass
 class ProfileEvidence:
     """One structured fact extracted from the local candidate profile."""
 
@@ -420,8 +465,10 @@ __all__ = [
     "DuplicateKind",
     "Evaluation",
     "EvaluationStatus",
+    "FeedbackDecision",
     "Job",
     "JobDetailFetch",
+    "JobFeedback",
     "JobPosting",
     "ProfileEvidence",
     "ProfileSnapshot",

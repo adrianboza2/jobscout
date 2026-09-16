@@ -77,9 +77,11 @@ from ..models import (
 from ..timeutil import utcnow_iso
 from .llm import build_messages, input_fingerprint, sha256_text
 from .profile import Profile
-from .schema import PROMPT_VERSION, parse_llm_evaluation
+from .schema import parse_llm_evaluation
 
 SCORER_NAME = ScorerName.OPENCODE
+OPENCODE_PROMPT_VERSION = "opencode-v4-balanced-recommendations"
+OPENCODE_MAX_JOB_TEXT_CHARS = 6_000
 MAX_ERROR_CHARS = 500
 
 #: Bytes read per OS pipe read while capturing child output.
@@ -151,12 +153,20 @@ OPENCODE_OUTPUT_CONTRACT = (
     "\n\nOPENCODE OUTPUT CONTRACT (applies to this CLI call):\n"
     "- Reply with exactly one JSON object and nothing else. No prose, no\n"
     "  markdown fences, and no commentary before or after the object.\n"
+    "- Return only these keys: overall_score, recommendation, confidence,\n"
+    "  and rationale. Do not return dimensions, blockers, strengths, gaps,\n"
+    "  unknowns, evidence, or any other keys.\n"
+    "- Use one numeric overall_score from 0 to 100, one recommendation from\n"
+    "  apply, consider, skip, or need_more_info, and confidence from 0 to 1.\n"
+    "- Calibrate recommendations for a junior candidate: use consider for a\n"
+    "  plausible stretch role with transferable skills, even when experience\n"
+    "  or one non-core technology is missing. Use skip only for a clear hard\n"
+    "  blocker, legal requirement, explicit dealbreaker, or a role clearly\n"
+    "  above the candidate's seniority. Do not treat every preferred or stated\n"
+    "  experience requirement as an automatic hard blocker.\n"
     "- Keep the JSON compact: single line or minimal whitespace, no\n"
     "  pretty-printing, and no repeating the schema in your answer.\n"
-    "- Keep \"rationale\" to at most two short sentences.\n"
-    "- Include only dimensions and list entries that materially change the\n"
-    "  evaluation. Do not pad dimensions, blockers, strengths, gaps, or\n"
-    "  unknowns to fill space; empty lists are allowed.\n"
+    "- Keep \"rationale\" to one short sentence of at most 160 characters.\n"
     "- Close the JSON object completely before you stop.\n"
 )
 
@@ -168,7 +178,11 @@ def build_cli_prompt(job: Any, profile: Profile) -> str:
     neutralization from :mod:`jobscout.scoring.llm`; the OpenCode-specific
     output contract is appended without replacing the system schema.
     """
-    messages = build_messages(job, profile)
+    messages = build_messages(
+        job,
+        profile,
+        max_job_text_chars=OPENCODE_MAX_JOB_TEXT_CHARS,
+    )
     composed = "\n\n".join(
         f"{message['role'].upper()}:\n{message['content']}" for message in messages
     )
@@ -621,7 +635,7 @@ class OpenCodeScorer:
                 recommendation=Recommendation.NEED_MORE_INFO,
                 confidence=0.0,
                 model=self.settings.opencode_model,
-                prompt_version=PROMPT_VERSION,
+                prompt_version=OPENCODE_PROMPT_VERSION,
                 profile_id=profile_id,
                 input_fingerprint=input_fingerprint(job, profile),
                 rationale="OpenCode evaluation could not be completed.",
@@ -641,7 +655,7 @@ class OpenCodeScorer:
                 recommendation=Recommendation.NEED_MORE_INFO,
                 confidence=0.0,
                 model=response.model,
-                prompt_version=PROMPT_VERSION,
+                prompt_version=OPENCODE_PROMPT_VERSION,
                 profile_id=profile_id,
                 raw_document_id=raw_document_id,
                 input_fingerprint=input_fingerprint(job, profile),
@@ -673,7 +687,7 @@ class OpenCodeScorer:
             rationale=rationale,
             status=EvaluationStatus.OK,
             model=response.model,
-            prompt_version=PROMPT_VERSION,
+            prompt_version=OPENCODE_PROMPT_VERSION,
             profile_id=profile_id,
             raw_document_id=raw_document_id,
             input_fingerprint=input_fingerprint(job, profile),

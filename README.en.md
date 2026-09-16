@@ -20,7 +20,7 @@ Nothing leaves your machine except the requests you explicitly authorize.
 | Enrich jobs with the full description (opt-in, bounded) | Apply, contact anyone, or automate applications |
 | Deduplicate and store everything in local SQLite | Upload data to any project-owned server |
 | Score with heuristic, OpenAI-compatible, or OpenCode CLI | Schedule runs or send notifications |
-| Generate a local Spanish HTML dashboard | Write human feedback into the database |
+| Generate a local Spanish HTML dashboard | Write human feedback into the database on its own |
 
 ## Quick start (fixtures only, no network)
 
@@ -133,19 +133,38 @@ These are two different signals, and the report keeps them apart:
 | | Model recommendation | Human feedback |
 |---|---|---|
 | Produced by | `score` (heuristic, LLM, or OpenCode) | you, clicking in the report |
-| Stored in | SQLite `evaluations` table, with full provenance | this browser's `localStorage`, keyed by project + job id |
-| Read by `jobscout` | yes | no — the CLI never reads it |
-| Portable | yes, it is in the database | only via **Exportar feedback local (JSON)** |
+| Stored in | SQLite `evaluations` table, with full provenance | this browser's `localStorage`, keyed by project + job id; then SQLite `job_feedback` |
+| Read by `jobscout` | yes | only by `import-feedback`, which copies an export into `job_feedback` |
+| Portable | yes, it is in the database | with **Exportar feedback local (JSON)** plus `import-feedback` |
 
 Each job has local feedback buttons (**Aplicar / Revisar / Descartar**, stored as
 `apply` / `consider` / `reject`) and an optional reason box. The human label
 *Revisar* is deliberately distinct from the model recommendation *Considerar*.
-Feedback is **local only**: it does not apply, does not touch LinkedIn, and does
-not write to SQLite. Export downloads `jobscout-feedback.json` using the
-`jobscout.feedback.v1` schema.
+The buttons themselves are **browser-local**: they do not apply, do not touch
+LinkedIn, and write nothing to SQLite. **Exportar feedback local (JSON)**
+downloads `jobscout-feedback.json` (`jobscout.feedback.v1` schema).
 
-**Feedback import does not exist yet**, and there is no automatic scheduling:
-the exported JSON is the manual carry-forward format.
+Import that export to make the decisions durable:
+
+```bash
+python -m jobscout import-feedback jobscout-feedback.json
+```
+
+- Writes one row per job in `job_feedback`, next to — never instead of — the
+  model recommendation in `evaluations`.
+- Validates the envelope first: a foreign schema, a missing `project_id`, or a
+  `project_id` that does not match this database fails the command and writes
+  nothing. `--project-id ID` accepts the export's own id explicitly, for a
+  database that moved.
+- Rejects individual entries (unknown job id, unknown decision, malformed
+  timestamp) with a message on stderr while the valid entries are still
+  imported, like `score --job-id` does for a missing job.
+- Idempotent: re-importing the same file changes nothing, and an entry older than
+  the stored decision never overwrites it. An entry with no decision (the
+  dashboard's "not reviewed" state) is skipped and never deletes a stored
+  decision.
+
+There is still no automatic scheduling: importing is a command you run yourself.
 
 ## CLI reference
 
@@ -157,12 +176,14 @@ subcommand), and `--version`.
 | `init-db` | Create or verify the schema. Idempotent. |
 | `ingest-fixture PATH [--source S] [--label L]` | Normalize, deduplicate, and store a JSON fixture (offline). |
 | `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--dry-run \| --confirm-network]` | Bounded public search. Disabled without `--confirm-network`. |
+| `keyword-plan [--family ID…] [--location L] [--remote]` | List the keyword families and the exact command per query (no network, no database). |
 | `fetch-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich jobs with the full description. Defaults to jobs that are not yet enriched. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score. |
 | `rank [--top N] [--min-score S]` | Jobs with a successful score, best first. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evaluate jobs and print the explainable result. |
 | `runs [--limit N]` | Recent search runs and stored counts. |
 | `dashboard [--output PATH] [--top N]` | Write a self-contained local HTML report (read-only, offline). |
+| `import-feedback PATH [--project-id ID]` | Store a dashboard feedback export in SQLite (offline, idempotent). |
 
 Exit codes: `0` success, `1` error, `2` refusal (collector disabled, access
 denied, or a request that was intentionally not performed).
@@ -184,6 +205,14 @@ python -m jobscout fetch-details --all --max-items 10 --confirm-network         
 
 `fetch-details` does not re-score on its own: run `score --all --rescore` after
 enriching.
+
+Feedback import:
+
+```bash
+python -m jobscout import-feedback jobscout-feedback.json            # import this database's export
+python -m jobscout import-feedback jobscout-feedback.json --json     # machine-readable accounting
+python -m jobscout import-feedback old-export.json --project-id ID   # accept a moved database's export
+```
 
 ## Scoring
 
@@ -227,7 +256,7 @@ instead of aborting the batch.
 # One-time: authenticate OpenCode with the provider that serves the model
 opencode auth login
 
-# Default model: opencode-go/deepseek-v4.1-flash
+# Default free model: opencode/mimo-v2.5-free
 python -m jobscout score --all --scorer opencode --profile profile.yaml
 ```
 
@@ -242,21 +271,61 @@ automatically**: jobscout never invents a score. Re-run the scorer to try again.
 
 ## Keyword optimization workflow
 
+Search coverage lives in an explicit catalog (`src/jobscout/keywords.py`): bounded
+families of queries, with no generation and no expansion past that list. The
+`baseline` families are the ones that already worked (`Junior Cloud Engineer`,
+`Junior DevOps Engineer`, `Platform Engineer`); the `security` families add Cloud
+Security and DevSecOps coverage (`Cloud Security Engineer`, `Junior Cloud Security
+Engineer`, `DevSecOps Engineer`, `Junior DevSecOps Engineer`, `Azure Cloud
+Security`, `Azure DevSecOps`, IAM, and security infrastructure). Each family
+declares at most `HARD_MAX_QUERIES_PER_FAMILY` queries.
+
+```bash
+python -m jobscout keyword-plan                          # every family, offline
+python -m jobscout keyword-plan --family cloud-security --family devsecops
+python -m jobscout keyword-plan --family cloud-security --location "Madrid, Spain" --remote
+python -m jobscout keyword-plan --json                   # machine-readable report
+```
+
+Every printed line is a `--dry-run` preview command. Turning one into a real
+search means replacing `--dry-run` with `--confirm-network`, always an explicit
+human action. `JOBSCOUT_KEYWORD_FAMILIES` chooses which families are listed when
+`--family` is omitted; an unknown id fails at startup.
+
 Per-keyword provenance (which search surfaced each job, and at what position) is
 stored in SQLite, and the dashboard aggregates it:
 
-1. Run bounded searches with the keywords you want to evaluate
+1. Run bounded searches with the queries in the plan
    (`search-linkedin ... --confirm-network`), or ingest labeled fixtures.
 2. Enrich with `fetch-details` and score with `score --all --rescore`.
-3. Generate the dashboard and open the **keyword performance** section: one row
-   per keyword with *Apariciones*, *Ofertas únicas*, *Apariciones duplicadas*,
-   *Puntaje promedio*, *Con puntaje*, *Aplicar*, and *Considerar*.
-4. Prioritize the keywords with the best average score and more
-   apply/consider; drop the ones that only add duplicate sightings. *Puntaje
-   promedio* only averages jobs with a successful evaluation and reads *sin dato*
-   when there are none.
-5. Adjust the keywords and repeat. **Every run is manual**: there is no automatic
+3. Export your feedback from the dashboard and import it with `import-feedback`.
+   Until feedback is imported, the human-decision columns read *sin dato*.
+4. Generate the dashboard and open the **keyword performance** section: one row
+   per keyword with *Apariciones*, *Ofertas únicas*, *Tasa duplicados*, *Puntaje
+   promedio*, *Top 5*, *Top 10*, *Con puntaje*, *Aplicar*, *Considerar*,
+   *Revisadas*, *Tasa aplicar (humano)*, *Frescura*, and *No activas*.
+5. Prioritize the keywords with the best average score, more model
+   apply/consider, and the best human approval rate; drop the ones that only add
+   duplicate sightings or no longer surface active postings.
+6. Adjust the keywords and repeat. **Every run is manual**: there is no automatic
    scheduling and no notifications.
+
+How to read the metrics:
+
+- *Puntaje promedio*, *Top 5*, and *Top 10* only average active jobs with a
+  successful evaluation and read *sin dato* when there are none. *Top 5*/*Top 10*
+  answer "how good are my best offers for this search?", not "how good is the
+  average?".
+- *Tasa duplicados* is duplicate sightings over total sightings: a keyword that
+  only repeats what others already surfaced adds little.
+- *Tasa aplicar (humano)* uses only the imported decisions
+  (`apply`/`consider`/`reject`), never the model recommendation. It reads *sin
+  dato* until there are decisions for that keyword, and `0 %` only when there were
+  real decisions and none was apply.
+- *Frescura* is the share of postings 21 days old or less among those with a known
+  date. jobscout has **no** verified "expired on LinkedIn" signal, so it does not
+  invent one: *No activas* is the share of postings jobscout itself deactivated,
+  and it is the only claim made about dropped postings.
 
 Observed position is provenance only: LinkedIn result order is **not** treated as
 a quality signal.
@@ -318,6 +387,7 @@ export button is the only way to keep your decisions.
 │   ├── cli.py                # Commands, argument validation, exit codes
 │   ├── config.py             # Settings, URL validation, secret redaction
 │   ├── db.py                 # SQLite schema, queries, read-only connection
+│   ├── keywords.py           # Bounded catalog of search families and queries
 │   ├── normalize.py          # Job normalization
 │   ├── dedupe.py             # Fingerprints and exact/probable deduplication
 │   ├── pipeline.py           # Fixture, search, and detail ingestion
@@ -380,5 +450,12 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
 - Salary parsing is heuristic and only used when the profile defines a minimum.
 - The dashboard embeds only the top `--top` offers, but keyword analytics are
   computed over the whole database.
-- **There is no feedback import, scheduler, notification, or automatic
-  application** — by design.
+- `keyword-plan` does not run searches: it prints the bounded plan and one command
+  per query. There is no batch mode that fires several live searches at once; each
+  query is an explicit `search-linkedin` run with `--confirm-network`.
+- The dashboard's human metrics (approval rate) require importing the feedback
+  export; until then they read *sin dato*. Comparing and calibrating the model
+  recommendation against the human decision is still pending (`NEXT_STEPS.md`,
+  Priority 4).
+- **There is no scheduler, notification, or automatic application** — by design.
+  Feedback import exists, but it only runs when you invoke `import-feedback`.
