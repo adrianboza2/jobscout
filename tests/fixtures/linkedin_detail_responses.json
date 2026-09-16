@@ -1,0 +1,25 @@
+{
+  "provider": "linkedin",
+  "fetched_at": "2026-09-15T12:00:00Z",
+  "note": "Synthetic detail responses keyed by LinkedIn job id for offline detail-enrichment tests. Not real LinkedIn data.",
+  "details": [
+    {
+      "job_id": "3911111111",
+      "status_code": 200,
+      "content_type": "text/html",
+      "body": "<section class=\"show-more-less-html\"><div class=\"show-more-less-html__markup show-more-less-html__markup--clamp-after-5\"><p>We are hiring a <strong>Senior Backend Engineer</strong> to build data services.</p><ul><li>Strong Python and SQL required</li><li>PostgreSQL modelling experience</li><li>FastAPI and Docker are a plus</li></ul><br><p>Remote friendly team with English communication.</p></div><button class=\"show-more-less-html__button\">Show more</button></section>"
+    },
+    {
+      "job_id": "3912222222",
+      "status_code": 200,
+      "content_type": "text/html",
+      "body": "<div class=\"description__text description__text--rich\"><p>Build and operate data pipelines.</p><ul><li>Python and SQL required</li><li>Airflow scheduling experience</li><li>Data warehouse modelling</li></ul></div>"
+    },
+    {
+      "job_id": "3913333333",
+      "status_code": 200,
+      "content_type": "text/html",
+      "body": "<section class=\"show-more-less-html\"><div class=\"show-more-less-html__markup\"><p>Own the internal platform.</p><ul><li>Kubernetes and Terraform</li><li>CI/CD pipelines</li><li>Observability tooling</li></ul></div></section>"
+    }
+  ]
+}
