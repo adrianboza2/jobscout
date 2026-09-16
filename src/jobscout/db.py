@@ -218,6 +218,52 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(db_path: str | Path) -> sqlite3.Connection | None:
+    """Open an existing SQLite file read-only, or return ``None``.
+
+    Unlike :func:`connect`, this never creates the parent directory, never
+    creates a missing database file, and never opens WAL journals for a new
+    database: it only attaches to a file that already exists.
+
+    The connection is opened through SQLite's own read-only URI
+    (``file:...?mode=ro``) instead of a writable connection pinned with
+    ``PRAGMA query_only``. That makes the file read-only at the driver level:
+    SQLite refuses to create the database, cannot replay a WAL by writing to it,
+    and cannot punch through the pragma. ``PRAGMA query_only = ON`` is still set
+    as a second line of defence. ``:memory:`` has nothing persisted to read and
+    also returns ``None``.
+
+    The absolute path is converted with :meth:`pathlib.Path.as_uri`, which
+    percent-encodes spaces, ``#`` and non-ASCII characters and yields the
+    ``file:///C:/...`` form SQLite expects on Windows.
+
+    Sidecar handling: a read-only connection cannot checkpoint, so plain
+    ``mode=ro`` leaves an empty ``-wal``/``-shm`` pair behind when it reads a
+    WAL-mode database that has none. When the database is fully checkpointed (no
+    ``-wal`` and no ``-journal`` beside it), ``immutable=1`` is added so the read
+    creates no sidecar at all. When a ``-wal``/``-journal`` is present there is
+    data SQLite must read from it, so plain ``mode=ro`` is used and correctness
+    wins over the empty sidecar. Either way the database bytes and committed
+    rows are never modified.
+    """
+    path = Path(db_path)
+    if str(path) == ":memory:" or not path.is_file():
+        return None
+    try:
+        uri = path.resolve().as_uri()
+    except (OSError, ValueError):  # pragma: no cover - malformed path
+        return None
+    has_pending = any(
+        Path(f"{path}{suffix}").exists() for suffix in ("-wal", "-journal")
+    )
+    params = "?mode=ro" if has_pending else "?mode=ro&immutable=1"
+    conn = sqlite3.connect(f"{uri}{params}", uri=True, timeout=15.0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
 def init_db(conn: sqlite3.Connection) -> int:
     """Create the schema if needed and return the schema version."""
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
