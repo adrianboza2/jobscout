@@ -19,6 +19,13 @@ Two boundaries are enforced here by construction:
 
 The generated page styles and filters data at read time; it never submits an
 application and never contacts LinkedIn.
+
+One display boundary is deliberate: every string a reader sees is
+neutral/professional Spanish, while schema keys, JSON field names, JavaScript
+identifiers, stored recommendation values, and CLI command names stay English.
+Recommendation values (``apply``/``consider``/``skip``/``need_more_info``) and
+human feedback values (``apply``/``consider``/``reject``) are translated for
+display only, so the payload stays round-trippable against the database.
 """
 
 from __future__ import annotations
@@ -443,21 +450,24 @@ def _warnings(summary: dict[str, Any], *, keyword_count: int) -> list[str]:
     warnings: list[str] = []
     if summary["active_jobs"] == 0:
         warnings.append(
-            "no active jobs are stored yet; ingest a fixture or run a bounded search first"
+            "todavía no hay ofertas activas almacenadas; ingiera un fixture "
+            "o ejecute una búsqueda acotada primero"
         )
     if summary["active_jobs"] and summary["scored"] == 0:
         warnings.append(
-            "no successful evaluation found; run 'jobscout score --all' "
-            "(add --rescore to re-evaluate) before reading scores"
+            "no se encontró ninguna evaluación exitosa; ejecute 'jobscout score --all' "
+            "(agregue --rescore para reevaluar) antes de leer los puntajes"
         )
     if summary["unscored"]:
         warnings.append(
-            f"{summary['unscored']} selected job(s) have no successful score and are listed last"
+            f"{summary['unscored']} oferta(s) seleccionada(s) no tienen puntaje exitoso "
+            "y se listan al final"
         )
     if not keyword_count:
         warnings.append(
-            "no keyword provenance recorded; search-run items carry the source keyword "
-            "and observed rank, so keyword analytics stay empty until a run is ingested"
+            "no hay procedencia de palabras clave registrada; los ítems de búsqueda "
+            "guardan la palabra clave de origen y la posición observada, así que la "
+            "analítica de palabras clave queda vacía hasta que se ingiera una ejecución"
         )
     return warnings
 
@@ -494,8 +504,8 @@ def build_payload(
         offers.append(
             {
                 "id": job_id,
-                "title": _concisify(row["title"]) or "(untitled)",
-                "company": _concisify(row["company"]) or "(unknown company)",
+                "title": _concisify(row["title"]) or "(sin título)",
+                "company": _concisify(row["company"]) or "(empresa desconocida)",
                 "location": _concisify(row["location"]),
                 "url": _safe_url(row["url"]),
                 "source": str(row["source"] or ""),
@@ -612,7 +622,7 @@ def _render_template(template: str, values: dict[str, str]) -> str:
 
 
 _HTML_TEMPLATE = """<!DOCTYPE html>
-<html lang="en">
+<html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -623,159 +633,290 @@ __STYLE__
 </style>
 </head>
 <body>
+<a class="skip-link" href="#contenido">Saltar al contenido principal</a>
+
 <header class="topbar">
-  <div>
-    <h1>jobscout dashboard</h1>
+  <div class="topbar-main">
+    <h1>Panel de ofertas &mdash; jobscout</h1>
+    <p class="purpose">
+      Informe local de ofertas puntuadas y del desempeño por palabra clave. Se genera
+      a partir de la base SQLite local, abierta en modo solo lectura.
+    </p>
     <p class="muted" id="report-meta">__META__</p>
   </div>
-  <div class="actions">
-    <button type="button" id="export-feedback" class="btn primary">Export local feedback (JSON)</button>
-    <span class="muted" id="feedback-count">0 reviewed</span>
+  <div class="actions" role="group" aria-label="Acciones del informe">
+    <button type="button" id="export-feedback" class="btn primary"
+      title="Descarga un archivo JSON con tus decisiones guardadas en este navegador">
+      Exportar feedback local (JSON)
+    </button>
+    <span class="muted" id="feedback-count" aria-live="polite">0 revisadas</span>
   </div>
 </header>
 
-<section class="notice" id="warnings">__WARNINGS__</section>
-
-<section class="notice privacy">
-  <strong>Local only.</strong> Manual feedback below is stored in this browser's
-  <code>localStorage</code> under <code>__STORAGE_KEY__</code>. It does not submit an
-  application, does not save anything to LinkedIn, and does not write to the SQLite
-  database. Use <em>Export local feedback</em> to keep a copy; scores and recommendations
-  are produced by the jobscout scorer, not by you.
+<section class="notice privacy" aria-labelledby="privacy-title">
+  <h2 id="privacy-title" class="notice-title">Privacidad y funcionamiento sin conexión</h2>
+  <p>
+    <strong>Todo queda en este navegador.</strong> Las decisiones manuales se guardan
+    en <code>localStorage</code> bajo la clave <code>__STORAGE_KEY__</code>. No se envía
+    ninguna postulación, no se guarda nada en LinkedIn y no se escribe en la base
+    SQLite. Para conservar una copia, use <em>Exportar feedback local (JSON)</em>. Los
+    puntajes y las recomendaciones provienen del evaluador de jobscout, no de su decisión.
+  </p>
 </section>
 
-<section class="summary" id="summary">__SUMMARY__</section>
-
-<section class="filters" aria-label="Filters">
-  <label>Search
-    <input type="search" id="filter-text" placeholder="title, company, location">
-  </label>
-  <label>Recommendation
-    <select id="filter-recommendation">
-      <option value="">all</option>
-      <option value="apply">apply</option>
-      <option value="consider">consider</option>
-      <option value="skip">skip</option>
-      <option value="need_more_info">need_more_info</option>
-      <option value="unscored">unscored</option>
-    </select>
-  </label>
-  <label>Minimum score
-    <input type="number" id="filter-min-score" min="0" max="100" step="1" placeholder="0">
-  </label>
-  <label>Keyword
-    <select id="filter-keyword">
-      <option value="">all</option>
-    </select>
-  </label>
-  <label>Review state
-    <select id="filter-review">
-      <option value="">all</option>
-      <option value="reviewed">reviewed</option>
-      <option value="unreviewed">unreviewed</option>
-    </select>
-  </label>
-  <label>Sort
-    <select id="filter-sort">
-      <option value="score">score (best first)</option>
-      <option value="fresh">freshness (newest first)</option>
-    </select>
-  </label>
-  <button type="button" id="reset-filters" class="btn">Reset</button>
+<section class="__WARNINGS_CLASS__" id="warnings" aria-labelledby="warnings-title">
+  <h2 id="warnings-title" class="notice-title">Avisos</h2>
+  __WARNINGS__
 </section>
 
-<main>
-  <p class="muted" id="offer-count"></p>
+<section class="kpis" aria-labelledby="kpis-title">
+  <h2 id="kpis-title">Resumen</h2>
+  <div class="kpi-grid" id="summary" aria-live="polite"></div>
+  <p class="muted" id="summary-note"></p>
+</section>
+
+<section class="toolbar" aria-labelledby="toolbar-title">
+  <h2 id="toolbar-title">Buscar y filtrar</h2>
+  <div class="filters" role="search" aria-label="Búsqueda y filtros de ofertas">
+    <div class="filter-field filter-grow">
+      <label for="filter-text">Buscar</label>
+      <input type="search" id="filter-text" autocomplete="off"
+        placeholder="título, empresa, ubicación">
+    </div>
+    <div class="filter-field">
+      <label for="filter-recommendation">Recomendación del modelo</label>
+      <select id="filter-recommendation">
+        <option value="">todas</option>
+        <option value="apply">Aplicar</option>
+        <option value="consider">Considerar</option>
+        <option value="skip">Descartar</option>
+        <option value="need_more_info">Requiere más información</option>
+        <option value="unscored">Sin puntaje</option>
+      </select>
+    </div>
+    <div class="filter-field">
+      <label for="filter-keyword">Palabra clave de origen</label>
+      <select id="filter-keyword">
+        <option value="">todas</option>
+      </select>
+    </div>
+    <div class="filter-field">
+      <label for="filter-min-score">Puntaje mínimo</label>
+      <input type="number" id="filter-min-score" min="0" max="100" step="1"
+        inputmode="numeric" placeholder="0">
+    </div>
+    <div class="filter-field">
+      <label for="filter-review">Estado de revisión</label>
+      <select id="filter-review">
+        <option value="">todas</option>
+        <option value="reviewed">revisadas</option>
+        <option value="unreviewed">sin revisar</option>
+      </select>
+    </div>
+    <div class="filter-field">
+      <label for="filter-sort">Ordenar por</label>
+      <select id="filter-sort">
+        <option value="score">puntaje (mejor primero)</option>
+        <option value="fresh">fecha (más recientes primero)</option>
+      </select>
+    </div>
+    <div class="filter-field filter-action">
+      <button type="button" id="reset-filters" class="btn"
+        title="Restablece la búsqueda y todos los filtros">Restablecer filtros</button>
+    </div>
+  </div>
+</section>
+
+<main id="contenido">
+  <p class="muted" id="offer-count" role="status"></p>
   <div id="offers"></div>
-  <div id="empty-state" class="empty" hidden>No offer matches the current filters.</div>
+  <p id="empty-state" class="empty" hidden>
+    Ninguna oferta coincide con la búsqueda y los filtros actuales.
+  </p>
 </main>
 
-<section class="analytics">
-  <h2>Keyword performance</h2>
+<section class="analytics" aria-labelledby="analytics-title">
+  <h2 id="analytics-title">Desempeño por palabra clave</h2>
   <p class="muted">
-    Computed from stored search provenance and the latest successful evaluation.
-    <strong>Observed rank is provenance, not a quality signal</strong> — LinkedIn
-    result order is not treated as ground truth.
+    Calculado a partir de la procedencia guardada de las búsquedas y de la última
+    evaluación exitosa. <strong>La posición observada es procedencia, no una medida de
+    calidad</strong>: el orden de resultados de LinkedIn no se trata como verdad.
   </p>
-  <div id="keyword-table"></div>
+  <div class="table-wrap">
+    <div id="keyword-table"></div>
+  </div>
   <div class="two-col">
-    <div>
-      <h3>Top 10 by score quality</h3>
+    <section aria-labelledby="top-quality-title">
+      <h3 id="top-quality-title">Top 10 por calidad del puntaje</h3>
       <div id="top-quality"></div>
-    </div>
-    <div>
-      <h3>Top 10 by positive recommendations</h3>
+    </section>
+    <section aria-labelledby="top-yield-title">
+      <h3 id="top-yield-title">Top 10 por recomendaciones positivas</h3>
       <div id="top-yield"></div>
-    </div>
+    </section>
   </div>
 </section>
 
 <footer class="muted">
-  Generated by <code>jobscout dashboard</code>. No external assets, no network requests.
+  <p>
+    Generado por <code>jobscout dashboard</code>. Sin recursos externos y sin
+    solicitudes de red.
+  </p>
 </footer>
 
 <script type="application/json" id="jobscout-data">__DATA__</script>
 <script>
 __SCRIPT__
 </script>
-<noscript><p class="notice">This dashboard needs JavaScript to filter and render its data.</p></noscript>
+<noscript>
+  <p class="notice">Este panel necesita JavaScript para filtrar y mostrar sus datos.</p>
+</noscript>
 </body>
 </html>
 """
 
 _STYLE = """
-:root { color-scheme: light dark; --bg:#f6f7f9; --fg:#17191c; --muted:#5b6470;
-  --card:#ffffff; --line:#d7dbe0; --accent:#1f6feb; --warn:#8a5a00; --warnbg:#fff6e0;
-  --ok:#0f7b3f; --bad:#a32121; }
-@media (prefers-color-scheme: dark) { :root { --bg:#14161a; --fg:#e6e8eb; --muted:#9aa3ad;
-  --card:#1c1f24; --line:#2c3138; --warnbg:#3a2f12; --warn:#f0c26b; } }
+:root {
+  color-scheme: light dark;
+  --bg:#f4f6f8; --fg:#14171c; --muted:#525b66;
+  --card:#ffffff; --line:#d5dae1; --line-strong:#b6bec8;
+  --accent:#1b5fd0; --accent-fg:#ffffff; --accent-soft:#e8f0fd;
+  --ok:#0b5f34; --ok-soft:#e4f5eb;
+  --consider:#1b5fd0; --consider-soft:#e8f0fd;
+  --skip:#4b5563; --skip-soft:#eceff2;
+  --warn:#7a4a00; --warn-soft:#fff3d6; --warn-line:#d9a441;
+  --shadow:0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.09);
+  --radius:12px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#101216; --fg:#e7eaee; --muted:#a3adb9;
+    --card:#191d23; --line:#2a3038; --line-strong:#3a424c;
+    --accent:#6ea8ff; --accent-fg:#06122a; --accent-soft:#16233a;
+    --ok:#7fd6a2; --ok-soft:#12291d;
+    --consider:#6ea8ff; --consider-soft:#16233a;
+    --skip:#b8c0cb; --skip-soft:#23282f;
+    --warn:#f2c97d; --warn-soft:#33280f; --warn-line:#7a5c1e;
+    --shadow:0 1px 2px rgba(0,0,0,.5);
+  }
+}
 * { box-sizing: border-box; }
-body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-h1 { font-size:1.35rem; margin:0; } h2 { font-size:1.15rem; margin:0 0 .25rem; } h3 { font-size:1rem; margin:.75rem 0 .35rem; }
-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size:.85em; }
+body { margin:0; background:var(--bg); color:var(--fg);
+  font:15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+h1 { font-size:1.4rem; margin:0 0 .25rem; }
+h2 { font-size:1.12rem; margin:0 0 .5rem; }
+h3 { font-size:1.02rem; margin:0; }
+h4 { font-size:.8rem; margin:0 0 .25rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+p { margin:.35rem 0; }
+code { font-family:ui-monospace, SFMono-Regular, Consolas, monospace; font-size:.85em; }
 .muted { color:var(--muted); }
-.topbar { display:flex; flex-wrap:wrap; gap:1rem; align-items:center; justify-content:space-between;
-  padding:1rem 1.25rem; border-bottom:1px solid var(--line); background:var(--card); }
-.actions { display:flex; gap:.75rem; align-items:center; }
-.notice { margin:.75rem 1.25rem; padding:.7rem .9rem; border:1px solid var(--line); border-radius:8px; background:var(--card); }
-.notice.privacy { font-size:.9rem; }
-.notice p { margin:.25rem 0; }
-.notice.warn { background:var(--warnbg); color:var(--warn); border-color:var(--warn); }
-.summary { display:flex; flex-wrap:wrap; gap:.5rem; padding:.75rem 1.25rem; }
-.chip { background:var(--card); border:1px solid var(--line); border-radius:999px; padding:.25rem .7rem; font-size:.85rem; }
-.filters { display:flex; flex-wrap:wrap; gap:.75rem; align-items:flex-end; padding:.75rem 1.25rem 1rem;
-  border-top:1px solid var(--line); border-bottom:1px solid var(--line); background:var(--card); position:sticky; top:0; z-index:5; }
-.filters label { display:flex; flex-direction:column; font-size:.8rem; color:var(--muted); gap:.2rem; }
-.filters input, .filters select { font:inherit; padding:.35rem .5rem; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
-main { padding:.5rem 1.25rem 1.5rem; }
-.btn { font:inherit; padding:.4rem .8rem; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); cursor:pointer; }
-.btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
-.btn:disabled { opacity:.5; cursor:not-allowed; }
-.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:.9rem 1rem; margin:0 0 .9rem; }
-.card.reviewed { border-left:4px solid var(--accent); }
-.card-head { display:flex; flex-wrap:wrap; gap:.6rem; align-items:baseline; justify-content:space-between; }
-.card h3 { margin:0; font-size:1.05rem; }
-.score { font-variant-numeric:tabular-nums; font-weight:700; font-size:1.1rem; }
-.badge { font-size:.78rem; padding:.15rem .55rem; border-radius:999px; border:1px solid var(--line); background:var(--bg); }
-.badge.apply { border-color:var(--ok); color:var(--ok); }
-.badge.consider { border-color:var(--accent); color:var(--accent); }
-.badge.skip { border-color:var(--bad); color:var(--bad); }
-.meta { display:flex; flex-wrap:wrap; gap:.35rem 1rem; margin:.35rem 0 .5rem; font-size:.85rem; color:var(--muted); }
-.grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px,1fr)); gap:.5rem .9rem; margin:.5rem 0; }
-.grid h4 { margin:0 0 .2rem; font-size:.82rem; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); }
+a { color:var(--accent); }
+:focus-visible { outline:3px solid var(--accent); outline-offset:2px; border-radius:4px; }
+.skip-link { position:absolute; left:-9999px; top:0; background:var(--accent); color:var(--accent-fg);
+  padding:.5rem .9rem; z-index:100; border-radius:0 0 8px 0; }
+.skip-link:focus { left:0; }
+
+.topbar { display:flex; flex-wrap:wrap; gap:1rem 2rem; align-items:flex-start;
+  justify-content:space-between; padding:1.1rem 1.4rem; background:var(--card);
+  border-bottom:1px solid var(--line); }
+.topbar-main { max-width:62ch; }
+.purpose { margin:.3rem 0; }
+.actions { display:flex; flex-direction:column; gap:.5rem; align-items:flex-start; }
+
+.notice { margin:.9rem 1.4rem; padding:.85rem 1rem; border:1px solid var(--line);
+  border-radius:var(--radius); background:var(--card); box-shadow:var(--shadow); }
+.notice-title { font-size:.95rem; margin:0 0 .3rem; }
+.notice.privacy { border-left:4px solid var(--accent); font-size:.92rem; }
+.notice.warn { background:var(--warn-soft); border-color:var(--warn-line); color:var(--warn); }
+
+.kpis, .toolbar, .analytics { padding:1rem 1.4rem; }
+.kpis { padding-bottom:.5rem; }
+.toolbar { padding-top:0; }
+.kpi-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:.6rem; }
+.kpi { display:flex; flex-direction:column; gap:.15rem; padding:.7rem .85rem;
+  background:var(--card); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); }
+.kpi-value { font-size:1.5rem; font-weight:700; font-variant-numeric:tabular-nums; }
+.kpi-label { font-size:.82rem; color:var(--muted); }
+.kpi-apply { border-left:4px solid var(--ok); }
+.kpi-consider { border-left:4px solid var(--consider); }
+.kpi-skip { border-left:4px solid var(--skip); }
+.kpi-reviewed { border-left:4px solid var(--accent); }
+#summary-note { margin-top:.55rem; font-size:.85rem; }
+
+.filters { display:grid; grid-template-columns:repeat(auto-fit, minmax(190px, 1fr));
+  gap:.7rem; align-items:end; padding:.9rem 1rem; margin-top:.25rem; position:sticky; top:0; z-index:5;
+  background:var(--card); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); }
+.filter-field { display:flex; flex-direction:column; gap:.25rem; min-width:0; }
+.filter-field label { font-size:.8rem; font-weight:600; color:var(--muted); }
+.filter-grow { grid-column:span 2; }
+@media (max-width:640px) {
+  .filter-grow { grid-column:auto; }
+  .filters { position:static; }
+}
+.filters input, .filters select { font:inherit; width:100%; padding:.4rem .55rem;
+  border:1px solid var(--line-strong); border-radius:8px; background:var(--bg); color:var(--fg); }
+.filter-action { justify-content:flex-end; }
+.filter-action .btn { width:100%; }
+
+.btn { font:inherit; padding:.45rem .85rem; border:1px solid var(--line-strong);
+  border-radius:8px; background:var(--bg); color:var(--fg); cursor:pointer; }
+.btn:hover:not(:disabled) { border-color:var(--accent); }
+.btn.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-fg); font-weight:600; }
+.btn:disabled { opacity:.55; cursor:not-allowed; }
+
+main { padding:.75rem 1.4rem 1.5rem; }
+#offer-count { font-size:.9rem; }
+.card { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--line-strong);
+  border-radius:var(--radius); padding:1rem 1.1rem; margin:0 0 .9rem; box-shadow:var(--shadow); }
+.card.rec-apply { border-left-color:var(--ok); }
+.card.rec-consider { border-left-color:var(--consider); }
+.card.rec-skip { border-left-color:var(--skip); }
+.card.reviewed { background:var(--accent-soft); }
+.card-head { display:flex; flex-wrap:wrap; gap:.6rem 1rem; align-items:flex-start; justify-content:space-between; }
+.card-title { flex:1 1 320px; min-width:0; }
+.card-title h3 { overflow-wrap:anywhere; }
+.card-sub { margin:.2rem 0 0; font-size:.9rem; color:var(--muted); }
+.card-sub .dot { margin:0 .35rem; }
+.card-score { display:flex; flex-direction:column; align-items:flex-end; gap:.25rem; }
+.score { font-variant-numeric:tabular-nums; font-weight:700; font-size:1.3rem; }
+.score-max { font-size:.8rem; font-weight:500; color:var(--muted); }
+.badge { font-size:.78rem; padding:.18rem .6rem; border-radius:999px; font-weight:600;
+  border:1px solid var(--line-strong); background:var(--bg); }
+.badge-apply { border-color:var(--ok); background:var(--ok-soft); color:var(--ok); }
+.badge-consider { border-color:var(--consider); background:var(--consider-soft); color:var(--consider); }
+.badge-skip { border-color:var(--skip); background:var(--skip-soft); color:var(--skip); }
+.badge-need_more_info { border-color:var(--warn-line); background:var(--warn-soft); color:var(--warn); }
+.badge-unscored { color:var(--muted); }
+
+.meta { list-style:none; display:flex; flex-wrap:wrap; gap:.3rem 1.1rem; margin:.6rem 0 .4rem;
+  padding:0; font-size:.85rem; color:var(--muted); }
+.meta-key { font-weight:600; }
+.rationale { font-size:.93rem; margin:.5rem 0 .3rem; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:.6rem 1rem; margin:.6rem 0 .2rem; }
 .grid ul { margin:0; padding-left:1.1rem; font-size:.9rem; }
-.rationale { font-size:.92rem; margin:.4rem 0 .2rem; }
-.feedback { border-top:1px dashed var(--line); margin-top:.7rem; padding-top:.6rem; display:flex; flex-wrap:wrap; gap:.5rem; align-items:center; }
-.feedback textarea { flex:1 1 240px; min-height:2.2rem; font:inherit; padding:.3rem .5rem; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
-.feedback .btn.selected { background:var(--accent); border-color:var(--accent); color:#fff; }
+.grid p { margin:0; }
+
+.feedback { border-top:1px dashed var(--line-strong); margin-top:.8rem; padding-top:.7rem; }
+.feedback h4 { color:var(--fg); }
+.feedback-hint { font-size:.82rem; }
+.feedback-controls { display:flex; flex-wrap:wrap; gap:.5rem; margin:.35rem 0; }
+.decision-btn.selected { background:var(--accent); border-color:var(--accent); color:var(--accent-fg); font-weight:600; }
+.feedback textarea { width:100%; min-height:2.4rem; font:inherit; padding:.4rem .55rem;
+  border:1px solid var(--line-strong); border-radius:8px; background:var(--bg); color:var(--fg); }
+.decision-state { font-size:.85rem; margin:.3rem 0 0; }
+
+.analytics { border-top:1px solid var(--line); padding-top:1.2rem; }
+.table-wrap { overflow-x:auto; }
 table { border-collapse:collapse; width:100%; font-size:.88rem; background:var(--card); }
-th, td { border:1px solid var(--line); padding:.35rem .5rem; text-align:left; }
+caption { caption-side:top; text-align:left; font-size:.85rem; color:var(--muted); padding:.3rem 0; }
+th, td { border:1px solid var(--line); padding:.4rem .55rem; text-align:left; }
 th { background:var(--bg); }
-.two-col { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px,1fr)); gap:1rem; margin-top:1rem; }
-.analytics { padding:1rem 1.25rem 1.5rem; border-top:1px solid var(--line); }
-.empty { padding:1.5rem; text-align:center; color:var(--muted); }
-footer { padding:1rem 1.25rem 2rem; font-size:.82rem; border-top:1px solid var(--line); }
-.toast { position:fixed; bottom:1rem; right:1rem; background:var(--card); border:1px solid var(--line); border-radius:8px; padding:.5rem .8rem; font-size:.85rem; }
+.two-col { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:1rem; margin-top:1rem; }
+.empty { padding:1.6rem; text-align:center; color:var(--muted); }
+footer { padding:1rem 1.4rem 2rem; font-size:.82rem; border-top:1px solid var(--line); }
+.toast { position:fixed; bottom:1rem; right:1rem; max-width:90vw; z-index:50;
+  background:var(--card); color:var(--fg); border:1px solid var(--line-strong);
+  border-radius:8px; padding:.6rem .9rem; font-size:.85rem; box-shadow:var(--shadow); }
 """
 
 
@@ -787,29 +928,49 @@ _SCRIPT = r"""
   "use strict";
 
   var EXPECTED_SCHEMA = "jobscout.dashboard.v1";
+  // Feedback decisions and recommendation values stay English in storage and in
+  // the payload; only their visible labels are translated for the reader.
+  var FEEDBACK_DECISIONS = ["apply", "consider", "reject"];
+  var RECOMMENDATION_LABELS = {
+    apply: "Aplicar", consider: "Considerar", skip: "Descartar",
+    need_more_info: "Requiere más información"
+  };
+  var FEEDBACK_LABELS = { apply: "Aplicar", consider: "Revisar", reject: "Descartar" };
+  var AGE_SOURCE_LABELS = {
+    posted: "fecha de publicación", first_seen: "primera vez visto", unknown: "origen desconocido"
+  };
+  var CONTENT_STATUS_LABELS = {
+    ok: "contenido completo", partial: "contenido parcial", empty: "sin contenido",
+    unknown: "contenido desconocido", blocked: "contenido bloqueado", error: "error de contenido"
+  };
+  var DUPLICATE_LABELS = {
+    new: "nueva", exact_duplicate: "duplicado exacto", probable_duplicate: "duplicado probable"
+  };
 
   var dataNode = document.getElementById("jobscout-data");
   var payload;
   try {
     payload = JSON.parse(dataNode.textContent);
   } catch (err) {
-    document.getElementById("offer-count").textContent = "Dashboard data could not be parsed.";
+    document.getElementById("offer-count").textContent = "No se pudieron leer los datos del panel.";
     return;
   }
   if (!payload || payload.schema !== EXPECTED_SCHEMA) {
     document.getElementById("offer-count").textContent =
-      "This report was generated by an incompatible jobscout version; regenerate it.";
+      "Este informe fue generado por una versión incompatible de jobscout; vuelva a generarlo.";
     return;
   }
 
   // The storage key is derived from the payload schema so the literal is never
   // duplicated: ``jobscout.feedback.v1`` lives only in the payload.
   var STORAGE_KEY = payload.feedback_schema + ":" + payload.project_id;
-  var offersById = {};
-  payload.offers.forEach(function (offer) { offersById[offer.id] = offer; });
 
   var feedback = loadFeedback();
   var filters = { text: "", recommendation: "", minScore: null, keyword: "", review: "", sort: "score" };
+
+  function labelFrom(map, value, fallback) {
+    return Object.prototype.hasOwnProperty.call(map, value) ? map[value] : fallback;
+  }
 
   function el(tag, className, text) {
     var node = document.createElement(tag);
@@ -837,13 +998,21 @@ _SCRIPT = r"""
     var box = el("div");
     box.appendChild(el("h4", null, title));
     if (!items.length) {
-      box.appendChild(el("p", "muted", "\u2014"));
+      box.appendChild(el("p", "muted", "Sin datos"));
       return box;
     }
     var list = el("ul");
     items.forEach(function (item) { list.appendChild(el("li", null, item)); });
     box.appendChild(list);
     return box;
+  }
+
+  function metaItem(key, value) {
+    var item = el("li");
+    item.appendChild(el("span", "meta-key", key));
+    item.appendChild(document.createTextNode(" "));
+    item.appendChild(el("span", "meta-value", String(value)));
+    return item;
   }
 
   function loadFeedback() {
@@ -862,7 +1031,7 @@ _SCRIPT = r"""
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(feedback));
       return true;
     } catch (err) {
-      setToast("Local storage is unavailable; feedback will not persist.");
+      setToast("El almacenamiento local no está disponible; el feedback no se guardará.");
       return false;
     }
   }
@@ -871,6 +1040,7 @@ _SCRIPT = r"""
     var existing = document.querySelector(".toast");
     if (existing) { existing.remove(); }
     var toast = el("div", "toast", message);
+    toast.setAttribute("role", "status");
     document.body.appendChild(toast);
     window.setTimeout(function () { toast.remove(); }, 4000);
   }
@@ -883,8 +1053,11 @@ _SCRIPT = r"""
   }
 
   function refreshFeedbackCount() {
-    document.getElementById("feedback-count").textContent = feedbackCount() + " reviewed";
-    document.getElementById("export-feedback").disabled = feedbackCount() === 0;
+    var count = feedbackCount();
+    document.getElementById("feedback-count").textContent = count + " revisadas";
+    document.getElementById("export-feedback").disabled = count === 0;
+    var kpi = document.getElementById("kpi-reviewed-value");
+    if (kpi) { kpi.textContent = String(count); }
   }
 
   function matches(offer) {
@@ -926,27 +1099,43 @@ _SCRIPT = r"""
 
   function renderKeywords(offer) {
     var box = el("div");
-    box.appendChild(el("h4", null, "Source keyword / observed rank"));
+    box.appendChild(el("h4", null, "Origen: palabra clave / posición observada"));
     if (!offer.keywords.length) {
-      box.appendChild(el("p", "muted", "no stored provenance"));
+      box.appendChild(el("p", "muted", "Sin procedencia guardada"));
       return box;
     }
     var list = el("ul");
     offer.keywords.forEach(function (entry) {
-      var rank = entry.rank > 0 ? entry.rank : "n/a";
-      list.appendChild(el("li", null, entry.keyword + " \u2014 observed rank " + rank +
-        " (" + entry.decision + ")"));
+      var rank = entry.rank > 0 ? entry.rank : "sin dato";
+      var decision = labelFrom(DUPLICATE_LABELS, entry.decision, entry.decision);
+      list.appendChild(el("li", null, entry.keyword + " \u2014 posición observada " + rank +
+        " (" + decision + ")"));
     });
     box.appendChild(list);
     return box;
   }
 
   function renderFeedback(offer) {
-    var box = el("div", "feedback");
+    var box = el("section", "feedback");
+    // The accessible names carry the card's own title/company, so a screen-reader
+    // user can tell one offer's feedback controls from another. The visible
+    // heading and the stored decision values stay untouched.
+    var offerLabel = offer.title + " \u2014 " + offer.company;
+    box.setAttribute("aria-label", "Mi decisión sobre la oferta: " + offerLabel);
+    box.appendChild(el("h4", null, "Mi decisión (feedback)"));
+    box.appendChild(el("p", "feedback-hint muted",
+      "Se guarda solo en este navegador. No postula ni escribe en la base de datos."));
     var entry = feedback[offer.id] || { decision: "", reason: "" };
-    ["apply", "consider", "reject"].forEach(function (decision) {
-      var button = el("button", "btn", decision);
+    var controls = el("div", "feedback-controls");
+    controls.setAttribute("role", "group");
+    controls.setAttribute("aria-label", "Marca esta oferta: " + offerLabel);
+    FEEDBACK_DECISIONS.forEach(function (decision) {
+      var decisionText = labelFrom(FEEDBACK_LABELS, decision, decision);
+      var button = el("button", "btn decision-btn", decisionText);
       button.type = "button";
+      button.setAttribute("data-decision", decision);
+      button.title = "Marca esta oferta como: " + decisionText;
+      button.setAttribute("aria-pressed", entry.decision === decision ? "true" : "false");
       if (entry.decision === decision) { button.classList.add("selected"); }
       button.addEventListener("click", function () {
         entry.decision = (entry.decision === decision) ? "" : decision;
@@ -955,10 +1144,12 @@ _SCRIPT = r"""
         saveFeedback();
         syncFeedback(offer.id, { rerender: true });
       });
-      box.appendChild(button);
+      controls.appendChild(button);
     });
+    box.appendChild(controls);
     var reason = el("textarea");
-    reason.placeholder = "optional reason (stored in this browser only)";
+    reason.placeholder = "Motivo opcional (se guarda en este navegador)";
+    reason.setAttribute("aria-label", "Motivo opcional de la decisión");
     reason.value = entry.reason || "";
     var timer = null;
     reason.addEventListener("input", function () {
@@ -972,6 +1163,10 @@ _SCRIPT = r"""
       }, 300);
     });
     box.appendChild(reason);
+    box.appendChild(el("p", "decision-state",
+      entry.decision
+        ? "Tu decisión: " + labelFrom(FEEDBACK_LABELS, entry.decision, entry.decision)
+        : "Sin decisión registrada"));
     return box;
   }
 
@@ -986,66 +1181,101 @@ _SCRIPT = r"""
     }
     var entry = feedback[jobId] || {};
     var card = document.querySelector('.card[data-job-id="' + jobId + '"]');
-    if (card) {
-      card.classList.toggle("reviewed", Boolean(entry.decision));
-      var buttons = card.querySelectorAll(".feedback .btn");
-      ["apply", "consider", "reject"].forEach(function (decision, index) {
-        if (buttons[index]) {
-          buttons[index].classList.toggle("selected", entry.decision === decision);
-        }
-      });
+    if (!card) { return; }
+    card.classList.toggle("reviewed", Boolean(entry.decision));
+    var buttons = card.querySelectorAll(".feedback-controls .decision-btn");
+    FEEDBACK_DECISIONS.forEach(function (decision, index) {
+      if (!buttons[index]) { return; }
+      var selected = entry.decision === decision;
+      buttons[index].classList.toggle("selected", selected);
+      buttons[index].setAttribute("aria-pressed", selected ? "true" : "false");
+    });
+    var state = card.querySelector(".decision-state");
+    if (state) {
+      state.textContent = entry.decision
+        ? "Tu decisión: " + labelFrom(FEEDBACK_LABELS, entry.decision, entry.decision)
+        : "Sin decisión registrada";
     }
   }
 
   function renderCard(offer) {
     var card = el("article", "card");
     card.setAttribute("data-job-id", String(offer.id));
-    var head = el("div", "card-head");
-    head.appendChild(el("h3", null, offer.title));
-    var scoreText = (offer.score === null) ? "unscored" : offer.score.toFixed(1);
-    var scoreBox = el("div");
-    scoreBox.appendChild(el("span", "score", scoreText));
-    if (offer.recommendation) {
-      scoreBox.appendChild(document.createTextNode(" "));
-      scoreBox.appendChild(el("span", "badge " + offer.recommendation, offer.recommendation));
+    if (offer.recommendation) { card.classList.add("rec-" + offer.recommendation); }
+
+    var head = el("header", "card-head");
+    var titleBox = el("div", "card-title");
+    titleBox.appendChild(el("h3", null, offer.title));
+    var sub = el("p", "card-sub");
+    sub.appendChild(el("span", null, offer.company));
+    if (offer.location) {
+      sub.appendChild(el("span", "dot", "\u00b7"));
+      sub.appendChild(el("span", null, offer.location));
     }
+    titleBox.appendChild(sub);
+    head.appendChild(titleBox);
+
+    var scoreBox = el("div", "card-score");
+    var scoreNode;
+    if (offer.score === null) {
+      scoreNode = el("span", "score", "Sin puntaje");
+    } else {
+      scoreNode = el("span", "score", offer.score.toFixed(1));
+      scoreNode.appendChild(el("span", "score-max", " / 100"));
+      scoreNode.setAttribute("aria-label", "Puntaje " + offer.score.toFixed(1) + " sobre 100");
+    }
+    scoreBox.appendChild(scoreNode);
+    var recommendation = offer.recommendation || "unscored";
+    var recommendationText = offer.recommendation
+      ? labelFrom(RECOMMENDATION_LABELS, offer.recommendation, offer.recommendation)
+      : "Sin evaluar";
+    var badge = el("span", "badge badge-" + recommendation, recommendationText);
+    badge.title = "Recomendación del modelo: " + recommendationText;
+    scoreBox.appendChild(badge);
     head.appendChild(scoreBox);
     card.appendChild(head);
 
-    var meta = el("div", "meta");
-    meta.appendChild(el("span", null, offer.company));
-    if (offer.location) { meta.appendChild(el("span", null, offer.location)); }
+    var meta = el("ul", "meta");
+    meta.appendChild(metaItem("Empresa", offer.company));
+    if (offer.location) { meta.appendChild(metaItem("Ubicación", offer.location)); }
+    if (offer.posted_at) { meta.appendChild(metaItem("Publicada", offer.posted_at)); }
     var age = (offer.age_days === null)
-      ? "unknown age"
-      : (offer.age_days + " day(s) old (" + offer.age_source + ")");
-    meta.appendChild(el("span", null, age));
-    if (offer.posted_at) { meta.appendChild(el("span", null, "posted " + offer.posted_at)); }
-    meta.appendChild(el("span", null, "job #" + offer.id + " \u00b7 " + offer.content_status));
-    if (offer.confidence !== null) {
-      meta.appendChild(el("span", null, "confidence " + offer.confidence));
-    }
+      ? "antigüedad desconocida"
+      : (offer.age_days + (offer.age_days === 1 ? " día" : " días") +
+         " (" + labelFrom(AGE_SOURCE_LABELS, offer.age_source, offer.age_source) + ")");
+    meta.appendChild(metaItem("Antigüedad", age));
+    meta.appendChild(metaItem("Estado", labelFrom(CONTENT_STATUS_LABELS, offer.content_status, offer.content_status)));
+    meta.appendChild(metaItem("Oferta", "#" + offer.id));
+    if (offer.confidence !== null) { meta.appendChild(metaItem("Confianza", offer.confidence)); }
     if (offer.scorer) {
-      meta.appendChild(el("span", null, "scorer " + offer.scorer + (offer.model ? " (" + offer.model + ")" : "")));
+      var scorerText = offer.scorer + (offer.model ? " (" + offer.model + ")" : "");
+      meta.appendChild(metaItem("Evaluador", scorerText));
     }
     var href = safeHttpUrl(offer.url);
     if (href) {
-      var link = el("a", null, "open on LinkedIn");
+      var link = el("a", null, "Ver la oferta");
       link.href = href;
       link.rel = "noopener noreferrer";
       link.target = "_blank";
-      meta.appendChild(link);
+      link.title = "Abre la oferta en LinkedIn en una pestaña nueva";
+      var linkItem = el("li");
+      linkItem.appendChild(link);
+      meta.appendChild(linkItem);
     }
     card.appendChild(meta);
 
     if (offer.rationale) {
-      card.appendChild(el("p", "rationale", offer.rationale));
+      var rationale = el("p", "rationale");
+      rationale.appendChild(el("strong", null, "Justificación del modelo: "));
+      rationale.appendChild(document.createTextNode(offer.rationale));
+      card.appendChild(rationale);
     }
 
     var grid = el("div", "grid");
-    grid.appendChild(listBlock("Strength", offer.strengths));
-    grid.appendChild(listBlock("Gap", offer.gaps));
-    grid.appendChild(listBlock("Blocker", offer.blockers));
-    grid.appendChild(listBlock("Unknown", offer.unknowns));
+    grid.appendChild(listBlock("Puntos fuertes", offer.strengths));
+    grid.appendChild(listBlock("Brechas", offer.gaps));
+    grid.appendChild(listBlock("Bloqueos", offer.blockers));
+    grid.appendChild(listBlock("Incógnitas", offer.unknowns));
     grid.appendChild(renderKeywords(offer));
     card.appendChild(grid);
     card.appendChild(renderFeedback(offer));
@@ -1062,22 +1292,25 @@ _SCRIPT = r"""
     matchesList.forEach(function (offer) { container.appendChild(renderCard(offer)); });
     document.getElementById("empty-state").hidden = matchesList.length !== 0;
     document.getElementById("offer-count").textContent =
-      matchesList.length + " of " + payload.offers.length + " offer(s) shown";
+      "Mostrando " + matchesList.length + " de " + payload.offers.length + " ofertas";
   }
 
   function cell(text) { return el("td", null, text); }
 
   function renderKeywordTable() {
     var host = document.getElementById("keyword-table");
+    host.textContent = "";
     if (!payload.keywords.length) {
-      host.appendChild(el("p", "muted", "No keyword provenance stored yet."));
+      host.appendChild(el("p", "muted", "Todavía no hay procedencia de palabras clave registrada."));
       return;
     }
     var table = el("table");
+    table.appendChild(el("caption", null,
+      "Métricas por palabra clave de origen, calculadas solo sobre ofertas activas"));
     var thead = el("thead");
     var headRow = el("tr");
-    ["Keyword", "Sightings", "Unique jobs", "Duplicate sightings", "Avg score",
-     "Scored", "Apply", "Consider"].forEach(function (label) {
+    ["Palabra clave", "Apariciones", "Ofertas únicas", "Apariciones duplicadas",
+     "Puntaje promedio", "Con puntaje", "Aplicar", "Considerar"].forEach(function (label) {
       headRow.appendChild(el("th", null, label));
     });
     thead.appendChild(headRow);
@@ -1089,7 +1322,7 @@ _SCRIPT = r"""
       row.appendChild(cell(item.sightings));
       row.appendChild(cell(item.unique_jobs));
       row.appendChild(cell(item.duplicate_sightings));
-      row.appendChild(cell(item.avg_score === null ? "\u2014" : item.avg_score));
+      row.appendChild(cell(item.avg_score === null ? "sin dato" : item.avg_score));
       row.appendChild(cell(item.scored_jobs));
       row.appendChild(cell(item.apply_count));
       row.appendChild(cell(item.consider_count));
@@ -1102,14 +1335,15 @@ _SCRIPT = r"""
   function renderTopList(hostId, items) {
     var host = document.getElementById(hostId);
     if (!items.length) {
-      host.appendChild(el("p", "muted", "Not enough data yet."));
+      host.appendChild(el("p", "muted", "Todavía no hay datos suficientes."));
       return;
     }
     var list = el("ol");
     items.forEach(function (item) {
-      var label = item.keyword + " \u2014 avg " + (item.avg_score === null ? "n/a" : item.avg_score) +
-        ", " + item.unique_jobs + " job(s), " + (item.apply_count + item.consider_count) +
-        " apply/consider";
+      var average = (item.avg_score === null) ? "sin dato" : item.avg_score;
+      var label = item.keyword + " \u2014 promedio " + average +
+        ", " + item.unique_jobs + " oferta(s), " + (item.apply_count + item.consider_count) +
+        " con recomendación de aplicar o considerar";
       list.appendChild(el("li", null, label));
     });
     host.appendChild(list);
@@ -1117,30 +1351,30 @@ _SCRIPT = r"""
 
   function renderSummary() {
     var host = document.getElementById("summary");
+    host.textContent = "";
     var summary = payload.summary;
-    var chips = {
-      "active jobs": summary.active_jobs,
-      "shown": summary.jobs_shown,
-      "scored": summary.scored,
-      "unscored": summary.unscored,
-      "apply": summary.recommendations.apply,
-      "consider": summary.recommendations.consider,
-      "skip": summary.recommendations.skip,
-      "need_more_info": summary.recommendations.need_more_info,
-      "keywords": summary.keywords
-    };
-    Object.keys(chips).forEach(function (label) {
-      host.appendChild(el("span", "chip", label + ": " + chips[label]));
+    var recommendations = summary.recommendations || {};
+    var cards = [
+      ["Ofertas mostradas", summary.jobs_shown, ""],
+      ["Con puntaje", summary.scored, ""],
+      ["Recomendación: aplicar", recommendations.apply || 0, "apply"],
+      ["Recomendación: considerar", recommendations.consider || 0, "consider"],
+      ["Recomendación: descartar", recommendations.skip || 0, "skip"],
+      ["Revisadas (tu decisión)", feedbackCount(), "reviewed"]
+    ];
+    cards.forEach(function (item) {
+      var card = el("article", "kpi" + (item[2] ? " kpi-" + item[2] : ""));
+      var value = el("span", "kpi-value", item[1]);
+      if (item[2] === "reviewed") { value.id = "kpi-reviewed-value"; }
+      card.appendChild(value);
+      card.appendChild(el("span", "kpi-label", item[0]));
+      host.appendChild(card);
     });
-  }
-
-  function renderWarnings() {
-    var host = document.getElementById("warnings");
-    if (!payload.warnings.length) { host.hidden = true; return; }
-    payload.warnings.forEach(function (warning) {
-      host.appendChild(el("p", "warn", warning));
-    });
-    host.classList.add("warn");
+    document.getElementById("summary-note").textContent =
+      "Ofertas activas en la base: " + summary.active_jobs +
+      " \u00b7 Sin puntaje entre las mostradas: " + summary.unscored +
+      " \u00b7 Requieren más información: " + (recommendations.need_more_info || 0) +
+      " \u00b7 Palabras clave analizadas: " + summary.keywords;
   }
 
   function populateKeywordFilter() {
@@ -1158,7 +1392,7 @@ _SCRIPT = r"""
       project_id: payload.project_id,
       exported_at: new Date().toISOString(),
       source: "jobscout-dashboard",
-      note: "Local manual feedback. Not submitted anywhere.",
+      note: "Feedback manual local. No se envía a ningún servicio ni a LinkedIn.",
       feedback: feedback
     };
     var blob = new Blob([JSON.stringify(document_, null, 2)], { type: "application/json" });
@@ -1170,7 +1404,7 @@ _SCRIPT = r"""
     link.click();
     document.body.removeChild(link);
     window.setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-    setToast("Feedback exported. Keep the file to import it later.");
+    setToast("Feedback exportado. Conserve el archivo como respaldo.");
   }
 
   function bindFilters() {
@@ -1214,7 +1448,6 @@ _SCRIPT = r"""
   }
 
   renderSummary();
-  renderWarnings();
   populateKeywordFilter();
   renderKeywordTable();
   renderTopList("top-quality", payload.top_quality);
@@ -1239,19 +1472,29 @@ def render_dashboard_html(payload: dict[str, Any]) -> str:
     """
     generated = html.escape(str(payload.get("generated_at") or ""))
     label = payload.get("database_label")
-    meta_parts = [f"generated {generated}"]
+    summary = payload.get("summary") or {}
+    limits = payload.get("limits") or {}
+    meta_parts = [f"Generado: {generated}"]
     if label:
-        meta_parts.append(f"database: {html.escape(str(label))}")
+        meta_parts.append(f"Base de datos: {html.escape(str(label))}")
+    scope = (
+        f"Alcance: {int(summary.get('jobs_shown') or 0)} de "
+        f"{int(summary.get('active_jobs') or 0)} ofertas activas"
+    )
+    if limits.get("top") is not None:
+        scope += f" (límite top {int(limits['top'])})"
+    meta_parts.append(scope)
     meta = " &middot; ".join(meta_parts)
     warnings = payload.get("warnings") or []
     warnings_html = (
         "".join(f"<p>{html.escape(str(item))}</p>" for item in warnings)
         if warnings
-        else "<p>No warnings.</p>"
+        else "<p>Sin avisos.</p>"
     )
     feedback_schema = str(payload.get("feedback_schema") or FEEDBACK_SCHEMA)
     storage_key = html.escape(f"{feedback_schema}:{payload.get('project_id') or ''}")
-    title = html.escape(f"jobscout dashboard ({' | '.join(meta_parts)})")
+    heading = str(label) if label else "informe local"
+    title = html.escape(f"Panel de jobscout \u2014 {heading}")
     return _render_template(
         _HTML_TEMPLATE,
         {
@@ -1259,8 +1502,8 @@ def render_dashboard_html(payload: dict[str, Any]) -> str:
             "STYLE": _STYLE,
             "META": meta,
             "WARNINGS": warnings_html,
+            "WARNINGS_CLASS": "notice warn" if warnings else "notice",
             "STORAGE_KEY": storage_key,
-            "SUMMARY": "",
             "DATA": embed_json(payload),
             "SCRIPT": _SCRIPT,
         },

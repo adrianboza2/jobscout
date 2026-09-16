@@ -413,6 +413,12 @@ you want those instructions.
 file embeds its own CSS, JavaScript, and data: it needs no CDN, no external
 asset, no server, and no network request. Open it directly, or double-click it.
 
+All visible dashboard text is neutral/professional Spanish. Internal schema keys,
+JSON field names, JavaScript identifiers, CLI command names, and the values stored
+in SQLite (for example `apply`, `consider`, `skip`) stay English, so the report
+never drifts from the database or the CLI. Recommendation values are translated
+for display only.
+
 ```bash
 # POSIX (bash/zsh)
 python -m jobscout dashboard --output reports/jobscout-dashboard.html --top 25
@@ -436,26 +442,44 @@ start "" reports\jobscout-dashboard.html
 and `--top` to `25`. Forward slashes work on Windows too:
 `--output reports/dashboard.html`.
 
+The header states the report title, its purpose, the generation timestamp, the
+database label and data scope, plus an explicit privacy/offline notice. Summary
+**KPI cards** show offers shown, scored, apply, consider, skip, and the number
+reviewed in this browser; a secondary line carries the active-job, unscored,
+`need_more_info`, and keyword counts.
+
 What the report contains, per ranked offer:
 
-- the score and the **model recommendation** (`apply` / `consider` / `skip` /
-  `need_more_info`), with the scorer name, model, and confidence;
+- a prominent **score** (`x / 100`) and the **model recommendation** badge
+  (`apply` / `consider` / `skip` / `need_more_info` rendered as Aplicar /
+  Considerar / Descartar / Requiere más información), with the scorer name,
+  model, and confidence;
 - title, company, location, posting age/date (falling back to first-seen when the
   posting date is unknown), content status, and the direct LinkedIn URL;
 - every **source keyword** that surfaced the job and the **observed result rank**
   for that keyword, alongside the dedupe verdict;
-- strengths, gaps, blockers, unknowns, and a bounded rationale.
+- strengths, gaps, blockers, unknowns, and a bounded rationale, under Spanish
+  headings (Puntos fuertes, Brechas, Bloqueos, Incógnitas);
+- clearly separated **human feedback** controls (Aplicar / Revisar / Descartar),
+  visually distinct from the model recommendation.
 
-Client-side controls filter and search the embedded data: free text over title,
-company, and location; recommendation; minimum score; keyword; reviewed /
-unreviewed state; and sorting by score or freshness. Summary counts are shown at
-the top.
+The toolbar groups free-text search, model-recommendation filter, source-keyword
+filter, minimum score, review state, sort, and a reset action. It reflows to a
+single column on narrow Windows browser widths and honours keyboard focus.
+Semantic headings, explicit `label for` wiring, `aria-labelledby` sections,
+`aria-pressed` feedback buttons, and text (not colour alone) for every state keep
+the page readable and screen-reader friendly.
 
 A **keyword performance** section is computed from stored search provenance and
-the latest successful evaluation: sightings, unique jobs, duplicate sightings,
-average score, scored/unscored counts, and apply/consider counts, plus two
-top-10 tables (by score quality, and by positive recommendations) that only
-include keywords the data can actually rank. Observed rank is shown as
+the latest successful evaluation. Its table renders one row per source keyword
+with these columns: keyword (*Palabra clave*), sightings (*Apariciones*), unique
+jobs (*Ofertas únicas*), duplicate sightings (*Apariciones duplicadas*), average
+score (*Puntaje promedio*), scored jobs (*Con puntaje*), and apply / consider
+counts (*Aplicar* / *Considerar*). The average covers only the keyword's jobs
+with a successful evaluation and reads *sin dato* when none is scored; there is
+no unscored column, so unscored jobs are simply absent from the average. Two
+top-10 lists follow (by score quality, and by positive recommendations); both
+only include keywords the data can actually rank. Observed rank is shown as
 provenance only — LinkedIn result order is *not* treated as a quality signal.
 
 ### Model recommendation vs. human feedback
@@ -467,14 +491,16 @@ These are two different things, and the report keeps them apart:
 | Produced by | `score` (heuristic, LLM, or OpenCode scorer) | you, clicking in the report |
 | Stored in | SQLite `evaluations` table, with full provenance | this browser's `localStorage`, keyed by project + job id |
 | Visible to `jobscout` | yes | no — the CLI never reads it |
-| Portable | yes, it is in the database | only via the **Export local feedback (JSON)** button |
+| Portable | yes, it is in the database | only via the **Exportar feedback local (JSON)** button |
 
-Each offer has local **apply / consider / reject** buttons and an optional reason
-box. Feedback survives a page reload in the same browser, and the export button
-downloads a `jobscout-feedback.json` document (`jobscout.feedback.v1`) that can
-be imported later. Feedback is **local only**: it does not submit an application,
-does not touch LinkedIn, and does not write to the SQLite database. There is no
-import yet — the export exists so the data can be carried forward.
+Each offer has local feedback buttons (**Aplicar / Revisar / Descartar**, stored
+as `apply` / `consider` / `reject`) and an optional reason box. The human label
+*Revisar* is deliberately distinct from the model recommendation *Considerar*, so
+the two signals are never confused. Feedback survives a page reload in the same
+browser, and the export button downloads a `jobscout-feedback.json` document
+(`jobscout.feedback.v1`). Feedback is **local only**: it does not submit an
+application, does not touch LinkedIn, and does not write to the SQLite database.
+There is no import yet — the export exists so the data can be carried forward.
 
 Browser-local feedback is keyed by a hash of the database path (not the path
 itself), so the report never contains an absolute local path and two databases
@@ -593,8 +619,8 @@ executable resolution, subprocess output bounds, and the OpenCode CLI scorer.
 Dashboard coverage adds HTML escaping/XSS safety (a hostile job title cannot
 close its script tag or reach the DOM as markup), data minimization (no
 description, profile, absolute path, or raw payload), generation and read-only
-behaviour, filter/feedback surface, keyword aggregation, and the CLI error and
-success paths.
+behaviour, the Spanish visible-label and KPI/toolbar surface, filter/feedback
+behaviour, keyword aggregation, and the CLI error and success paths.
 
 Run the CLI smoke test against the fixtures (the `data/` directory is
 git-ignored, so the smoke database never gets committed):

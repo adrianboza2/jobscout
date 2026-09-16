@@ -295,7 +295,7 @@ def test_literal_template_tokens_in_metadata_and_offers_survive(db_file: Path) -
     html_text = render_dashboard_html(payload)
 
     # Metadata and warnings keep the literal token instead of the payload/script.
-    assert "database: __DATA__" in html_text
+    assert "Base de datos: __DATA__" in html_text
     assert "<p>__SCRIPT__ warning</p>" in html_text
     # The embedded payload still parses and the tokens survive as data.
     data = _extract_payload(html_text)
@@ -767,13 +767,21 @@ def test_report_exposes_filters_search_feedback_and_summary(db_file: Path) -> No
     ):
         assert f'id="{element_id}"' in html_text, element_id
 
-    # Feedback values offered by the report.
-    assert ">apply<" in html_text
-    assert ">consider<" in html_text
-    assert ">skip<" in html_text
+    # Visible labels are neutral Spanish; the option values stay English keys.
+    assert ">Aplicar</option>" in html_text
+    assert ">Considerar</option>" in html_text
+    assert ">Descartar</option>" in html_text
+    assert ">Requiere más información</option>" in html_text
+    assert ">Sin puntaje</option>" in html_text
+    # Human feedback labels stay separate from the model recommendation labels.
+    assert (
+        'var FEEDBACK_LABELS = { apply: "Aplicar", consider: "Revisar", reject: "Descartar" };'
+        in html_text
+    )
     assert '["apply", "consider", "reject"]' in html_text
     assert "localStorage" in html_text
-    assert "does not write to the SQLite" in html_text
+    assert "no se escribe en la base" in html_text
+    assert "SQLite" in html_text
 
     payload = _extract_payload(html_text)
     assert payload["summary"]["recommendations"]["apply"] == 1
@@ -784,9 +792,92 @@ def test_report_exposes_filters_search_feedback_and_summary(db_file: Path) -> No
     assert f"jobscout.feedback.v1:{payload['project_id']}" in html_text
 
 
+def test_visible_ui_text_is_neutral_spanish(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    assert '<html lang="es">' in html_text
+    for label in (
+        "Panel de ofertas",
+        "Resumen",
+        "Buscar y filtrar",
+        "Privacidad y funcionamiento sin conexión",
+        "Desempeño por palabra clave",
+        "Restablecer filtros",
+        "Ofertas mostradas",
+        "Revisadas (tu decisión)",
+        "Puntos fuertes",
+        "Brechas",
+        "Bloqueos",
+        "Incógnitas",
+        "Justificación del modelo:",
+        "Ver la oferta",
+        "Sin puntaje",
+    ):
+        assert label in html_text, label
+
+    # The embedded payload keeps its English schema keys and values.
+    payload = _extract_payload(html_text)
+    assert payload["schema"] == "jobscout.dashboard.v1"
+    assert "recommendation" in payload["offers"][0]
+    assert payload["offers"][0]["recommendation"] == "apply"
+
+
+def test_dashboard_exposes_accessible_kpi_and_provenance_structure(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    # Section landmarks carry stable ids and explicit accessible names.
+    assert 'id="summary"' in html_text
+    assert 'id="summary-note"' in html_text
+    assert 'id="kpi-reviewed-value"' not in html_text  # created by the client script
+    assert 'value.id = "kpi-reviewed-value";' in html_text
+    assert 'role="search"' in html_text
+    assert 'aria-labelledby="privacy-title"' in html_text
+    assert 'aria-labelledby="analytics-title"' in html_text
+    assert 'class="skip-link"' in html_text
+    # Feedback buttons expose a pressed state so colour is not the only signal.
+    assert 'setAttribute("aria-pressed"' in html_text
+    # Observed rank is framed as provenance, not as quality.
+    assert "La posición observada es procedencia" in html_text
+
+
+def test_feedback_region_accessible_name_identifies_the_offer(db_file: Path) -> None:
+    """Each card's feedback region is named with its own title and company.
+
+    The cards are built client-side, so the accessible name is asserted where the
+    script composes it: it must derive from ``offer.title`` and ``offer.company``
+    instead of a card-independent constant, so a screen-reader user can tell the
+    feedback controls of one offer from another.
+    """
+    html_text = generate_and_read(db_file)
+
+    region = re.search(r'box\.setAttribute\("aria-label",\s*([^;]+)\);', html_text)
+    assert region is not None, "the feedback region must carry an accessible name"
+    assert "Mi decisión sobre la oferta: " in region.group(1)
+    assert "offerLabel" in region.group(1)
+
+    scoped = re.search(r"var offerLabel = ([^;]+);", html_text)
+    assert scoped is not None, "the scoped label must be built from the offer"
+    assert "offer.title" in scoped.group(1)
+    assert "offer.company" in scoped.group(1)
+
+    controls = re.search(r'controls\.setAttribute\("aria-label",\s*([^;]+)\);', html_text)
+    assert controls is not None, "the button group must carry an accessible name"
+    assert "offerLabel" in controls.group(1)
+
+    # The card-independent label must not come back.
+    assert 'aria-label", "Mi decisión sobre esta oferta"' not in html_text
+    # Visible Spanish text and the stored feedback surface stay unchanged.
+    assert "Mi decisión (feedback)" in html_text
+    assert (
+        'var FEEDBACK_LABELS = { apply: "Aplicar", consider: "Revisar", reject: "Descartar" };'
+        in html_text
+    )
+    assert 'var STORAGE_KEY = payload.feedback_schema + ":" + payload.project_id;' in html_text
+
+
 def test_export_button_is_visible_and_disabled_until_reviewed(db_file: Path) -> None:
     html_text = generate_and_read(db_file)
-    assert "Export local feedback (JSON)" in html_text
+    assert "Exportar feedback local (JSON)" in html_text
     # The export payload shape is written by the page, not by the DB.
     assert "jobscout-feedback.json" in html_text
     assert "source: \"jobscout-dashboard\"" in html_text
@@ -807,7 +898,7 @@ def test_report_guards_against_an_incompatible_payload_schema(db_file: Path) -> 
 
     assert 'var EXPECTED_SCHEMA = "jobscout.dashboard.v1";' in html_text
     assert "payload.schema !== EXPECTED_SCHEMA" in html_text
-    assert "incompatible jobscout version" in html_text
+    assert "versión incompatible de jobscout" in html_text
 
 
 def test_client_url_guard_allows_only_http_s(db_file: Path) -> None:
@@ -876,6 +967,33 @@ def test_keyword_aggregation_counts_and_quality(db_file: Path) -> None:
     ]
 
 
+def test_keyword_table_renders_the_documented_columns(db_file: Path) -> None:
+    """The rendered header row is the surface the README documents.
+
+    ``unscored_jobs`` stays in the payload but has no column of its own, so the
+    documentation must not promise an unscored column.
+    """
+    html_text = generate_and_read(db_file)
+
+    headers = re.search(r'\["Palabra clave".*?\]', html_text, re.DOTALL)
+    assert headers is not None, "the keyword table must render its header row"
+    assert re.findall(r'"([^"]+)"', headers.group(0)) == [
+        "Palabra clave",
+        "Apariciones",
+        "Ofertas únicas",
+        "Apariciones duplicadas",
+        "Puntaje promedio",
+        "Con puntaje",
+        "Aplicar",
+        "Considerar",
+    ]
+    # The average column reads "sin dato" when no job of the keyword is scored.
+    assert 'cell(item.avg_score === null ? "sin dato" : item.avg_score)' in html_text
+
+    payload = _extract_payload(html_text)
+    assert "unscored_jobs" in payload["keywords"][0]
+
+
 def test_inactive_jobs_are_excluded_from_keyword_analytics(db_file: Path) -> None:
     before = _payload(db_file)
     stats_before = {item["keyword"]: item for item in before["keywords"]}
@@ -914,7 +1032,7 @@ def test_keyword_analytics_are_empty_without_provenance(tmp_path: Path) -> None:
     assert payload["keywords"] == []
     assert payload["top_quality"] == []
     assert payload["top_yield"] == []
-    assert any("keyword provenance" in warning for warning in payload["warnings"])
+    assert any("procedencia de palabras clave" in warning for warning in payload["warnings"])
 
 
 def test_missing_evaluations_warn_but_still_render(tmp_path: Path) -> None:
@@ -929,10 +1047,10 @@ def test_missing_evaluations_warn_but_still_render(tmp_path: Path) -> None:
     payload = _payload(path)
     assert payload["summary"]["scored"] == 0
     assert payload["summary"]["active_jobs"] == 1
-    assert any("no successful evaluation" in warning for warning in payload["warnings"])
+    assert any("ninguna evaluación exitosa" in warning for warning in payload["warnings"])
 
     html_text = render_dashboard_html(payload)
-    assert "no successful evaluation" in html_text
+    assert "ninguna evaluación exitosa" in html_text
 
 
 def test_empty_database_warns_clearly(tmp_path: Path) -> None:
@@ -945,7 +1063,7 @@ def test_empty_database_warns_clearly(tmp_path: Path) -> None:
 
     payload = _payload(path)
     assert payload["summary"]["active_jobs"] == 0
-    assert any("no active jobs" in warning for warning in payload["warnings"])
+    assert any("no hay ofertas activas" in warning for warning in payload["warnings"])
     # An empty database is still a valid report, not an error.
     html_text = render_dashboard_html(payload)
     assert "jobscout-data" in html_text
