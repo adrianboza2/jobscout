@@ -5,10 +5,15 @@ working MVP.
 
 ## Priority 1 — Turn feedback into durable data
 
+Status: implemented and verified.
+
 - Import the dashboard's exported `jobscout.feedback.v1` JSON into SQLite.
 - Store the human decision separately from the model recommendation.
 - Store an optional reason and timestamp.
 - Keep the import idempotent and validate the export schema before writing.
+
+The dashboard export was imported into SQLite successfully. Future exports should
+be imported with `jobscout import-feedback` after reviewing them locally.
 
 ## Priority 2 — Optimize search keywords
 
@@ -50,6 +55,8 @@ LinkedIn result position is provenance, not quality ground truth.
 
 ## Priority 3 — Improve offer lifecycle handling
 
+Status: open.
+
 - Detect expired, removed, redirected, or duplicate LinkedIn postings.
 - Mark stale offers without deleting their historical evaluation.
 - Refresh only active/relevant offers.
@@ -69,10 +76,28 @@ decisions; it never computes agreement, false positives, or false negatives.
 
 ## Priority 5 — Improve daily workflow
 
-- Add optional scheduling with explicit user control.
+- Search cadence: run an exhaustive bounded sweep of all approved keyword families
+  every 3–4 days, using `--max-pages 2`; do not search every day by default.
+- After each sweep, enrich only new or incomplete offers and score only new jobs.
+- Review the dashboard and import feedback in the same session.
+- Inspect keyword performance after at least three comparable cycles.
+- Add optional scheduling only with explicit user control.
 - Add local or opt-in notifications for high-value offers.
 - Add a dashboard view for new and unreviewed offers.
 - Keep all automation read-only with respect to applications.
+
+## Priority 7 — Dashboard UI/UX maintenance
+
+Status: current desktop redesign implemented on `master`; keep this area focused
+on usability rather than decorative expansion.
+
+- Keep offers visually separated and easy to scan at desktop widths.
+- Preserve the distinction between model recommendations and human feedback.
+- Keep interactive effects lightweight and respect reduced-motion preferences.
+- Keep the report self-contained, offline, dependency-free, and safe to open via
+  `file://`.
+- Re-run dashboard and security checks after changes to HTML, JavaScript, URLs,
+  localStorage, or report rendering.
 
 ## Priority 6 — Expand sources
 
@@ -98,4 +123,6 @@ automatically.
 - Run the full offline test suite before each release.
 - Re-run the security audit after changes to collectors, subprocesses, URLs,
   secrets, or report rendering.
+- Never commit `jobscout-feedback.json`, private profiles, databases, raw captures,
+  generated reports, or unrelated local files.
 - Keep the private GitHub repository synchronized only after reviewing commits.
