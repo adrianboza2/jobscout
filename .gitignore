@@ -1,0 +1,76 @@
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# --- Tooling caches ---------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Local runtime data (SQLite databases, cached raw payloads, logs) --------
+# Every SQLite sidecar is ignored, not just the main file, so an interrupted
+# run never leaves a journal, WAL, or shared-memory file staged by accident.
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.log
+
+# --- Local secrets and machine-specific config ------------------------------
+# `.env.example` is the tracked template; every other `.env*` file stays local.
+.env
+.env.*
+!.env.example
+secrets.*
+credentials.*
+*.pem
+*.key
+
+# --- Captured pages and local reports ---------------------------------------
+# Raw captures of live pages, ad-hoc dumps, and local analysis reports must
+# never be published. Root-anchored so the bundled test fixtures keep working.
+/latest-*.html
+/latest-*.htm
+/captures/
+/dumps/
+/reports/
+/*.report.json
+*.local.json
+
+# --- Editor / IDE -----------------------------------------------------------
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# --- OS junk ----------------------------------------------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Candidate profile (personal data: never published) ---------------------
+profile.yaml
+profile.yml
+profile.local.yaml
+
+# --- Runtime skill-registry artifacts (keep the directory itself) -----------
+.atl/
