@@ -1,629 +1,351 @@
 # jobscout
 
-Local-first job search toolkit: collect public LinkedIn search results at very low
-volume, normalize and deduplicate them into SQLite, and score each job against a
-local structured profile — with a deterministic offline scorer by default, an
-optional OpenAI-compatible LLM scorer, and an optional scorer that reuses your
-locally authenticated OpenCode CLI (no API key required).
+Herramienta **local-first** para buscar empleo: recolecta resultados públicos de
+búsqueda de LinkedIn a muy bajo volumen, los normaliza y deduplica en SQLite, y
+puntúa cada oferta contra un perfil estructurado local. El puntuador
+predeterminado es determinista y funciona sin conexión; además hay dos
+puntuadores opcionales: uno compatible con OpenAI y otro que reutiliza tu CLI de
+OpenCode ya autenticada (sin clave de API).
 
-Nothing leaves your machine except the requests you explicitly opt into.
+Nada sale de tu equipo salvo las solicitudes que autorizas explícitamente.
+**jobscout no envía postulaciones automáticas.**
 
-## Scope and safety rules
+**Idiomas:** Español (este archivo) · [English version](README.en.md)
 
-These are enforced by the code, not just documented:
+## Qué hace y qué no hace
 
-| Rule | Where it lives |
-|------|----------------|
-| The LinkedIn collector is **disabled by default**; it refuses to run without `--confirm-network` | `collectors/linkedin.py` |
-| The job-detail fetcher is **disabled by default**; it refuses to run without `--confirm-network` (or an offline `--fixture`) | `collectors/linkedin_details.py`, `cli.py` |
-| `--dry-run` prints the exact request plan and performs **no I/O** | `collectors/linkedin.py`, `collectors/linkedin_details.py` |
-| No login automation, no cookies, no CAPTCHA handling, no anti-bot evasion | only the public guest endpoints are used, with an honest user agent |
-| Bounded page/item caps, request delay, jitter, timeout, and download size | `config.py`, `collectors/ratelimit.py`, `collectors/base.py` |
-| Only *transient* failures are retried (timeouts, 5xx); 401/403/429/unexpected statuses **fail closed immediately** | `collectors/ratelimit.py` |
-| A partial or failed detail result **never overwrites** a previously successful full description | `pipeline._merge_detail_description` |
-| Raw payloads are stored for provenance, size-bounded, and never store credentials | `config.is_safe_to_store` |
-| Configured LinkedIn endpoints must be **HTTPS on `linkedin.com` or `*.linkedin.com`**; the LLM base URL must be HTTPS. Other schemes (`file:`, `ftp:`, `data:`, `http:`), unrelated hosts, and embedded credentials are rejected | `url_policy.py`, `config.Settings` |
-| Redirects are followed only **same-host** or within the LinkedIn parent domain; a cross-host or non-HTTP redirect fails closed and is never retried | `url_policy.redirect_allowed`, `collectors/base.build_redirect_handler` |
-| HTTP **error bodies** are read through the same download ceiling as successful bodies | `collectors/base.UrllibHttpClient` |
-| The OpenCode executable is resolved only through an **absolute path or `shutil.which`**; a cwd-relative planted binary is never used | `scoring/opencode.resolve_executable` |
-| OpenCode child output is bounded **while the process runs** (Popen + reader threads); overflow or timeout kills the child | `scoring/opencode.run_command` |
-| Job text is treated as untrusted data; the LLM is instructed never to follow instructions inside it, and prompt delimiters are neutralized | `scoring/llm.py` |
-| The HTML dashboard reads the database with `PRAGMA query_only` and never creates a missing database; it emits no external asset, CDN, or network request, escapes all embedded data, and builds the DOM with `textContent` only | `dashboard.py`, `db.connect_readonly` |
-| The OpenCode CLI scorer shells out with an argument array (no `shell=True`), runs `--pure`, bounds time and output, removes configured secrets from the child environment, and redacts/refuses to persist any output containing them | `scoring/opencode.py` |
+| Hace | No hace |
+|------|---------|
+| Recolecta tarjetas públicas de búsqueda (opt-in y acotado) | No inicia sesión, no usa cookies, no resuelve CAPTCHA, no evade antibots |
+| Enriquece ofertas con la descripción completa (opt-in y acotado) | No postula, no contacta a nadie, no automatiza candidaturas |
+| Deduplica y guarda todo en SQLite local | No envía datos a ningún servidor propio |
+| Puntúa con heurística, LLM compatible con OpenAI u OpenCode CLI | No programa ejecuciones ni envía notificaciones |
+| Genera un tablero HTML local en español | No escribe el feedback humano en la base de datos |
 
-Operators are responsible for complying with the target site's terms of service
-and local law. Do not run live collection in CI.
+## Inicio rápido (solo fixtures, sin red)
 
-## Security notes
+Requisitos: **Python 3.11+** y `PyYAML` (solo para perfiles YAML; los perfiles
+JSON no necesitan dependencias). El puntuador heurístico y la suite de pruebas no
+necesitan red ni claves.
 
-These notes describe the guarantees the code enforces today, and the risks it
-does **not** remove.
-
-### URL and redirect policy
-
-- A configured search or detail URL is validated when `Settings` is built (from
-  the environment, `.env`, `--dry-run`, or a library caller). It must be `https`
-  on `linkedin.com` or a `*.linkedin.com` host, with no embedded credentials and
-  no non-default port. `file://`, `ftp://`, `data://`, plain `http://`,
-  lookalike hosts (`linkedin.com.evil.test`, `evil-linkedin.com`), and
-  `https://user:pass@host` are all rejected with a configuration error.
-- `JOBSCOUT_LLM_BASE_URL` must be `https` with no embedded credentials. Local
-  and file schemes (`http://localhost`, `file:`, `data:`, `ftp:`) are refused so
-  an API key is never sent in the clear. Offline tests inject a fake transport
-  instead of lowering this rule.
-- The `urllib` transport replaces the default redirect handling. A redirect is
-  followed only when the target host is the same host, or — for LinkedIn — under
-  the same `linkedin.com` parent domain (`www.linkedin.com` → `es.linkedin.com`
-  still works). A cross-host or non-HTTP redirect raises `UnsafeUrlError`, which
-  fails closed and is **never** retried.
-- A request to a non-HTTP scheme is refused before any I/O. This closes the
-  local-file-disclosure path where `urllib` would return a `file://` target's
-  bytes with a `None` status.
-
-### Subprocess bounds (OpenCode CLI)
-
-- Output is captured with `subprocess.Popen` and reader threads that enforce
-  `JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES` **as the bytes arrive**. Crossing the
-  ceiling kills the child instead of buffering an unbounded response in memory;
-  the timeout is enforced by the same supervisor loop. The previous
-  `subprocess.run(capture_output=True)` buffered everything before any ceiling
-  applied.
-- The command is always an argument array with `shell=False`, and the
-  configured secret is removed from the child environment and redacted from
-  captured output.
-
-### OpenCode tool permissions — residual risk (H2)
-
-`opencode run --help` (v1.14.30) exposes **no reliable tool-denial or sandbox
-flag**. The only permission-related switch is
-`--dangerously-skip-permissions`, which *widens* access and is never passed.
-Tool allow/deny policy lives in OpenCode's own agent/`opencode.json`
-configuration, which jobscout does not control or verify.
-
-What jobscout does today:
-
-- runs the CLI with `--pure` by default (`JOBSCOUT_OPENCODE_PURE=true`), which
-  disables external plugins — the most restrictive invocation available without
-  editing global config;
-- runs from a neutral working directory (`JOBSCOUT_OPENCODE_WORKDIR`, default the
-  system temp directory) so this repository's agent instructions are not loaded;
-- treats the job posting as untrusted data and neutralizes prompt-delimiter
-  forgery in the prompt.
-
-What remains: a prompt-injected or misbehaving model could still attempt tool
-calls permitted by the operator's local OpenCode configuration. **This is an
-accepted residual risk (H2).** If you need a hard guarantee, configure a
-restrictive OpenCode agent whose tools are denied in your local OpenCode config
-and select it yourself, or do not use the OpenCode scorer for untrusted
-postings.
-
-### Private local data
-
-- The candidate profile (`profile.yaml`), the SQLite database and all of its
-  sidecars, raw page captures, local reports, and every `.env*` file other than
-  `.env.example` are git-ignored. Never commit them.
-- Raw payloads are only persisted when they are under
-  `JOBSCOUT_RAW_MAX_BYTES` and contain no credential-looking content.
-  `is_safe_to_store` additionally refuses LinkedIn session cookies (`li_at`,
-  `JSESSIONID`), PEM private-key headers, labelled `*_TOKEN`/`*_SECRET`/
-  `password`/`client_secret`/`refresh_token`/`access_token` values, and
-  AWS/GitHub/NVIDIA-style tokens. Labelled credentials are detected in plain,
-  JSON-quoted (`{"password": "..."}`), and JSON-escaped (`\"password\": \"...\"`)
-  forms, so a credential embedded in a model or API payload is still refused.
-
-
-## Requirements
-
-- Python 3.11+ (`sqlite3`, `urllib`, `argparse` from the standard library)
-- `PyYAML` for YAML profiles (JSON profiles work with no third-party packages)
-- Optional: the [OpenCode](https://opencode.ai) CLI, already authenticated, only
-  if you want to use `score --scorer opencode`
-
-## Install
+Instalación editable:
 
 ```bash
+# POSIX (bash/zsh)
 python -m venv .venv
-.venv/Scripts/activate          # Windows;  source .venv/bin/activate on POSIX
+source .venv/bin/activate
 pip install -e ".[dev]"
-```
-
-The editable install puts the `jobscout` package on `sys.path`, so every
-`python -m jobscout ...` command works from the repository root.
-
-Running without installing also works: `pyproject.toml` puts `src/` on
-`sys.path` for pytest, and the CLI can be invoked directly by adding `src/` to
-`PYTHONPATH`:
-
-```bash
-# POSIX shells (bash/zsh)
-PYTHONPATH=src python -m jobscout init-db
 ```
 
 ```powershell
 # Windows PowerShell
-$env:PYTHONPATH = "src"; python -m jobscout init-db
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
 ```
 
-Copy the configuration and profile templates:
+Sin instalar el paquete también funciona: antepón `PYTHONPATH=src` (POSIX) o
+define `$env:PYTHONPATH = "src"` una vez en PowerShell.
+
+Copia las plantillas (`.env` y `profile.yaml` quedan ignorados por Git):
 
 ```bash
 cp .env.example .env
 cp profile.example.yaml profile.yaml
 ```
 
-On Windows (`cmd` or PowerShell) use `copy .env.example .env` and
-`copy profile.example.yaml profile.yaml` instead.
+```powershell
+Copy-Item .env.example .env
+Copy-Item profile.example.yaml profile.yaml
+```
 
-## Offline quick start (no network, ever)
-
-These commands assume either the editable install above or the `PYTHONPATH=src`
-alternative. They run from the repository root and only touch files inside it
-(`data/` is git-ignored).
+Recorrido completo con datos sintéticos, de punta a punta:
 
 ```bash
-# 1. Create the SQLite database
 python -m jobscout init-db
-
-# 2. Ingest the bundled synthetic search-card fixture (no descriptions)
 python -m jobscout ingest-fixture tests/fixtures/linkedin_search_cards_sample.json
-
-# 3. Enrich those cards with full descriptions from an offline detail fixture
 python -m jobscout fetch-details --fixture tests/fixtures/linkedin_detail_responses.json
-
-# 4. Look at what was stored
-python -m jobscout list --limit 10
-
-# 5. Score everything with the deterministic offline scorer
 python -m jobscout score --all --rescore --scorer heuristic --profile profile.example.yaml
-
-# 6. Rank the scored jobs
 python -m jobscout rank --top 10
-
-# 7. Write a self-contained HTML report you can open in a browser (no server)
 python -m jobscout dashboard --top 10
-
-# Machine-readable output for any command
-python -m jobscout rank --top 5 --json
 ```
 
-Steps 2–3 also work with `tests/fixtures/linkedin_search_sample.json`, which
-already contains full descriptions, so `fetch-details` finds nothing to enrich.
+Todos los comandos se ejecutan desde la raíz del repositorio y solo escriben
+dentro de `data/` y `reports/` (ambos ignorados por Git).
 
-If you did not install the package, prefix each command with `PYTHONPATH=src`
-(POSIX) or set `$env:PYTHONPATH = "src"` once in PowerShell. The profile flag in
-step 4 can also be omitted; the default is `profile.example.yaml`.
+El fixture `tests/fixtures/linkedin_search_sample.json` ya contiene
+descripciones completas, así que `fetch-details` no encuentra nada que
+enriquecer si lo usas en lugar de `linkedin_search_cards_sample.json`.
 
-## CLI reference
+**Verificación esperada:** `ingest-fixture` informa ofertas nuevas y duplicadas;
+`score` termina con `N job(s), M succeeded`; `rank` lista ofertas con puntaje; el
+tablero imprime la ruta del HTML escrito.
 
-Global options (`--db`, `--profile`, `--json`) may be given before or after the
-subcommand.
+## Aviso de seguridad para uso real
 
-| Command | Purpose |
-|---------|---------|
-| `init-db` | Create/verify the schema. Idempotent. |
-| `ingest-fixture PATH` | Normalize, deduplicate, and store a JSON fixture (offline). |
-| `search-linkedin --keywords K [--location L] [--dry-run \| --confirm-network]` | Bounded public guest search. Disabled unless `--confirm-network` is passed. |
-| `fetch-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network]` | Enrich stored jobs with full descriptions. Defaults to jobs that are not yet enriched. |
-| `list [--limit N] [--min-score S]` | Recent jobs with their latest score. |
-| `rank [--top N] [--min-score S]` | Jobs that have a successful score, best first. |
-| `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--rescore]` | Evaluate jobs and print the explainable result. |
-| `runs [--limit N]` | Recent search runs and stored counts. |
-| `dashboard [--output PATH] [--top N]` | Write a self-contained local HTML report of scored jobs and keyword performance. Read-only and offline. |
+La recolección real está **deshabilitada por defecto** y exige
+`--confirm-network`. Antes de usarla:
 
-Exit codes: `0` success, `1` error, `2` refusal (collector disabled, access
-denied, or a request that was intentionally not performed).
+- **Es tu responsabilidad** cumplir los términos de servicio del sitio y la ley
+  local aplicable.
+- El volumen es deliberadamente bajo: 2 páginas, 40 elementos, ~8 s entre
+  solicitudes (±2 s de jitter), 20 s de timeout.
+- **No ejecutes recolección real en CI** ni en entornos automatizados.
+- Usa `--dry-run` primero: imprime las URLs exactas y no realiza ninguna
+  solicitud ni escritura.
+- Para probar sin red, usa `--fixture`: nunca toca la red.
 
-### Inspecting a live run without performing one
+## Tablero local (dashboard)
+
+`dashboard` lee la base SQLite existente y escribe **un solo archivo HTML**
+autocontenido (CSS, JavaScript y datos embebidos). No usa CDN, no pide assets
+externos, no necesita servidor y no hace ninguna solicitud de red. Toda la
+interfaz visible está en español neutro/profesional; las claves internas del
+esquema y los comandos de CLI permanecen en inglés para no divergir de la base
+de datos.
 
 ```bash
-python -m jobscout search-linkedin \
-  --keywords "senior backend engineer" \
-  --location "Buenos Aires, Argentina" \
-  --max-pages 2 --dry-run
-```
-
-This prints the exact URLs a live run would request and exits `0`. Nothing is
-fetched and nothing is recorded.
-
-### Live run (opt-in, conservative defaults)
-
-```bash
-python -m jobscout search-linkedin \
-  --keywords "senior backend engineer" \
-  --location "Buenos Aires, Argentina" \
-  --confirm-network
-```
-
-Defaults: 2 pages, at most 40 stored items, ~8s between requests (±2s jitter),
-20s timeout, 2 retries for transient failures only. Search cards are summaries,
-so collected jobs are stored with `content_status = partial`; run
-`fetch-details` (below) to enrich them with full descriptions. Each live response
-is read at most `JOBSCOUT_RAW_MAX_BYTES` bytes, so an oversized page is never
-buffered whole in memory: it is recorded as metadata only and is not parsed.
-
-## Job-detail enrichment (opt-in)
-
-Search cards only carry a summary. `fetch-details` fetches the public guest
-detail page for a bounded selection of stored jobs and stores the full
-description plus an auditable provenance row per attempt.
-
-```bash
-# Select the un-enriched jobs (default) and inspect the plan — no network, no writes
-python -m jobscout fetch-details --dry-run
-
-# Offline: replay canned detail responses from a JSON fixture (no network at all)
-python -m jobscout fetch-details --fixture tests/fixtures/linkedin_detail_responses.json
-
-# Explicit selection, bounded to 5 requests
-python -m jobscout fetch-details --max-items 5 --confirm-network
-
-# Re-fetch every active job, including already-enriched ones
-python -m jobscout fetch-details --all --max-items 10 --confirm-network
-
-# Score the enriched jobs (rescore is required for jobs that already have a score)
-python -m jobscout score --all --rescore --profile profile.example.yaml
-python -m jobscout rank --top 10
-```
-
-Safety and limits:
-
-- **Opt-in.** Without `--confirm-network` (and without an offline `--fixture`)
-  the command refuses and exits `2`. `--dry-run` prints the exact URLs and
-  performs no network request and no database write. It reads an existing
-  database if one is present and never creates one: with no database it prints
-  an empty plan and a clear note instead of touching the filesystem.
-- **Bounded.** At most `JOBSCOUT_DETAIL_MAX_ITEMS` jobs per run (absolute ceiling
-  `250`, shared with the search collector), the same request delay, jitter, and
-  retry policy, a per-request timeout (`JOBSCOUT_DETAIL_TIMEOUT_SECONDS`), and a
-  download ceiling (`JOBSCOUT_DETAIL_MAX_BYTES`). A response over the ceiling is
-  recorded as a failure **before** anything is persisted, so its body is never
-  parsed or stored. Persistence additionally caps the stored body at
-  `min(JOBSCOUT_DETAIL_MAX_BYTES, JOBSCOUT_RAW_MAX_BYTES)`, so a response that
-  exceeds either ceiling can never leak into the raw-payload table. When the
-  selection returns more jobs than `--max-items`, both `--dry-run` and live runs
-  report how many were dropped (`truncated` in `--json`, plus an explicit line in
-  the text output).
-- **Fail closed.** 401/403/429/999 and unexpected statuses abort the run and
-  exit `2`; only transient failures (timeouts, 5xx) are retried. A 404/410 is a
-  definitive per-item failure and the run continues.
-- **Content preservation.** A successful full description replaces a shorter or
-  partial one. A partial or failed result never replaces a previously successful
-  full description, so re-running the command is safe.
-- **Provenance.** Every attempt writes a `job_detail_fetches` row with the
-  status (`ok` / `partial` / `failed` / `skipped`), HTTP status, source URL,
-  fetched timestamp, raw document id, and — for failures — a reason. The
-  `content_hash` column records the hash of the description *this attempt*
-  stored, so a failed or preserved attempt leaves it empty instead of borrowing
-  the job's existing hash. Secret-looking or oversized raw bodies are not stored.
-- Fixture mode still honours the configured pacing between requests; set
-  `JOBSCOUT_REQUEST_DELAY_SECONDS=0` for instant offline replay.
-
-## Scoring
-
-Both scorers return the same structured, explainable shape:
-
-```
-overall_score   float 0-100 (weighted across dimensions)
-dimensions      [{name, score, weight, rationale, evidence[]}]
-blockers        hard disqualifiers (any blocker forces recommendation = skip)
-strengths       matched must-have and nice-to-have signals
-gaps            missing must-have skills, seniority/location mismatches
-unknowns        facts the posting does not state
-confidence      0-1, reduced by missing description/date/location
-recommendation  apply | consider | skip | need_more_info
-rationale       human-readable summary
-```
-
-Storage also keeps the scorer name, model, prompt version, profile snapshot id,
-an `input_fingerprint`, and the raw response document id, so every score is
-auditable after the fact.
-
-### Heuristic scorer (default, offline)
-
-Deterministic and dependency-free. Dimensions: `must_have_skills`, `skills`
-(nice-to-have), `seniority`, `location`, `language`, `recency`, and
-`compensation`. Weights come from the profile and are renormalized over the
-dimensions that apply.
-
-### LLM scorer (optional)
-
-Any OpenAI-compatible `/chat/completions` endpoint works:
-
-```bash
-export JOBSCOUT_LLM_BASE_URL=https://api.example.com/v1
-export JOBSCOUT_LLM_API_KEY=...
-export JOBSCOUT_LLM_MODEL=deepseek-v4.1-flash   # default
-python -m jobscout score --all --scorer llm --profile profile.yaml
-```
-
-Without `JOBSCOUT_LLM_BASE_URL` and `JOBSCOUT_LLM_API_KEY` the LLM scorer
-refuses to run and points back at the heuristic scorer. Tests never need a key.
-The model defaults to `deepseek-v4.1-flash` and is always configurable.
-
-LLM responses are parsed defensively: markdown fences and surrounding prose are
-stripped, a balanced JSON object is extracted, field aliases are normalized,
-scores are clamped, percentages are converted, unknown recommendations fall back
-to `need_more_info`, and non-empty blockers force `skip`. Unparseable output is
-recorded as an evaluation with `status = parse_error` instead of crashing the
-run. The raw response is stored only when it is small and credential-free.
-
-### OpenCode CLI scorer (optional, no API key)
-
-If you already use [OpenCode](https://opencode.ai) locally, jobscout can score
-through the installed `opencode` CLI instead of a raw HTTP endpoint:
-
-```bash
-# One-time: authenticate OpenCode with the provider that serves the model
-opencode auth login
-
-# Score through the CLI; the default model is opencode-go/deepseek-v4.1-flash
-python -m jobscout score --all --scorer opencode --profile profile.yaml
-```
-
-How it works:
-
-- It runs `opencode run --pure --model opencode-go/deepseek-v4.1-flash
-  [--variant minimal] --format json <prompt>` as a subprocess argument array —
-  never through a shell. `--pure` (no external plugins) is on by default via
-  `JOBSCOUT_OPENCODE_PURE`; `--variant` is only added when
-  `JOBSCOUT_OPENCODE_VARIANT` is non-empty (default `minimal`).
-- The executable is resolved to an absolute path (an absolute
-  `JOBSCOUT_OPENCODE_COMMAND`, or a `PATH` lookup). A relative path is never
-  resolved against the current working directory, so a planted `opencode` file
-  cannot hijack the invocation.
-- Child output is bounded **while the process runs**: output is captured with
-  `Popen` plus reader threads and the child is killed when it exceeds
-  `JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES` or the timeout. The old
-  `subprocess.run(capture_output=True)` buffered the whole response first.
-- It reuses the same hardened system/user messages as the HTTP scorer, so the
-  posting is framed as untrusted data and delimiter forgery is neutralized. An
-  OpenCode-specific output contract is appended to require one compact JSON
-  object, no prose, a short rationale, no padded dimensions or lists, and a
-  completely closed object — without replacing the schema or security rules.
-- It relies entirely on OpenCode's own local authentication. jobscout does not
-  use `JOBSCOUT_LLM_API_KEY` to authenticate this path, does not place the key
-  in the CLI argument array or in project files, removes configured secret
-  values from the child environment, and scrubs captured output against them
-  before it could be persisted.
-- `--format json` yields raw JSON events; the scorer collects the assistant text
-  parts and then extracts exactly one JSON evaluation. Plain text, a single JSON
-  object, and JSON wrapped in prose all work too.
-- Missing CLI, timeout, non-zero exit, and malformed output become evaluations
-  with `status = error`/`parse_error` and a secret-redacted explanation, so a
-  batch keeps going.
-- Malformed or incomplete output stays `parse_error`: jobscout never invents a
-  score or auto-repairs an unterminated JSON object. On the observed live call
-  the model emitted a valid JSON prefix, stopped before closing the object
-  (`reason=stop` in the CLI event metadata), and the scorer recorded
-  `parse_error`. That first call was intentionally **not retried automatically**
-  — a silent retry could mask a truncated answer or invite an invented score.
-  Re-run the scorer explicitly for another attempt.
-- Captured output is bounded to `JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES` while the
-  child runs, and the raw output is stored only when it is small, contains no
-  configured secret, and contains no credential-looking content.
-
-The CLI runs from `JOBSCOUT_OPENCODE_WORKDIR`, which defaults to the system temp
-directory so OpenCode cannot pick up this repository's `AGENTS.md`/`opencode.json`
-instructions and derail the strict JSON prompt. Point it at a project directory if
-you want those instructions.
-
-## Local HTML dashboard (offline, read-only)
-
-`dashboard` reads the existing SQLite database and writes **one** HTML file. That
-file embeds its own CSS, JavaScript, and data: it needs no CDN, no external
-asset, no server, and no network request. Open it directly, or double-click it.
-
-All visible dashboard text is neutral/professional Spanish. Internal schema keys,
-JSON field names, JavaScript identifiers, CLI command names, and the values stored
-in SQLite (for example `apply`, `consider`, `skip`) stay English, so the report
-never drifts from the database or the CLI. Recommendation values are translated
-for display only.
-
-```bash
-# POSIX (bash/zsh)
+# POSIX
 python -m jobscout dashboard --output reports/jobscout-dashboard.html --top 25
-xdg-open reports/jobscout-dashboard.html    # Linux
-open reports/jobscout-dashboard.html        # macOS
+xdg-open reports/jobscout-dashboard.html   # Linux
+open reports/jobscout-dashboard.html       # macOS
 ```
 
 ```powershell
 # Windows PowerShell
 python -m jobscout dashboard --output reports\jobscout-dashboard.html --top 25
-start reports\jobscout-dashboard.html
+Start-Process reports\jobscout-dashboard.html
 ```
 
-```bat
-:: Windows cmd.exe (default output path is used when --output is omitted)
-python -m jobscout dashboard --top 25
-start "" reports\jobscout-dashboard.html
-```
+- Ruta de salida predeterminada: `reports/jobscout-dashboard.html` (ignorada por
+  Git). `--top` predeterminado: `25`. Las barras inclinadas también funcionan en
+  Windows: `--output reports/dashboard.html`.
+- El informe nunca embebe la descripción de la oferta, payloads crudos, el
+  perfil, datos de contacto, claves de API ni rutas locales absolutas.
+- Abre la base con `PRAGMA query_only`: generar el informe no puede insertar,
+  actualizar ni borrar filas.
+- Una base inexistente es un error; una base vacía o sin puntajes igual genera
+  el informe, con una advertencia visible que explica por qué está vacío.
 
-`--output` defaults to `reports/jobscout-dashboard.html` (already git-ignored)
-and `--top` to `25`. Forward slashes work on Windows too:
-`--output reports/dashboard.html`.
+### Recomendación del modelo vs. feedback humano
 
-The header states the report title, its purpose, the generation timestamp, the
-database label and data scope, plus an explicit privacy/offline notice. Summary
-**KPI cards** show offers shown, scored, apply, consider, skip, and the number
-reviewed in this browser; a secondary line carries the active-job, unscored,
-`need_more_info`, and keyword counts.
+Son dos señales distintas y el informe las mantiene separadas:
 
-What the report contains, per ranked offer:
-
-- a prominent **score** (`x / 100`) and the **model recommendation** badge
-  (`apply` / `consider` / `skip` / `need_more_info` rendered as Aplicar /
-  Considerar / Descartar / Requiere más información), with the scorer name,
-  model, and confidence;
-- title, company, location, posting age/date (falling back to first-seen when the
-  posting date is unknown), content status, and the direct LinkedIn URL;
-- every **source keyword** that surfaced the job and the **observed result rank**
-  for that keyword, alongside the dedupe verdict;
-- strengths, gaps, blockers, unknowns, and a bounded rationale, under Spanish
-  headings (Puntos fuertes, Brechas, Bloqueos, Incógnitas);
-- clearly separated **human feedback** controls (Aplicar / Revisar / Descartar),
-  visually distinct from the model recommendation.
-
-The toolbar groups free-text search, model-recommendation filter, source-keyword
-filter, minimum score, review state, sort, and a reset action. It reflows to a
-single column on narrow Windows browser widths and honours keyboard focus.
-Semantic headings, explicit `label for` wiring, `aria-labelledby` sections,
-`aria-pressed` feedback buttons, and text (not colour alone) for every state keep
-the page readable and screen-reader friendly.
-
-A **keyword performance** section is computed from stored search provenance and
-the latest successful evaluation. Its table renders one row per source keyword
-with these columns: keyword (*Palabra clave*), sightings (*Apariciones*), unique
-jobs (*Ofertas únicas*), duplicate sightings (*Apariciones duplicadas*), average
-score (*Puntaje promedio*), scored jobs (*Con puntaje*), and apply / consider
-counts (*Aplicar* / *Considerar*). The average covers only the keyword's jobs
-with a successful evaluation and reads *sin dato* when none is scored; there is
-no unscored column, so unscored jobs are simply absent from the average. Two
-top-10 lists follow (by score quality, and by positive recommendations); both
-only include keywords the data can actually rank. Observed rank is shown as
-provenance only — LinkedIn result order is *not* treated as a quality signal.
-
-### Model recommendation vs. human feedback
-
-These are two different things, and the report keeps them apart:
-
-| | Model recommendation | Human feedback |
+| | Recomendación del modelo | Feedback humano |
 |---|---|---|
-| Produced by | `score` (heuristic, LLM, or OpenCode scorer) | you, clicking in the report |
-| Stored in | SQLite `evaluations` table, with full provenance | this browser's `localStorage`, keyed by project + job id |
-| Visible to `jobscout` | yes | no — the CLI never reads it |
-| Portable | yes, it is in the database | only via the **Exportar feedback local (JSON)** button |
+| Lo produce | `score` (heurística, LLM u OpenCode) | tú, haciendo clic en el informe |
+| Se guarda en | tabla `evaluations` de SQLite, con procedencia completa | `localStorage` del navegador, indexado por proyecto + id de oferta |
+| ¿`jobscout` lo lee? | sí | no — la CLI nunca lo lee |
+| ¿Es portable? | sí, está en la base | solo con el botón **Exportar feedback local (JSON)** |
 
-Each offer has local feedback buttons (**Aplicar / Revisar / Descartar**, stored
-as `apply` / `consider` / `reject`) and an optional reason box. The human label
-*Revisar* is deliberately distinct from the model recommendation *Considerar*, so
-the two signals are never confused. Feedback survives a page reload in the same
-browser, and the export button downloads a `jobscout-feedback.json` document
-(`jobscout.feedback.v1`). Feedback is **local only**: it does not submit an
-application, does not touch LinkedIn, and does not write to the SQLite database.
-There is no import yet — the export exists so the data can be carried forward.
+Cada oferta tiene botones de feedback local (**Aplicar / Revisar / Descartar**,
+almacenados como `apply` / `consider` / `reject`) y un motivo opcional. La
+etiqueta humana *Revisar* es deliberadamente distinta de la recomendación
+*Considerar* del modelo. El feedback es **solo local**: no postula, no toca
+LinkedIn y no escribe en SQLite. La exportación descarga
+`jobscout-feedback.json` con el esquema `jobscout.feedback.v1`.
 
-Browser-local feedback is keyed by a hash of the database path (not the path
-itself), so the report never contains an absolute local path and two databases
-never share feedback. Some browsers restrict `localStorage` on `file://` pages;
-if yours does, the page still renders and filters, but the export button is the
-only way to keep your decisions. Serve the file from a loopback static server
-(`python -m http.server`) if you need storage to persist there.
+**Aún no existe importación de feedback** ni programación automática: el JSON
+exportado es el formato para transportarlo a mano.
 
-### What the report deliberately excludes
+## Referencia de CLI
 
-The report never embeds the job description, raw payloads, the candidate profile
-or any contact data, API keys, or absolute local paths. It reads the database
-with `PRAGMA query_only`, so generating it cannot insert, update, or delete a
-row; only the output's parent directory is created. A missing database is an
-error, while an empty or unscored one still produces a report with a visible
-warning explaining why it is empty.
+Opciones globales: `--db PATH`, `--profile PATH`, `--json` (antes o después del
+subcomando) y `--version`.
 
-## Configuration
+| Comando | Propósito |
+|---------|-----------|
+| `init-db` | Crea o verifica el esquema. Idempotente. |
+| `ingest-fixture PATH [--source S] [--label L]` | Normaliza, deduplica y guarda un fixture JSON (sin red). |
+| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--dry-run \| --confirm-network]` | Búsqueda pública acotada. Deshabilitada sin `--confirm-network`. |
+| `fetch-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas con la descripción completa. Por defecto, las que aún no están enriquecidas. |
+| `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje. |
+| `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero. |
+| `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. |
+| `runs [--limit N]` | Ejecuciones de búsqueda recientes y conteos almacenados. |
+| `dashboard [--output PATH] [--top N]` | Escribe un informe HTML local autocontenido (solo lectura, sin red). |
 
-Every knob is a `JOBSCOUT_*` environment variable (see `.env.example`):
+Códigos de salida: `0` éxito, `1` error, `2` rechazo (collector deshabilitado,
+acceso denegado o solicitud que no se realizó a propósito).
 
-| Variable | Default | Notes |
-|----------|---------|-------|
-| `JOBSCOUT_DB_PATH` | `data/jobscout.sqlite3` | SQLite file |
-| `JOBSCOUT_PROFILE_PATH` | `profile.example.yaml` | Candidate profile |
-| `JOBSCOUT_HTTP_USER_AGENT` | `jobscout/0.1 (local research tool)` | Honest, non-spoofing |
-| `JOBSCOUT_CONTACT_EMAIL` | – | Appended to the user agent |
-| `JOBSCOUT_HTTP_TIMEOUT_SECONDS` | `20` | Per request |
-| `JOBSCOUT_HTTP_MAX_RETRIES` | `2` | Transient failures only |
-| `JOBSCOUT_REQUEST_DELAY_SECONDS` | `8` | Minimum spacing between requests |
-| `JOBSCOUT_REQUEST_JITTER_SECONDS` | `2` | Random added spacing |
-| `JOBSCOUT_MAX_PAGES` | `2` | Page cap; absolute upper bound `10` |
-| `JOBSCOUT_MAX_ITEMS` | `40` | Item cap; absolute upper bound `250` |
-| `JOBSCOUT_LINKEDIN_SEARCH_URL` | public guest search endpoint | Override only for testing |
-| `JOBSCOUT_RAW_MAX_BYTES` | `262144` | Live search download ceiling and the size above which raw bodies are not stored |
-| `JOBSCOUT_LINKEDIN_DETAIL_URL` | public guest detail endpoint | `{job_id}` placeholder; override only for testing |
-| `JOBSCOUT_DETAIL_MAX_ITEMS` | `20` | Detail item cap; absolute upper bound `250` |
-| `JOBSCOUT_DETAIL_TIMEOUT_SECONDS` | `20` | Per detail request |
-| `JOBSCOUT_DETAIL_MAX_BYTES` | `524288` | Downloads above this are rejected, not stored (bodies are also capped by `JOBSCOUT_RAW_MAX_BYTES`) |
-| `JOBSCOUT_LLM_BASE_URL` | – | Presence enables the LLM scorer |
-| `JOBSCOUT_LLM_API_KEY` | – | Never logged or stored |
-| `JOBSCOUT_LLM_MODEL` | `deepseek-v4.1-flash` | Configurable |
-| `JOBSCOUT_LLM_TIMEOUT_SECONDS` | `60` | Per LLM request |
-| `JOBSCOUT_LLM_MAX_RETRIES` | `2` | Transient failures only |
-| `JOBSCOUT_LLM_TEMPERATURE` | `0` | Requested sampling temperature |
-| `JOBSCOUT_LLM_MAX_TOKENS` | `1200` | Response token ceiling |
-| `JOBSCOUT_LLM_STORE_RAW` | `true` | Raw responses, when safe |
-| `JOBSCOUT_LLM_JSON_MODE` | `true` | Sends `response_format: json_object` |
-| `JOBSCOUT_OPENCODE_COMMAND` | `opencode` | Absolute path or a name resolved through `PATH`; a relative path is refused |
-| `JOBSCOUT_OPENCODE_MODEL` | `opencode-go/deepseek-v4.1-flash` | Passed as `--model` |
-| `JOBSCOUT_OPENCODE_VARIANT` | `minimal` | Passed as `--variant`; empty omits the flag |
-| `JOBSCOUT_OPENCODE_TIMEOUT_SECONDS` | `180` | Per CLI invocation; the child is killed on timeout |
-| `JOBSCOUT_OPENCODE_WORKDIR` | system temp directory | Neutral cwd for the CLI |
-| `JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES` | `1048576` | Child output ceiling, enforced while the process runs |
-| `JOBSCOUT_OPENCODE_JSON_EVENTS` | `true` | Adds `--format json` for machine-readable events |
-| `JOBSCOUT_OPENCODE_PURE` | `true` | Adds `--pure` (no external plugins) |
-
-`JOBSCOUT_MAX_PAGES`, `JOBSCOUT_MAX_ITEMS`, and `JOBSCOUT_DETAIL_MAX_ITEMS` are
-validated against `jobscout.config.HARD_MAX_PAGES` (`10`) and
-`HARD_MAX_ITEMS` (`250`). Values above those ceilings — from an environment
-variable, a CLI flag, or a library caller — are rejected with a clear error
-instead of being silently clamped.
-
-Precedence: CLI flags > environment > `.env` > defaults. A local `.env` is read
-only for `JOBSCOUT_*` values and never overrides the real environment.
-
-Note: `jobscout.config.redact_secrets` is a best-effort sanitizer applied to the
-model-derived evaluation text that gets persisted and printed — the rationale,
-dimension text, and the schema repair/error diagnostics — so a configured secret
-or a labelled credential echoed by the model (in plain or JSON-quoted form)
-cannot land in the `evaluations` table or the console. Raw payloads are protected
-separately by `jobscout.config.is_safe_to_store`, which refuses to store a body
-that is too large or credential-looking rather than rewriting it in place.
-
-## Data model
-
-| Table | Contents |
-|-------|----------|
-| `jobs` | Deduplicated postings: URL, source id, timestamps, content status, content hash, strong `fingerprint`, weak `dedupe_key`, sighting count |
-| `search_runs` | One collector invocation: query, params, status, page/item counts, new/duplicate counts, error |
-| `search_run_items` | One row per posting observed by a run, with its dedupe verdict |
-| `job_detail_fetches` | One row per detail-fetch attempt: status, HTTP status, source URL, fetched timestamp, content hash, raw document id, error reason |
-| `raw_documents` | Verbatim payloads with sha256, byte size, fetch/store timestamps, truncation flag |
-| `profiles` / `profile_evidence` | Versioned profile snapshot plus one row per structured fact |
-| `evaluations` | Score, dimensions, blockers/strengths/gaps/unknowns, confidence, recommendation, provenance |
-
-Deduplication uses two keys: `fingerprint` (source job id → canonical URL →
-company/title/location hash) for exact matches, and `dedupe_key` for probable
-matches across different URLs or sources. Probable duplicates are merged into the
-existing row as additional sightings, and richer content wins over empty content.
-
-Inspect it with plain SQL:
+Inspeccionar un plan sin ejecutarlo:
 
 ```bash
-sqlite3 data/jobscout.sqlite3 "SELECT id, title, company FROM jobs ORDER BY last_seen_at DESC LIMIT 5;"
+python -m jobscout search-linkedin --keywords "senior backend engineer" --location "Buenos Aires, Argentina" --max-pages 2 --dry-run
 ```
 
-## Tests
+Enriquecimiento de detalles:
 
 ```bash
-python -m pytest
+python -m jobscout fetch-details --dry-run                                            # plan, sin red ni escrituras
+python -m jobscout fetch-details --fixture tests/fixtures/linkedin_detail_responses.json
+python -m jobscout fetch-details --max-items 5 --confirm-network                      # real, acotado
+python -m jobscout fetch-details --all --max-items 10 --confirm-network               # re-extrae todo
 ```
 
-The suite is fully offline: the HTTP transport is always replaced by a test
-double (or the offline `--fixture` transport), tests that must prove no network
-is reachable block `socket.socket` entirely, and the OpenCode CLI is replaced by
-an injected fake runner — no test invokes a model or the real `opencode` binary.
-Two process-safety tests do spawn a deterministic local Python child
-(`sys.executable`) to prove the output ceiling kills an overflowing process and
-that the timeout terminates a hung one; both are offline. Coverage includes
-normalization, fingerprinting, deduplication, schema persistence,
-rate-limit/backoff decisions, retry and fail-closed behaviour, URL and redirect
-policy, bounded error-body reads, fixture ingestion, detail-page parsing, detail
-content preservation, heuristic scoring, prompt hardening, malformed LLM output,
-executable resolution, subprocess output bounds, and the OpenCode CLI scorer.
-Dashboard coverage adds HTML escaping/XSS safety (a hostile job title cannot
-close its script tag or reach the DOM as markup), data minimization (no
-description, profile, absolute path, or raw payload), generation and read-only
-behaviour, the Spanish visible-label and KPI/toolbar surface, filter/feedback
-behaviour, keyword aggregation, and the CLI error and success paths.
+`fetch-details` no vuelve a puntuar por sí solo: ejecuta
+`score --all --rescore` después de enriquecer.
 
-Run the CLI smoke test against the fixtures (the `data/` directory is
-git-ignored, so the smoke database never gets committed):
+## Puntuación
+
+Los tres puntuadores devuelven la misma forma explicable: `overall_score` (0-100),
+`dimensions`, `blockers`, `strengths`, `gaps`, `unknowns`, `confidence` (0-1),
+`recommendation` (`apply` / `consider` / `skip` / `need_more_info`) y `rationale`.
+Cada evaluación guarda además el puntuador, el modelo, la versión del prompt, el
+id de la instantánea del perfil, un `input_fingerprint` y el documento crudo
+asociado, para que todo puntaje sea auditable después.
+
+| Puntuador | Cuándo usarlo | Requisitos |
+|-----------|---------------|------------|
+| `heuristic` (predeterminado) | Siempre disponible, determinista y sin dependencias | ninguno |
+| `llm` | Cualquier endpoint `/chat/completions` compatible con OpenAI | `JOBSCOUT_LLM_BASE_URL` y `JOBSCOUT_LLM_API_KEY` |
+| `opencode` | Ya usas OpenCode localmente y prefieres no manejar una clave | CLI `opencode` instalada y autenticada |
+
+### Heurístico (sin conexión)
+
+Determinista y sin dependencias. Dimensiones: `must_have_skills`, `skills`
+(deseables), `seniority`, `location`, `language`, `recency` y `compensation`. Los
+pesos salen del perfil y se renormalizan sobre las dimensiones aplicables.
+
+### LLM compatible con OpenAI
+
+```bash
+export JOBSCOUT_LLM_BASE_URL=https://api.example.com/v1
+export JOBSCOUT_LLM_API_KEY=...
+python -m jobscout score --all --scorer llm --profile profile.yaml
+```
+
+Sin `JOBSCOUT_LLM_BASE_URL` y `JOBSCOUT_LLM_API_KEY` el puntuador LLM se niega a
+ejecutarse y sugiere el heurístico. El modelo predeterminado es
+`deepseek-v4.1-flash` y siempre es configurable con `JOBSCOUT_LLM_MODEL`. Las
+respuestas se analizan de forma defensiva; una salida ilegible se registra como
+`parse_error` en lugar de cortar el lote.
+
+### CLI de OpenCode (sin clave de API)
+
+```bash
+# Una sola vez: autentica OpenCode con el proveedor del modelo
+opencode auth login
+
+# Modelo predeterminado: opencode-go/deepseek-v4.1-flash
+python -m jobscout score --all --scorer opencode --profile profile.yaml
+```
+
+Ejecuta `opencode run --pure --model <modelo> [--variant minimal] --format json
+<prompt>` como arreglo de argumentos, nunca a través de un shell. La ruta al
+ejecutable se resuelve solo por ruta absoluta o búsqueda en `PATH`. La salida del
+proceso hijo se acota **mientras corre**: si supera
+`JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES` o vence el timeout, el proceso se termina.
+Reutiliza el mismo prompt endurecido que el puntuador HTTP, así que la oferta se
+trata como dato no confiable. Una salida incompleta queda como `parse_error` y
+**no se reintenta automáticamente**: jobscout nunca inventa un puntaje. Vuelve a
+ejecutar el puntuador para intentar de nuevo.
+
+## Flujo de optimización de palabras clave
+
+La procedencia de cada palabra clave (qué búsqueda trajo cada oferta y en qué
+posición) se guarda en SQLite, y el tablero la agrega:
+
+1. Ejecuta búsquedas acotadas con las palabras clave que quieras evaluar
+   (`search-linkedin ... --confirm-network`) o ingiere fixtures con etiquetas.
+2. Enriquece con `fetch-details` y puntúa con `score --all --rescore`.
+3. Genera el tablero y abre la sección de **rendimiento de palabras clave**: una
+   fila por palabra clave con *Apariciones*, *Ofertas únicas*, *Apariciones
+   duplicadas*, *Puntaje promedio*, *Con puntaje*, *Aplicar* y *Considerar*.
+4. Prioriza las palabras clave con mejor puntaje promedio y más
+   aplicar/considerar; descarta las que solo aportan apariciones duplicadas.
+   *Puntaje promedio* solo promedia ofertas con evaluación exitosa y muestra
+   *sin dato* si no hay ninguna.
+5. Ajusta las palabras clave y repite. **Cada corrida es manual**: no hay
+   programación automática ni notificaciones.
+
+La posición observada es solo procedencia: el orden de resultados de LinkedIn
+**no** se trata como señal de calidad.
+
+## Privacidad y seguridad
+
+Estas garantías las aplica el código, no solo la documentación:
+
+- Datos locales (perfil, base SQLite y sus sidecars, capturas crudas, informes,
+  `.env*` distintos de `.env.example`) están ignorados por Git. Nunca los
+  publiques.
+- Las URLs configuradas de LinkedIn deben ser **HTTPS en `linkedin.com` o
+  `*.linkedin.com`**; la URL base del LLM debe ser HTTPS. Esquemas `file:`,
+  `ftp:`, `data:`, `http:`, hosts parecidos y credenciales embebidas se rechazan
+  al iniciar.
+- Las redirecciones se siguen solo al mismo host (o bajo el dominio padre de
+  LinkedIn); una redirección a otro host falla cerrado y nunca se reintenta.
+- Solo se reintentan fallas transitorias (timeouts, 5xx). 401/403/429 y estados
+  inesperados **fallan de inmediato**.
+- Los payloads crudos se guardan solo si están por debajo de
+  `JOBSCOUT_RAW_MAX_BYTES` y no parecen contener credenciales.
+- El texto de la oferta se trata como dato no confiable: el LLM recibe la
+  instrucción de no seguir instrucciones embebidas y los delimitadores de prompt
+  se neutralizan.
+
+### Riesgo residual: permisos de herramientas de OpenCode (H2)
+
+`opencode run` (v1.14.30) **no expone una bandera confiable para denegar
+herramientas ni para aislar la ejecución**. La única opción relacionada es
+`--dangerously-skip-permissions`, que *amplía* el acceso y jobscout nunca la
+pasa. La política de herramientas vive en la configuración local de OpenCode, que
+jobscout no controla ni verifica.
+
+Lo que sí hace hoy: ejecuta con `--pure` (sin plugins externos) por defecto, corre
+desde un directorio neutral (el temporal del sistema, para no cargar las
+instrucciones de este repositorio) y neutraliza la falsificación de delimitadores
+en el prompt.
+
+Lo que queda: un modelo inyectado por prompt o con comportamiento errático aún
+podría intentar llamadas a herramientas permitidas por tu configuración local de
+OpenCode. **Es un riesgo residual aceptado (H2).** Si necesitas una garantía
+dura, configura un agente restrictivo en tu OpenCode local o no uses el puntuador
+de OpenCode con ofertas no confiables.
+
+### Alcance del tablero
+
+El tablero no incluye descripciones, payloads crudos, el perfil ni datos de
+contacto, claves de API o rutas locales absolutas. El feedback del navegador se
+indexa por un hash de la ruta de la base (no por la ruta en sí). Algunos
+navegadores restringen `localStorage` en páginas `file://`; si el tuyo lo hace, el
+informe igual se renderiza y filtra, pero el botón de exportación es la única
+forma de conservar tus decisiones.
+
+## Estructura del proyecto
+
+```text
+.
+├── .env.example              # Plantilla de configuración (todas las variables JOBSCOUT_*)
+├── profile.example.yaml      # Perfil de ejemplo
+├── pyproject.toml            # Metadatos, dependencias y configuración de pytest
+├── src/jobscout/
+│   ├── cli.py                # Comandos, validación de argumentos y códigos de salida
+│   ├── config.py             # Settings, validación de URLs y redacción de secretos
+│   ├── db.py                 # Esquema SQLite, consultas y conexión de solo lectura
+│   ├── normalize.py          # Normalización de ofertas
+│   ├── dedupe.py             # Huellas y deduplicación exacta/probable
+│   ├── pipeline.py           # Ingesta de fixtures, búsquedas y detalles
+│   ├── dashboard.py          # Generador del informe HTML autocontenido
+│   ├── url_policy.py         # Validación de URLs y redirecciones
+│   ├── collectors/           # LinkedIn guest, fixtures, rate limit, transporte HTTP
+│   └── scoring/              # Heurístico, LLM, OpenCode, esquema y perfil
+└── tests/
+    ├── fixtures/             # Datos sintéticos de búsqueda, detalle y respuestas LLM
+    └── test_*.py             # Suite offline
+```
+
+## Pruebas
+
+```bash
+python -m pytest -q
+```
+
+La suite es totalmente offline: el transporte HTTP se reemplaza por un doble de
+prueba, las pruebas que deben demostrar que no hay red llegan a bloquear
+`socket.socket`, y el CLI de OpenCode se reemplaza por un runner falso inyectado.
+Ninguna prueba invoca un modelo ni el binario real de `opencode`.
+
+Prueba de humo con fixtures (la base vive en `data/`, ignorada por Git):
 
 ```bash
 python -m jobscout --db data/smoke.sqlite3 init-db
@@ -634,43 +356,36 @@ python -m jobscout --db data/smoke.sqlite3 rank --top 5
 python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/smoke.html
 ```
 
-Run a dry run of the LinkedIn plan (still no network):
+## Notas de publicación y desarrollo
 
-```bash
-python -m jobscout search-linkedin --keywords "senior backend engineer" --max-pages 2 --dry-run
-```
+- El repositorio **no incluye pipeline de publicación ni CI**. La instalación
+  prevista es local y editable (`pip install -e ".[dev]"`), o directamente con
+  `PYTHONPATH=src`.
+- Versión actual: `0.1.0`.
+- Antes de cualquier publicación o PR, verifica que no se cuelen datos locales:
+  `data/`, `reports/`, `profile.yaml` y `.env` están en `.gitignore`, pero conviene
+  revisar `git status` igualmente.
+- Mensajes de commit en estilo convencional; no agregues atribución de IA.
+- Este proyecto es una herramienta de investigación local, no un servicio.
 
-## Known limitations / next steps
+## Limitaciones conocidas y próximos pasos
 
-- Detail fetching only extracts descriptions from known guest-markup containers
-  (`show-more-less-html__markup`, `description__text`, and similar). An unknown
-  markup revision yields `partial` with an explicit reason rather than a bogus
-  description.
-- `fetch-details` does not re-score jobs by itself. Run
-  `score --all --rescore` after enriching, or score specific jobs with
-  `--job-id`.
-- The search parser supports two guest-search card shapes: the historical
-  identifying `<li>` and the current nested
-  `div.base-search-card.job-search-card[data-entity-urn]`. A 200 response with a
-  non-empty body but zero cards is recorded as a diagnostic note (with the body
-  size), and markup changes never crash the run.
-- The OpenCode CLI scorer requires a locally installed, authenticated `opencode`
-  binary; jobscout does not manage that authentication. `JOBSCOUT_LLM_API_KEY`
-  is not used for authentication, is not passed in argv or project files, is
-  removed from the CLI's environment, and is redacted from captured output
-  before persistence.
-- **Residual risk (H2):** no reliable OpenCode `run` flag denies tools or
-  sandboxes execution. jobscout runs the CLI with `--pure` by default, but a
-  prompt-injected posting could still attempt tool calls allowed by your local
-  OpenCode configuration. See "OpenCode tool permissions — residual risk (H2)"
-  above.
-- `JOBSCOUT_OPENCODE_COMMAND` must be an absolute path or a name resolvable
-  through `PATH`; a relative path is refused so a planted executable in the
-  working directory can never be used.
-- Salary parsing is heuristic (largest number in the text) and only used when
-  the profile defines a minimum.
-- The dashboard embeds only the top `--top` offers, but keyword analytics are
-  always computed over the whole database. Manual feedback lives in browser
-  `localStorage` and there is no import command yet: the export JSON is the
-  carry-forward format, and a future work unit can consume it.
-- No scheduler, notification, or application automation — by design.
+- La extracción de detalles solo reconoce contenedores de marcado guest conocidos
+  (`show-more-less-html__markup`, `description__text` y similares). Un marcado
+  nuevo produce `partial` con un motivo explícito en lugar de una descripción
+  inventada.
+- `fetch-details` no vuelve a puntuar: hay que ejecutar `score --all --rescore`
+  después.
+- El parser de búsqueda soporta dos formas de tarjeta; una respuesta 200 con
+  cuerpo no vacío pero sin tarjetas se registra como nota de diagnóstico y nunca
+  corta la ejecución.
+- El puntuador de OpenCode requiere un binario `opencode` instalado y autenticado
+  localmente; jobscout no gestiona esa autenticación.
+- `JOBSCOUT_OPENCODE_COMMAND` debe ser ruta absoluta o un nombre resoluble por
+  `PATH`; una ruta relativa se rechaza.
+- El parseo de salario es heurístico y solo se usa cuando el perfil define un
+  mínimo.
+- El tablero embebe solo las `--top` mejores ofertas, pero la analítica de
+  palabras clave se calcula sobre toda la base.
+- **No hay importación de feedback, programador de tareas, notificaciones ni
+  postulación automática** — por diseño.
