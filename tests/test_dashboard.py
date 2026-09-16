@@ -304,8 +304,9 @@ def test_literal_template_tokens_in_metadata_and_offers_survive(db_file: Path) -
     data = _extract_payload(html_text)
     assert data["offers"][0]["title"] == "__SCRIPT__"
     assert data["offers"][0]["rationale"] == "__DATA__ rationale __STYLE__"
-    # The report's own script block is written exactly once.
-    assert html_text.count('"use strict";') == 1
+    # The report's own script block is written exactly once. This marker exists only
+    # inside that block, so a substituted __SCRIPT__ token would double the count.
+    assert html_text.count("var EXPECTED_SCHEMA =") == 1
 
 
 def test_token_like_job_values_do_not_corrupt_the_generated_report(db_file: Path) -> None:
@@ -337,7 +338,7 @@ def test_token_like_job_values_do_not_corrupt_the_generated_report(db_file: Path
     assert hostile["rationale"] == "__STYLE__ token"
     # The script block stayed its own: a substituted token would have injected
     # extra copies of the page script into the JSON payload.
-    assert html_text.count('"use strict";') == 1
+    assert html_text.count("var EXPECTED_SCHEMA =") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -844,66 +845,455 @@ def test_dashboard_exposes_accessible_kpi_and_provenance_structure(db_file: Path
 
 
 # ---------------------------------------------------------------------------
-# Visual system: light blueprint on frosted paper
+# Visual system: desktop technical panel (second UI variant)
+#
+# The first variant ("clinical blueprint on frosted paper") and its token
+# contract live in commit 2a805da; these tests describe the variant that
+# replaced it on this branch.
 # ---------------------------------------------------------------------------
 
 
-def test_report_uses_the_light_blueprint_design_tokens(db_file: Path) -> None:
-    """The report ships one light token set, an app shell, and no dark mode.
+def _embedded_style(html_text: str) -> str:
+    match = re.search(r"<style>(.*?)</style>", html_text, re.DOTALL)
+    assert match is not None, "the report must embed its stylesheet"
+    return match.group(1)
 
-    The design contract is deliberately asserted here so a later style change
-    cannot silently reintroduce a dark palette, a coloured accent, or an
-    external font, all of which would break the single-file offline promise.
+
+def test_report_uses_the_desktop_technical_panel_design_tokens(db_file: Path) -> None:
+    """One light desktop token set, a fixed shell, and no dark mode.
+
+    Asserted so a later style change cannot silently reintroduce a dark palette, a
+    second accent, or an external font, all of which would break the single-file
+    offline promise.
     """
     html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
 
-    assert "color-scheme: light;" in html_text
+    assert "color-scheme: light;" in css
     assert "prefers-color-scheme" not in html_text
     for token in (
-        "--canvas:#f5f5f5",
+        "--canvas:#e7ebee",
         "--paper:#ffffff",
-        "--surface:#fafafa",
-        "--ink:#0a0a0a",
-        "--soft-ink:#171717",
-        "--muted:#737373",
-        "--hairline:#e5e5e5",
+        "--surface:#f4f6f7",
+        "--ink:#0c1216",
+        "--soft-ink:#20303a",
+        "--muted:#5c6a74",
+        "--hairline:#ccd4da",
         "--ember:#e7000b",
+        "--signal:#0f6b4f",
         "--space:4px",
-        "--max-width:1280px",
-        "--radius-card:24px",
-        "--radius-interactive:18px",
-        "--radius-nested:10px",
-        "--radius-badge:18px",
+        "--radius:3px",
+        "--panel-max:1440px",
+        "--rail-width:320px",
     ):
-        assert token in html_text, token
+        assert token in css, token
 
-    # The retired dark-mode/coloured accent palette must not come back.
+    # The retired dark-mode/soft-state palette must not come back.
     for retired in ("--accent", "--ok-soft", "--warn-soft", "prefers-color"):
         assert retired not in html_text, retired
 
-    # Geist with system fallback only: no @font-face, no remote asset URL.
-    assert "--font-sans:Geist, Inter, system-ui" in html_text
-    assert "font:14px/1.55 var(--font-sans)" in html_text
-    assert "@font-face" not in html_text
+    # System font stack only: no webfont, no remote asset URL.
+    assert "--font-sans:system-ui, -apple-system" in css
+    assert "Geist" not in html_text
+    assert "@font-face" not in css
     assert not re.search(r'url\(\s*["\']?https?://', html_text)
 
-    # Heading scale 24/30/36/48 with a tight display tracking.
-    assert "h1 { font-size:36px" in html_text
-    assert "h2 { font-size:30px" in html_text
-    assert "h3 { font-size:24px" in html_text
-    assert ".kpi-value { font-size:48px" in html_text
+    # One six-step type scale; no rule outside it hard-codes a size. The title step
+    # exists so an offer title outranks body text without competing with a section
+    # heading: 15px body, 17px row title, 20px section heading.
+    scale = re.findall(r"--fs-([a-z]+):(\d+)px", css)
+    assert scale == [
+        ("micro", "11"),
+        ("small", "13"),
+        ("body", "15"),
+        ("title", "17"),
+        ("heading", "20"),
+        ("display", "28"),
+    ]
+    for declared in re.findall(r"font-size:\s*([^;]+);", css):
+        declared = declared.strip()
+        assert declared.startswith("var(--fs-") or declared == ".9em", declared
 
-    # App shell: masthead + sidebar + content, still one self-contained file.
+    # The panel shell keeps its structure: top bar, content list, control rail.
     for hook in (
-        'class="app"',
-        'class="masthead"',
-        'class="sidebar"',
+        'class="panel"',
+        'class="topbar"',
         'class="content"',
+        'class="rail"',
         'class="kpi-grid"',
         'class="filters"',
         'class="two-col"',
+        'class="method"',
     ):
         assert hook in html_text, hook
+
+
+def test_report_declares_no_narrow_screen_breakpoints(db_file: Path) -> None:
+    """This variant targets a desktop browser window, so it ships no mobile layout.
+
+    Any width-based query would reintroduce a responsive variant, so the only media
+    query allowed in the stylesheet is the reduced-motion guard.
+    """
+    css = _embedded_style(generate_and_read(db_file))
+
+    assert re.findall(r"@media\s*\(([^)]*)\)", css) == ["prefers-reduced-motion:reduce"]
+    assert css.count("@media") == 1
+    for forbidden in ("max-width", "min-width"):
+        assert f"@media ({forbidden}" not in css, forbidden
+
+    # The desktop shell is a fixed content + rail grid, with fixed strip columns.
+    assert "grid-template-columns:minmax(0, 1fr) var(--rail-width)" in css
+    assert "grid-template-columns:repeat(6, minmax(0, 1fr))" in css
+    assert "grid-template-columns:repeat(3, minmax(0, 1fr))" in css
+
+
+def test_accent_is_scoped_to_the_model_axis_only(db_file: Path) -> None:
+    """The accent marks the model recommendation and nothing else.
+
+    Conflating the two axes is the failure mode this guards: a reader must never be
+    able to read the accent as their own decision, so every rule that reaches for the
+    signal token is the model recommendation surface, and no human-feedback rule uses
+    it. Human feedback carries weight, shape, and an ink rule instead.
+    """
+    css = _embedded_style(generate_and_read(db_file))
+
+    accent_rules = [rule for rule in css.split("}") if "--signal" in rule]
+    assert accent_rules, "the model accent must be defined and used"
+    allowed = (":root", ".axis-model", ".card.rec-apply", ".badge-apply")
+    for rule in accent_rules:
+        assert any(hook in rule for hook in allowed), rule
+
+    human_rules = [
+        rule
+        for rule in css.split("}")
+        if ".decision-btn" in rule or ".feedback" in rule or ".kpi-reviewed" in rule
+    ]
+    assert human_rules, "the human feedback surface must be styled"
+    for rule in human_rules:
+        assert "--signal" not in rule, rule
+
+    # The two axes are also named in visible copy, not only in CSS.
+    html_text = generate_and_read(db_file)
+    assert "Dos ejes distintos" in html_text
+    assert "Recomendación del modelo" in html_text
+    assert "Mi decisión (feedback)" in html_text
+
+
+def test_explainability_is_a_native_progressive_disclosure(db_file: Path) -> None:
+    """Per-offer explainability is a <details> disclosure added as enhancement.
+
+    The base script builds every card, so the disclosure is attached afterwards by an
+    appended block. Native <details>/<summary> is used on purpose: the platform owns
+    the keyboard and screen-reader behaviour, and without JavaScript the rationale and
+    provenance lists the base script renders are still fully visible.
+    """
+    html_text = generate_and_read(db_file)
+
+    assert 'block.className = "explain";' in html_text
+    assert 'document.createElement("summary")' in html_text
+    assert "Explicabilidad del puntaje y procedencia" in html_text
+    assert 'id="explain-controls"' in html_text
+    assert "Expandir todo" in html_text
+    assert "Contraer todo" in html_text
+    assert "MutationObserver" in html_text
+    # Additive only: the base report script is still written exactly once.
+    assert html_text.count("var EXPECTED_SCHEMA =") == 1
+
+    css = _embedded_style(html_text)
+    assert ".explain[open] > summary::before" in css
+    assert ".method > summary" in css
+    # Methodology text is expandable at the section level as well.
+    assert "Metodología de las métricas" in html_text
+
+
+def test_report_orders_its_regions_for_a_desktop_scan(db_file: Path) -> None:
+    """Required order: summary, offers, keywords, actions/filters, footer/scope.
+
+    The control rail is emitted after the content so the DOM, tab, and required
+    order agree, and CSS places it on the right so the visual order matches too.
+    """
+    html_text = generate_and_read(db_file)
+
+    positions = [
+        html_text.index(marker)
+        for marker in (
+            'id="resumen"',
+            'id="contenido"',
+            'id="analitica"',
+            'id="filtros"',
+            "<footer",
+        )
+    ]
+    assert positions == sorted(positions), positions
+
+    css = _embedded_style(html_text)
+    assert ".content { grid-column:1; grid-row:2;" in css
+    assert ".rail { grid-column:2; grid-row:2;" in css
+    assert "position:sticky" in css
+
+
+def test_sticky_shell_reaches_the_controls_without_covering_content(db_file: Path) -> None:
+    """The top bar and the control rail stay reachable while the offer list scrolls.
+
+    ``--topbar-h`` is the measured height of the sticky bar at the shell's desktop
+    widths, and it is the only thing keeping the rail clear of it. Changing the top
+    bar's padding without updating the token re-creates the overlap this guards, so
+    the literal is asserted on purpose.
+    """
+    css = _embedded_style(generate_and_read(db_file))
+
+    assert "--topbar-h:78px" in css
+    assert ".topbar { grid-column:1 / -1; grid-row:1; position:sticky; top:0; z-index:20;" in css
+    assert "min-height:var(--topbar-h)" in css
+    assert "top:calc(var(--topbar-h) + 14px)" in css
+    assert "max-height:calc(100vh - var(--topbar-h) - 28px)" in css
+    # The sticky layer is opaque, so a row scrolling under it never shows through, and
+    # the rail keeps its own column instead of overlaying the content.
+    assert "background:var(--canvas); min-height:var(--topbar-h)" in css
+    assert "scrollbar-gutter:stable;" in css
+
+
+def test_each_offer_is_an_independent_block_separated_by_gap_and_outline(
+    db_file: Path,
+) -> None:
+    """Offers must not merge into one continuous list, and must not float either.
+
+    Separation is the canvas showing through a real vertical gap between blocks,
+    plus one restrained outline per block. The block keeps a radius so it reads as
+    a discrete paper surface, but no blurred elevation is used as a separator: the
+    only ``box-shadow`` left on a card is the flat inset ink rule that marks a
+    reviewed offer.
+    """
+    html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
+
+    # The list container paints nothing at all; the gap is the separator.
+    assert "#offers { display:flex; flex-direction:column; gap:var(--gap-card); }" in css
+
+    # The gap sits in the 20-28px band a desktop reader asked for.
+    card_gap = re.search(r"--gap-card:(\d+)px;", css)
+    assert card_gap is not None, "the offer separation step must be a named token"
+    assert 20 <= int(card_gap.group(1)) <= 28, card_gap.group(0)
+
+    card = re.search(r"\.card \{([^}]*)\}", css, re.DOTALL)
+    assert card is not None, "the base offer block must be styled"
+    body = card.group(1)
+    assert "background:var(--paper);" in body
+    assert "border:1px solid var(--rule-strong);" in body
+    assert "border-radius:var(--radius);" in body
+    assert "padding:24px 26px;" in body
+    assert "gap:var(--gap-block);" in body
+    # No elevation and no gradient: the boundary is a hairline, not a shadow.
+    assert "box-shadow" not in body
+    assert "gradient" not in css
+    # A per-block bottom rule is unnecessary once the gap separates the blocks.
+    assert ".card:last-child { border-bottom:0; }" not in css
+
+    # Hover still lifts the block, and reviewed keeps its flat ink rule.
+    assert ".card:hover { background:var(--hover); border-color:var(--ink); }" in css
+    assert ".card.reviewed:hover { background:var(--hover-strong); }" in css
+    assert "box-shadow:inset 3px 0 0 var(--ink)" in css
+    assert "--hover:#f8fafb" in css and "--hover-strong:#eef1f3" in css
+
+
+def test_regions_are_bounded_and_offer_bands_are_separated_by_rules(
+    db_file: Path,
+) -> None:
+    """Each major section is bounded, and the bands inside an offer never blur.
+
+    Region boundaries use one device only: a hard ink rule under the region
+    heading. Inside an offer the header, the facts, the explanation and the human
+    feedback are separated by hairlines and whitespace rather than by colour, so
+    the only hue left on a card is the model accent and the warning ember.
+    """
+    html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
+
+    # Region boundary: summary, offers and analytics all carry the same head rule.
+    assert "gap:12px; padding-bottom:8px; border-bottom:2px solid var(--ink); }" in css
+    assert html_text.count('class="section-head"') == 3
+    for region in ('id="resumen"', 'id="contenido"', 'id="analitica"'):
+        assert region in html_text, region
+
+    # The offers region heading is a real heading, not a muted micro label.
+    assert '<h2 id="offers-title">Ofertas</h2>' in html_text
+    assert '<h2 id="kpis-title">Resumen</h2>' in html_text
+
+    # Inside one offer: header | facts | explanation | human feedback.
+    assert re.search(r"\.meta \{[^}]*border-top:1px solid var\(--hairline\);", css)
+    assert re.search(r"\.meta \{[^}]*padding:14px 0 0;", css)
+    assert ".explain { border-top:1px solid var(--hairline); }" in css
+    assert re.search(r"\.card > \.grid \{[^}]*border-top:1px solid var\(--hairline\);", css)
+    assert re.search(r"\.feedback \{[^}]*border-top:2px solid var\(--ink\);", css)
+    assert re.search(r"\.card-side \{[^}]*border-left:1px solid var\(--hairline\);", css)
+
+    # Offers are paper blocks on the canvas; the other regions are not that shape.
+    assert re.search(r"\.block \{[^}]*background:var\(--surface\);", css)
+    assert re.search(r"\.kpi-grid \{[^}]*background:var\(--paper\);", css)
+    assert re.search(r"\.rail-block \{[^}]*background:var\(--paper\);", css)
+    # Inside the sunken analytics panel, the readable surfaces come back to paper.
+    assert re.search(r"\.table-wrap \{[^}]*background:var\(--paper\);", css)
+    assert re.search(r"\.two-col > section \{[^}]*background:var\(--paper\);", css)
+
+
+def test_offer_row_keeps_a_title_score_action_hierarchy(db_file: Path) -> None:
+    """Title, score and the outbound link each read at their own level.
+
+    The title gets its own type step so it outranks body text without competing with
+    a section heading; company and location stay in the subtitle and are not repeated
+    in the facts grid underneath; the only outbound link is a bordered control in the
+    row's action column instead of underlined prose inside the facts.
+    """
+    html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
+
+    assert "--fs-title:17px" in css
+    assert ".card-title h3 { font-size:var(--fs-title); line-height:1.3;" in css
+    assert ".card-sub .company { color:var(--soft-ink); font-weight:600; }" in css
+    # Company and location appear once, in the subtitle.
+    assert 'el("span", "company", offer.company)' in html_text
+    assert 'metaItem("Empresa"' not in html_text
+    assert 'metaItem("Ubicación"' not in html_text
+
+    # The action is a real control in the row's action column, still guarded.
+    assert ".card-side { display:flex; flex-direction:column; align-items:flex-end;" in css
+    assert 'var link = el("a", "offer-link", "Ver la oferta");' in html_text
+    assert 'link.href = href;' in html_text
+    assert 'link.rel = "noopener noreferrer";' in html_text
+    assert 'link.target = "_blank";' in html_text
+    assert 'content:"\\2197"' in css
+    assert ".offer-link:hover { background:var(--ink); border-color:var(--ink); color:var(--paper); }" in css
+    # The link is no longer appended to the facts list.
+    assert 'var linkItem = el("li");' not in html_text
+
+
+def test_disclosure_summaries_draw_a_chevron_and_show_their_state(db_file: Path) -> None:
+    """Both disclosures advertise themselves as controls and state open/closed.
+
+    The chevron is drawn with borders rather than a glyph, so no font is needed and
+    the project's no-external-font rule keeps holding. The two behaviours the previous
+    skin left implicit are asserted here: a legible label size, and the same affordance
+    on the section-level methodology disclosure.
+    """
+    html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
+
+    for selector in (".explain > summary::before", ".method > summary::before"):
+        assert selector in css, selector
+    assert "border-left:7px solid var(--rule-strong);" in css
+    assert ".explain[open] > summary::before {" in css
+    assert "transform:rotate(90deg)" in css
+    assert ".method[open] > summary::before {" in css
+    # The label is a sentence-sized control with a hover and a pressed state.
+    assert ".explain > summary { display:flex; align-items:center; gap:9px; cursor:pointer;" in css
+    assert ".explain > summary:hover { background:var(--hover-strong); }" in css
+    assert ".explain > summary:active { background:var(--hairline); }" in css
+    assert ".method > summary:hover { background:var(--paper); }" in css
+    # No glyph is used for the state, so nothing depends on a symbol font.
+    assert 'content:"+"' not in css and 'content:"−"' not in css
+
+
+def test_human_feedback_shows_selection_hover_and_a_saved_confirmation(db_file: Path) -> None:
+    """Own marks are confirmed, keyboard-readable, and never hue-only.
+
+    Selection carries a check mark and ``aria-pressed`` on top of the ink fill, the
+    pressed/hover states are explicit, and the confirmation is a polite live region
+    that removes itself so it never stacks or blocks the next mark. It is only written
+    when ``localStorage`` actually accepted the write.
+    """
+    html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
+
+    assert '.decision-btn.selected::before { content:"\\2713"; margin-right:7px; }' in css
+    assert ".decision-btn:hover:not(:disabled) { background:var(--hover-strong); border-color:var(--ink); }" in css
+    assert ".decision-btn:active:not(:disabled) { background:var(--hairline); }" in css
+    assert ".decision-btn.selected:hover:not(:disabled) { background:var(--soft-ink);" in css
+    # The block heading repeats the ink square that marks the human axis in the legend.
+    assert ".feedback h4::before { content:\"\"; flex:0 0 auto; width:9px; height:9px;" in css
+
+    assert "function confirmSaved(jobId)" in html_text
+    assert 'marker.setAttribute("role", "status");' in html_text
+    assert "var stored = saveFeedback();" in html_text
+    assert "if (stored) { confirmSaved(offer.id); }" in html_text
+    assert "savedTimer = window.setTimeout(function () { marker.remove(); }, 2600);" in html_text
+    # The decision state text has its own node, so the marker is not wiped by updates.
+    assert 'el("span", "decision-state-text",' in html_text
+    assert 'card.querySelector(".decision-state-text")' in html_text
+
+
+def test_filter_rail_reports_what_is_narrowing_the_list(db_file: Path) -> None:
+    """The rail says how much is filtering, and Reset is only offered when it can act."""
+    html_text = generate_and_read(db_file)
+
+    assert 'id="filters-summary"' in html_text
+    assert 'aria-live="polite">Sin filtros activos</p>' in html_text
+    assert '"Sin filtros activos"' in html_text
+    assert '"1 filtro activo"' in html_text
+    assert "function activeFilterCount()" in html_text
+    assert "function applyFilters()" in html_text
+    assert 'document.getElementById("reset-filters").disabled =' in html_text
+    # Every narrowing control goes through the one path, so the list and the summary
+    # can never disagree; ordering is not counted as a filter.
+    assert html_text.count("applyFilters();") >= 7
+    # Ordering is reported by its own control, so it is not counted as a filter.
+    counted = re.search(r"function activeFilterCount\(\) \{(.*?)\n  \}", html_text, re.DOTALL)
+    assert counted is not None
+    assert "filters.sort" not in counted.group(1)
+    assert "filters.review" in counted.group(1)
+
+
+def test_keyword_table_headers_sort_the_rendered_rows(db_file: Path) -> None:
+    """The analytics table is sortable client-side, without touching the metrics.
+
+    Sorting only reorders the rows already in the DOM, so no value is recomputed and
+    the Python analytics stay the single source of truth. A cell the stored data cannot
+    support (``sin dato``) sorts last in both directions rather than passing as a low
+    number, and the direction is mirrored in ``aria-sort`` rather than only in a glyph.
+    """
+    html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
+
+    assert "function makeSortable(table)" in html_text
+    assert 'button.className = "sort-btn";' in html_text
+    assert 'header.setAttribute("aria-sort", "none");' in html_text
+    assert 'header.setAttribute("aria-sort", descending ? "descending" : "ascending");' in html_text
+    assert 'return (a === null) ? 1 : -1;' in html_text
+    assert '"sin dato" && !isNaN(parsed)' in html_text
+    assert "Haga clic en un encabezado para ordenar las filas." in html_text
+    assert ".sort-btn::after { content:\"\\2191\";" in css
+    assert 'th[aria-sort="ascending"] .sort-btn::after { content:"\\2191"; color:var(--ink); }' in css
+    assert 'th[aria-sort="descending"] .sort-btn::after { content:"\\2193"; color:var(--ink); }' in css
+    # The documented header labels are still the same row of strings.
+    headers = re.search(r'\["Palabra clave".*?\]', html_text, re.DOTALL)
+    assert headers is not None
+    assert re.findall(r'"([^"]+)"', headers.group(0))[0] == "Palabra clave"
+
+
+def test_posted_at_is_shown_readably_but_the_payload_keeps_it_verbatim(db_file: Path) -> None:
+    """Display-only formatting of the stored ISO timestamp, never a rewrite of it."""
+    html_text = generate_and_read(db_file)
+    payload = _extract_payload(html_text)
+
+    stored = payload["offers"][0]["posted_at"]
+    assert stored == "2026-09-14T10:00:00Z"
+    assert "function displayTimestamp(value)" in html_text
+    assert "displayTimestamp(offer.posted_at)" in html_text
+    assert 'return match ? (match[1] + " " + match[2] + " UTC") : value;' in html_text
+    # Anything the pattern does not fully match falls back to the stored string.
+    assert "return match ? (" in html_text and ": value;" in html_text
+
+
+def test_report_keeps_empty_error_and_local_storage_states(db_file: Path) -> None:
+    """The states a reader can land in are still visible in this variant."""
+    html_text = generate_and_read(db_file)
+
+    assert 'id="empty-state"' in html_text
+    assert "Ninguna oferta coincide con la búsqueda y los filtros actuales." in html_text
+    assert "No se pudieron leer los datos del panel." in html_text
+    assert "versión incompatible de jobscout" in html_text
+    assert "El almacenamiento local no está disponible" in html_text
+    assert "<noscript>" in html_text
+
 
 
 def test_ember_is_reserved_for_warning_and_error_states(db_file: Path) -> None:

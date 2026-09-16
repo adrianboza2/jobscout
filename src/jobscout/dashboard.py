@@ -772,51 +772,20 @@ __STYLE__
 <body>
 <a class="skip-link" href="#contenido">Saltar al contenido principal</a>
 
-<div class="app">
+<div class="panel">
 
-<header class="masthead">
-  <div class="masthead-copy">
-    <p class="eyebrow">Informe local &middot; sin conexión</p>
+<header class="topbar">
+  <div class="topbar-id">
+    <p class="kicker">Informe local &middot; sin conexión</p>
     <h1>Panel de ofertas &mdash; jobscout</h1>
-    <p class="purpose">
-      Informe local de ofertas puntuadas y del desempeño por palabra clave. Se genera
-      a partir de la base SQLite local, abierta en modo solo lectura.
-    </p>
   </div>
-  <div class="actions" role="group" aria-label="Acciones del informe">
-    <button type="button" id="export-feedback" class="btn btn-primary"
-      title="Descarga un archivo JSON con tus decisiones guardadas en este navegador">
-      Exportar feedback local (JSON)
-    </button>
-    <span class="muted" id="feedback-count" aria-live="polite">0 revisadas</span>
-  </div>
-</header>
-
-<aside class="sidebar" aria-label="Contexto y navegación del informe">
-  <div class="side-block">
-    <h2 class="side-title">Contexto</h2>
-    <p class="muted" id="report-meta">__META__</p>
-  </div>
-  <nav class="side-nav" aria-label="Secciones del informe">
-    <h2 class="side-title">Secciones</h2>
-    <ul>
-      <li><a href="#resumen">Resumen</a></li>
-      <li><a href="#filtros">Buscar y filtrar</a></li>
-      <li><a href="#contenido">Ofertas</a></li>
-      <li><a href="#analitica">Desempeño por palabra clave</a></li>
-    </ul>
+  <nav class="topbar-nav" aria-label="Secciones del informe">
+    <a href="#resumen">Resumen</a>
+    <a href="#contenido">Ofertas</a>
+    <a href="#analitica">Palabras clave</a>
+    <a href="#filtros">Filtros</a>
   </nav>
-  <section class="notice privacy" aria-labelledby="privacy-title">
-    <h2 id="privacy-title" class="notice-title">Privacidad y funcionamiento sin conexión</h2>
-    <p>
-      <strong>Todo queda en este navegador.</strong> Las decisiones manuales se guardan
-      en <code>localStorage</code> bajo la clave <code>__STORAGE_KEY__</code>. No se envía
-      ninguna postulación, no se guarda nada en LinkedIn y no se escribe en la base
-      SQLite. Para conservar una copia, use <em>Exportar feedback local (JSON)</em>. Los
-      puntajes y las recomendaciones provienen del evaluador de jobscout, no de su decisión.
-    </p>
-  </section>
-</aside>
+</header>
 
 <div class="content">
 
@@ -825,79 +794,46 @@ __STYLE__
   __WARNINGS__
 </section>
 
-<section class="kpis" id="resumen" aria-labelledby="kpis-title">
-  <h2 id="kpis-title">Resumen</h2>
+<section class="strip" id="resumen" aria-labelledby="kpis-title">
+  <div class="section-head">
+    <h2 id="kpis-title">Resumen</h2>
+  </div>
   <div class="kpi-grid" id="summary" aria-live="polite"></div>
   <p class="muted" id="summary-note"></p>
 </section>
 
-<section class="toolbar" id="filtros" aria-labelledby="toolbar-title">
-  <h2 id="toolbar-title" class="section-label">Buscar y filtrar</h2>
-  <div class="filters" role="search" aria-label="Búsqueda y filtros de ofertas">
-    <div class="filter-field filter-grow">
-      <label for="filter-text">Buscar</label>
-      <input type="search" id="filter-text" autocomplete="off"
-        placeholder="título, empresa, ubicación">
-    </div>
-    <div class="filter-field">
-      <label for="filter-recommendation">Recomendación del modelo</label>
-      <select id="filter-recommendation">
-        <option value="">todas</option>
-        <option value="apply">Aplicar</option>
-        <option value="consider">Considerar</option>
-        <option value="skip">Descartar</option>
-        <option value="need_more_info">Requiere más información</option>
-        <option value="unscored">Sin puntaje</option>
-      </select>
-    </div>
-    <div class="filter-field">
-      <label for="filter-keyword">Palabra clave de origen</label>
-      <select id="filter-keyword">
-        <option value="">todas</option>
-      </select>
-    </div>
-    <div class="filter-field">
-      <label for="filter-min-score">Puntaje mínimo</label>
-      <input type="number" id="filter-min-score" min="0" max="100" step="1"
-        inputmode="numeric" placeholder="0">
-    </div>
-    <div class="filter-field">
-      <label for="filter-review">Estado de revisión</label>
-      <select id="filter-review">
-        <option value="">todas</option>
-        <option value="reviewed">revisadas</option>
-        <option value="unreviewed">sin revisar</option>
-      </select>
-    </div>
-    <div class="filter-field">
-      <label for="filter-sort">Ordenar por</label>
-      <select id="filter-sort">
-        <option value="score">puntaje (mejor primero)</option>
-        <option value="fresh">fecha (más recientes primero)</option>
-      </select>
-    </div>
-    <div class="filter-field filter-action">
-      <button type="button" id="reset-filters" class="btn btn-ghost"
-        title="Restablece la búsqueda y todos los filtros">Restablecer filtros</button>
-    </div>
+<main id="contenido" aria-labelledby="offers-title">
+  <div class="section-head">
+    <h2 id="offers-title">Ofertas</h2>
+    <p class="muted" id="offer-count" role="status"></p>
   </div>
-</section>
-
-<main id="contenido">
-  <p class="muted" id="offer-count" role="status"></p>
   <div id="offers"></div>
   <p id="empty-state" class="empty" hidden>
     Ninguna oferta coincide con la búsqueda y los filtros actuales.
   </p>
 </main>
 
-<section class="analytics" id="analitica" aria-labelledby="analytics-title">
-  <h2 id="analytics-title">Desempeño por palabra clave</h2>
+<section class="block" id="analitica" aria-labelledby="analytics-title">
+  <div class="section-head">
+    <h2 id="analytics-title">Desempeño por palabra clave</h2>
+  </div>
   <p class="muted">
     Calculado a partir de la procedencia guardada de las búsquedas y de la última
     evaluación exitosa. <strong>La posición observada es procedencia, no una medida de
     calidad</strong>: el orden de resultados de LinkedIn no se trata como verdad.
   </p>
+  <details class="method">
+    <summary>Metodología de las métricas</summary>
+    <p>
+      Cada tasa se calcula solo sobre ofertas activas y sobre hechos guardados: una
+      métrica sin datos detrás queda como <em>sin dato</em>, nunca como un cero
+      inventado. La frescura usa un umbral de 21 días y cae a la fecha de primera
+      visualización cuando no hay fecha de publicación; las ofertas sin ninguna fecha
+      usable no se cuentan como frescas. La columna de decisión humana proviene del
+      feedback importado con <code>jobscout import-feedback</code>, no de sus marcas en
+      este navegador.
+    </p>
+  </details>
   <div class="table-wrap">
     <div id="keyword-table"></div>
   </div>
@@ -917,13 +853,114 @@ __STYLE__
   </div>
 </section>
 
-<footer class="muted">
-  <p>
-    Generado por <code>jobscout dashboard</code>. Sin recursos externos y sin
-    solicitudes de red.
-  </p>
-</footer>
 </div>
+
+<aside class="rail" aria-label="Controles y contexto del informe">
+
+  <section class="rail-block" id="filtros" aria-labelledby="filters-title">
+    <h2 id="filters-title" class="rail-title">Buscar y filtrar</h2>
+    <p class="filters-summary" id="filters-summary" aria-live="polite">Sin filtros activos</p>
+    <div class="filters" role="search" aria-label="Búsqueda y filtros de ofertas">
+      <div class="filter-field">
+        <label for="filter-text">Buscar</label>
+        <input type="search" id="filter-text" autocomplete="off"
+          placeholder="título, empresa, ubicación">
+      </div>
+      <div class="filter-field">
+        <label for="filter-recommendation">Recomendación del modelo</label>
+        <select id="filter-recommendation">
+          <option value="">todas</option>
+          <option value="apply">Aplicar</option>
+          <option value="consider">Considerar</option>
+          <option value="skip">Descartar</option>
+          <option value="need_more_info">Requiere más información</option>
+          <option value="unscored">Sin puntaje</option>
+        </select>
+      </div>
+      <div class="filter-field">
+        <label for="filter-keyword">Palabra clave de origen</label>
+        <select id="filter-keyword">
+          <option value="">todas</option>
+        </select>
+      </div>
+      <div class="filter-field">
+        <label for="filter-min-score">Puntaje mínimo</label>
+        <input type="number" id="filter-min-score" min="0" max="100" step="1"
+          inputmode="numeric" placeholder="0">
+      </div>
+      <div class="filter-field">
+        <label for="filter-review">Estado de revisión</label>
+        <select id="filter-review">
+          <option value="">todas</option>
+          <option value="reviewed">revisadas</option>
+          <option value="unreviewed">sin revisar</option>
+        </select>
+      </div>
+      <div class="filter-field">
+        <label for="filter-sort">Ordenar por</label>
+        <select id="filter-sort">
+          <option value="score">puntaje (mejor primero)</option>
+          <option value="fresh">fecha (más recientes primero)</option>
+        </select>
+      </div>
+      <div class="filter-field">
+        <button type="button" id="reset-filters" class="btn btn-ghost"
+          title="Restablece la búsqueda y todos los filtros">Restablecer filtros</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="rail-block" aria-labelledby="actions-title">
+    <h2 id="actions-title" class="rail-title">Acciones</h2>
+    <div class="rail-actions">
+      <button type="button" id="export-feedback" class="btn btn-primary"
+        title="Descarga un archivo JSON con sus decisiones guardadas en este navegador">
+        Exportar feedback local (JSON)
+      </button>
+      <span class="muted" id="feedback-count" aria-live="polite">0 revisadas</span>
+      <div id="explain-controls" class="control-row"></div>
+    </div>
+  </section>
+
+  <section class="rail-block" aria-labelledby="axes-title">
+    <h2 id="axes-title" class="rail-title">Dos ejes distintos</h2>
+    <dl class="axes">
+      <dt class="axis-model">Recomendación del modelo</dt>
+      <dd>La calcula el evaluador de jobscout a partir de la oferta y de su perfil. Sus
+        marcas no la cambian.</dd>
+      <dt class="axis-human">Mi decisión (feedback)</dt>
+      <dd>Su marca manual. Se guarda solo en este navegador y no modifica el puntaje, la
+        recomendación ni la base de datos.</dd>
+    </dl>
+  </section>
+
+  <section class="rail-block" aria-labelledby="privacy-title">
+    <h2 id="privacy-title" class="rail-title">Privacidad y funcionamiento sin conexión</h2>
+    <p class="muted">
+      <strong>Todo queda en este navegador.</strong> Las decisiones manuales se guardan
+      en <code>localStorage</code> bajo la clave <code>__STORAGE_KEY__</code>. No se envía
+      ninguna postulación, no se guarda nada en LinkedIn y no se escribe en la base
+      SQLite. Para conservar una copia, use <em>Exportar feedback local (JSON)</em>. Los
+      puntajes y las recomendaciones provienen del evaluador de jobscout, no de su decisión.
+    </p>
+  </section>
+
+</aside>
+
+<footer class="scope">
+  <div>
+    <h2 class="section-label">Alcance del informe</h2>
+    <p class="muted">__META__</p>
+  </div>
+  <div>
+    <h2 class="section-label">Sin red</h2>
+    <p class="muted">
+      Generado por <code>jobscout dashboard</code>. Un solo archivo HTML: sin recursos
+      externos, sin solicitudes de red, sin servidor.
+    </p>
+  </div>
+</footer>
+
 </div>
 
 <script type="application/json" id="jobscout-data">__DATA__</script>
@@ -940,252 +977,417 @@ __SCRIPT__
 _STYLE = """
 :root {
   color-scheme: light;
-  --canvas:#f5f5f5;
+  --canvas:#e7ebee;
   --paper:#ffffff;
-  --surface:#fafafa;
-  --ink:#0a0a0a;
-  --soft-ink:#171717;
-  --muted:#737373;
-  --hairline:#e5e5e5;
+  --surface:#f4f6f7;
+  /* Two hover washes: one that lifts from paper (rows, buttons) and one that
+     lifts from the sunken surface (table rows, inputs). */
+  --hover:#f8fafb;
+  --hover-strong:#eef1f3;
+  --ink:#0c1216;
+  --soft-ink:#20303a;
+  --muted:#5c6a74;
+  --hairline:#ccd4da;
+  --rule-strong:#8b98a1;
   --ember:#e7000b;
-  --ember-soft:#fff5f5;
+  --signal:#0f6b4f;
   --space:4px;
-  --pad-card:calc(var(--space) * 5);
-  --gap-3:calc(var(--space) * 3);
-  --gap-4:calc(var(--space) * 4);
-  --gap-6:calc(var(--space) * 6);
-  --radius-card:24px;
-  --radius-interactive:18px;
-  --radius-nested:10px;
-  --radius-badge:18px;
-  --shadow-quiet:0 1px 2px rgba(10,10,10,.04), 0 6px 20px -12px rgba(10,10,10,.12);
-  --shadow-raised:0 1px 2px rgba(10,10,10,.05), 0 16px 40px -24px rgba(10,10,10,.2);
-  --max-width:1280px;
-  --font-sans:Geist, Inter, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-mono:"Geist Mono", ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  --pad-block:16px;
+  --radius:3px;
+  /* Two separation steps, and only two. ``--gap-card`` is the canvas showing
+     between two offers; ``--gap-block`` is the space inside one offer between its
+     bands. Every rule drawn below is a hairline meant to be read, never decoration. */
+  --gap-card:24px;
+  --gap-block:16px;
+  --fs-micro:11px;
+  --fs-small:13px;
+  --fs-body:15px;
+  /* The offer title is the row's name, so it has to outrank body text without
+     competing with a section heading. */
+  --fs-title:17px;
+  --fs-heading:20px;
+  --fs-display:28px;
+  --panel-max:1440px;
+  --rail-width:320px;
+  /* Measured height of the sticky top bar, used to keep the sticky rail clear of it
+     at every desktop width the shell targets. */
+  --topbar-h:78px;
+  --font-sans:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
-* { box-sizing: border-box; }
+* { box-sizing:border-box; }
 html { -webkit-text-size-adjust:100%; }
 body { margin:0; background:var(--canvas); color:var(--soft-ink);
-  font:14px/1.55 var(--font-sans); -webkit-font-smoothing:antialiased;
-  text-rendering:optimizeLegibility; }
+  font-family:var(--font-sans); font-size:var(--fs-body); line-height:1.5;
+  -webkit-font-smoothing:antialiased; }
 h1, h2, h3, h4 { margin:0; color:var(--ink); font-weight:600; }
-h1 { font-size:36px; line-height:1.08; letter-spacing:-.035em; }
-h2 { font-size:30px; line-height:1.12; letter-spacing:-.03em; }
-h3 { font-size:24px; line-height:1.18; letter-spacing:-.025em; }
-h4 { font-size:12px; line-height:1.3; font-weight:600; text-transform:uppercase;
-  letter-spacing:.07em; color:var(--muted); }
+h1 { font-size:var(--fs-display); line-height:1.15; letter-spacing:-.02em; }
+h2 { font-size:var(--fs-heading); line-height:1.25; letter-spacing:-.01em; }
+h3 { font-size:var(--fs-body); line-height:1.35; }
+h4 { font-size:var(--fs-micro); line-height:1.3; font-weight:700; text-transform:uppercase;
+  letter-spacing:.08em; color:var(--muted); }
 p { margin:0; }
-code { font-family:var(--font-mono); font-size:.92em; }
+code { font-family:var(--font-mono); font-size:.9em; }
 .muted { color:var(--muted); }
 a { color:var(--ink); text-decoration:underline; text-underline-offset:2px;
-  text-decoration-color:var(--hairline); }
+  text-decoration-color:var(--rule-strong); }
 a:hover { text-decoration-color:var(--ink); }
-:focus-visible { outline:2px solid var(--ink); outline-offset:2px; border-radius:6px; }
-.skip-link { position:absolute; left:-9999px; top:0; z-index:100;
-  background:var(--ink); color:var(--surface); font-weight:600; text-decoration:none;
-  padding:10px 16px; border-radius:0 0 var(--radius-interactive) 0; }
+:focus-visible { outline:3px solid var(--ink); outline-offset:1px; }
+.skip-link { position:absolute; left:-9999px; top:0; z-index:100; background:var(--ink);
+  color:var(--paper); font-weight:600; font-size:var(--fs-small); text-decoration:none;
+  padding:10px 14px; }
 .skip-link:focus { left:0; }
 
-/* App shell: masthead spans both columns, then sidebar + content. */
-.app { max-width:var(--max-width); margin:0 auto; padding:var(--gap-6);
-  display:grid; grid-template-columns:minmax(240px, 280px) minmax(0, 1fr);
-  gap:var(--gap-6); align-items:start; }
-.masthead { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:var(--gap-4) 32px;
-  align-items:flex-end; justify-content:space-between;
-  padding-bottom:var(--pad-card); border-bottom:1px solid var(--hairline); }
-.masthead-copy { display:flex; flex-direction:column; gap:8px; max-width:70ch; }
-.eyebrow { font-size:12px; font-weight:600; text-transform:uppercase;
-  letter-spacing:.08em; color:var(--muted); }
-.purpose { color:var(--muted); }
-.actions { display:flex; flex-wrap:wrap; align-items:center; gap:var(--gap-3); }
+/* Desktop-only shell: a fixed two-column grid (content + control rail) with no
+   narrow-screen breakpoint. The rail follows the content in the DOM so the reading
+   and tab order follow the required section order, and it is placed on the right so
+   the visual order matches that DOM order. */
+.panel { max-width:var(--panel-max); margin:0 auto; padding:0 20px 28px;
+  display:grid; grid-template-columns:minmax(0, 1fr) var(--rail-width);
+  gap:18px 20px; align-items:start; }
+/* The top bar is the report's one sticky element: the section shortcuts stay
+   reachable while the offer list scrolls past. It owns no width of its own, so it
+   never covers the column a reader is working in. */
+.topbar { grid-column:1 / -1; grid-row:1; position:sticky; top:0; z-index:20;
+  background:var(--canvas); min-height:var(--topbar-h); display:flex; flex-wrap:wrap;
+  align-items:flex-end; justify-content:space-between; gap:8px 24px;
+  padding:14px 0 10px; border-bottom:2px solid var(--ink); }
+.topbar-id { display:flex; flex-direction:column; gap:2px; }
+.kicker { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
+  letter-spacing:.1em; color:var(--muted); }
+.topbar-nav { display:flex; gap:18px; font-size:var(--fs-micro); font-weight:700;
+  text-transform:uppercase; letter-spacing:.07em; }
+.topbar-nav a { color:var(--soft-ink); text-decoration:none; padding:4px 0;
+  border-bottom:2px solid transparent;
+  transition:color .14s ease, border-color .14s ease; }
+.topbar-nav a:hover { color:var(--ink); text-decoration:underline;
+  border-bottom-color:var(--ink); }
+.topbar-nav a:active { color:var(--ink); }
 
-.sidebar { display:flex; flex-direction:column; gap:var(--gap-4);
-  position:sticky; top:var(--gap-6); max-height:calc(100vh - 48px); overflow:auto; }
-.side-block, .side-nav { display:flex; flex-direction:column; gap:var(--gap-3);
-  background:var(--surface); border:1px solid var(--hairline);
-  border-radius:var(--radius-card); padding:var(--pad-card); }
-.side-title { font-size:12px; font-weight:600; text-transform:uppercase;
+.content { grid-column:1; grid-row:2; display:flex; flex-direction:column; gap:22px;
+  min-width:0; }
+.content > * { min-width:0; }
+footer.scope { grid-column:1 / -1; grid-row:3; display:grid;
+  grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px 24px; padding-top:12px;
+  border-top:2px solid var(--ink); }
+footer.scope p { font-size:var(--fs-small); }
+
+/* Sticky control rail: pinned below the top bar, never over the content column,
+   and internally scrollable so a short window still reaches the last block. */
+.rail { grid-column:2; grid-row:2; display:flex; flex-direction:column; gap:12px;
+  position:sticky; top:calc(var(--topbar-h) + 14px);
+  max-height:calc(100vh - var(--topbar-h) - 28px); overflow-y:auto;
+  scrollbar-gutter:stable; }
+.rail-block { display:flex; flex-direction:column; gap:10px; background:var(--paper);
+  border:1px solid var(--rule-strong); border-radius:var(--radius); padding:var(--pad-block); }
+.rail-block p { font-size:var(--fs-small); }
+.rail-block code { overflow-wrap:anywhere; }
+.rail-title { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
+  letter-spacing:.09em; color:var(--ink); padding-bottom:6px;
+  border-bottom:1px solid var(--hairline); }
+
+.filters { display:flex; flex-direction:column; gap:10px; }
+.filter-field { display:flex; flex-direction:column; gap:4px; min-width:0; }
+.filter-field label { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
   letter-spacing:.07em; color:var(--muted); }
-.side-nav ul { list-style:none; margin:0; padding:0; display:flex;
-  flex-direction:column; gap:2px; font-weight:500; }
-.side-nav a { display:block; padding:8px 12px; border-radius:var(--radius-nested);
-  color:var(--soft-ink); text-decoration:none; }
-.side-nav a:hover { background:var(--canvas); color:var(--ink); }
+/* Element-qualified so it outranks the rail's generic paragraph size. */
+p.filters-summary { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
+  letter-spacing:.07em; color:var(--muted); }
+p.filters-summary.active { color:var(--ink); }
+.filters input, .filters select, .feedback textarea { font-family:inherit;
+  font-size:var(--fs-small); width:100%; padding:8px 10px; color:var(--ink);
+  background:var(--surface); border:1px solid var(--hairline);
+  border-radius:var(--radius);
+  transition:background-color .14s ease, border-color .14s ease; }
+.filters input:hover, .filters select:hover, .feedback textarea:hover {
+  background:var(--hover-strong); }
+.filters input:focus, .filters select:focus, .feedback textarea:focus {
+  background:var(--paper); border-color:var(--ink); }
 
-.content { display:flex; flex-direction:column; gap:var(--gap-6); min-width:0; }
+.btn { font-family:inherit; font-size:var(--fs-small); font-weight:600; padding:8px 13px;
+  cursor:pointer; color:var(--ink); background:var(--paper);
+  border:1px solid var(--rule-strong); border-radius:var(--radius);
+  transition:background-color .14s ease, border-color .14s ease, color .14s ease; }
+.btn:hover:not(:disabled) { background:var(--surface); border-color:var(--ink); }
+.btn:active:not(:disabled) { background:var(--hover-strong); border-color:var(--ink); }
+.btn:disabled { opacity:.45; cursor:not-allowed; }
+.btn-primary { background:var(--ink); border-color:var(--ink); color:var(--paper); }
+.btn-primary:hover:not(:disabled) { background:var(--soft-ink); border-color:var(--soft-ink); }
+.btn-ghost { background:transparent; border-color:var(--hairline); }
+.btn-ghost:hover:not(:disabled) { background:var(--surface); border-color:var(--rule-strong); }
+#export-feedback { width:100%; }
+.rail-actions { display:flex; flex-direction:column; gap:8px; }
+.control-row { display:flex; gap:8px; }
+.control-row .btn { flex:1 1 0; }
 
-.notice { display:flex; flex-direction:column; gap:8px; background:var(--paper);
-  border:1px solid var(--hairline); border-radius:var(--radius-card);
-  padding:var(--pad-card); box-shadow:var(--shadow-quiet); }
-.notice-title { font-size:14px; letter-spacing:-.01em; }
-.notice p { font-size:13px; color:var(--muted); }
-.notice.privacy { box-shadow:none; }
-.notice.privacy p { color:var(--soft-ink); }
+.axes { margin:0; display:flex; flex-direction:column; gap:10px; }
+.axes dt { display:flex; align-items:center; gap:6px; font-size:var(--fs-micro);
+  font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--ink); }
+.axes dt::before { content:""; flex:0 0 auto; width:9px; height:9px;
+  border:1px solid var(--ink); background:var(--paper); }
+/* The accent swatch is the legend for the model axis; the human axis stays ink so a
+   reader never learns "the accent means my decision". */
+.axis-model::before { background:var(--signal); border-color:var(--signal); }
+.axis-human::before { background:var(--ink); border-color:var(--ink); }
+.axes dd { margin:4px 0 0; font-size:var(--fs-small); color:var(--muted); }
+
+.notice { display:flex; flex-direction:column; gap:6px; background:var(--paper);
+  border:1px solid var(--hairline); border-radius:var(--radius); padding:var(--pad-block); }
+.notice-title { font-size:var(--fs-small); }
+.notice p { font-size:var(--fs-small); color:var(--muted); }
 /* Ember is reserved for real warning/error states, never for decoration. */
-.notice.warn { background:var(--ember-soft); border-color:rgba(231,0,11,.28);
-  box-shadow:none; }
+.notice.warn { background:#fff5f5; border-color:var(--ember); border-left-width:4px; }
 .notice.warn .notice-title { color:var(--ember); }
 .notice.warn p { color:var(--soft-ink); }
 
-.kpis { display:flex; flex-direction:column; gap:var(--gap-4); }
-/* Exactly six stat blocks, so the grid is explicit: 3 / 2 / 1 columns. */
-.kpi-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr));
-  gap:var(--gap-3); }
-.kpi { display:flex; flex-direction:column; gap:var(--space); background:var(--paper);
-  border:1px solid var(--hairline); border-radius:var(--radius-card);
-  padding:var(--pad-card); box-shadow:var(--shadow-quiet); }
-.kpi-value { font-size:48px; line-height:1; font-weight:600; letter-spacing:-.04em;
-  color:var(--ink); font-variant-numeric:tabular-nums; }
-.kpi-label { font-size:12.5px; color:var(--muted); }
-/* The human-reviewed counter is the one KPI the reader owns. Recommendation KPI
-   modifiers (kpi-apply/kpi-consider/kpi-skip) stay monochromatic on purpose: the
-   per-offer badge is what carries the recommendation state, in neutral ink. */
-.kpi-reviewed { border-color:var(--ink); }
-#summary-note { font-size:12.5px; }
+.strip { display:flex; flex-direction:column; gap:8px; }
+.section-label { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
+  letter-spacing:.09em; color:var(--muted); }
+/* Region boundary: every region heading closes with a hard ink rule, so the
+   summary strip, the offers list and the analytics panel each read as their own
+   section instead of one continuous sheet. */
+.section-head { display:flex; align-items:baseline; justify-content:space-between;
+  gap:12px; padding-bottom:8px; border-bottom:2px solid var(--ink); }
+.section-head h2 { font-size:var(--fs-heading); }
+/* Exactly six stat blocks, so the strip is an explicit fixed six-column row. */
+.kpi-grid { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr));
+  background:var(--paper); border:1px solid var(--rule-strong);
+  border-radius:var(--radius); overflow:hidden; }
+.kpi { display:flex; flex-direction:column; gap:3px; padding:12px 14px;
+  border-left:1px solid var(--hairline); }
+.kpi:first-child { border-left:0; }
+.kpi-value { font-family:var(--font-mono); font-size:var(--fs-display); line-height:1;
+  font-weight:600; letter-spacing:-.02em; color:var(--ink);
+  font-variant-numeric:tabular-nums; }
+.kpi-label { font-size:var(--fs-micro); text-transform:uppercase; letter-spacing:.05em;
+  color:var(--muted); }
+/* The human-reviewed counter is the one KPI the reader owns, so it is marked with an
+   ink rule rather than the model accent. */
+.kpi-reviewed { background:var(--surface); box-shadow:inset 3px 0 0 var(--ink); }
+#summary-note { font-size:var(--fs-small); }
 
-.toolbar { display:flex; flex-direction:column; gap:var(--gap-4);
-  background:var(--paper); border:1px solid var(--hairline);
-  border-radius:var(--radius-card); padding:var(--pad-card);
-  box-shadow:var(--shadow-quiet); position:sticky; top:var(--gap-4); z-index:5; }
-.section-label { font-size:12px; font-weight:600; text-transform:uppercase;
-  letter-spacing:.07em; color:var(--muted); }
-.filters { display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr));
-  gap:var(--gap-4); align-items:end; }
-.filter-field { display:flex; flex-direction:column; gap:6px; min-width:0; }
-.filter-field label { font-size:12px; font-weight:600; color:var(--muted); }
-.filter-grow { grid-column:span 2; }
-.filter-action { justify-content:flex-end; }
-.filter-action .btn { width:100%; }
-.filters input, .filters select, .feedback textarea { font:inherit; width:100%;
-  padding:10px 14px; color:var(--ink); background:var(--canvas);
-  border:1px solid transparent; border-radius:var(--radius-interactive); }
-.filters input:hover, .filters select:hover, .feedback textarea:hover { background:#f0f0f0; }
-.filters input:focus, .filters select:focus, .feedback textarea:focus {
-  background:var(--paper); border-color:var(--hairline); }
-
-.btn { font:inherit; font-weight:500; padding:10px 16px; cursor:pointer;
-  color:var(--ink); background:transparent; border:1px solid var(--hairline);
-  border-radius:var(--radius-interactive);
-  transition:background-color .15s ease, border-color .15s ease, color .15s ease; }
-.btn:hover:not(:disabled) { background:var(--canvas); }
-.btn:disabled { opacity:.45; cursor:not-allowed; }
-.btn-primary { background:var(--ink); border-color:var(--ink); color:var(--surface);
-  font-weight:600; }
-.btn-primary:hover:not(:disabled) { background:var(--soft-ink); border-color:var(--soft-ink); }
-.btn-ghost { background:var(--canvas); border-color:transparent; }
-.btn-ghost:hover:not(:disabled) { background:#ececec; }
-
-#offer-count { font-size:13px; margin-bottom:var(--gap-3); }
-#offers { display:flex; flex-direction:column; gap:var(--gap-4); }
-.card { display:flex; flex-direction:column; gap:var(--gap-4); background:var(--paper);
-  border:1px solid var(--hairline); border-radius:var(--radius-card);
-  padding:var(--pad-card); box-shadow:var(--shadow-quiet); }
-/* Reviewed means "you touched this one": a surface shift, not a colour. */
-.card.reviewed { background:var(--surface); }
-.card-head { display:flex; flex-wrap:wrap; gap:var(--gap-3) 20px;
-  align-items:flex-start; justify-content:space-between; }
-.card-title { flex:1 1 320px; min-width:0; display:flex; flex-direction:column; gap:6px; }
-.card-title h3 { overflow-wrap:anywhere; }
+#contenido { display:flex; flex-direction:column; gap:18px; min-width:0; }
+#offer-count { font-size:var(--fs-small); }
+/* Each offer is its own paper block sitting on the canvas. The list container
+   paints nothing: separation is the vertical gap between blocks plus one
+   restrained outline per block, so two neighbouring offers can never merge into
+   one continuous list. Elevation is not used as a separator. */
+#offers { display:flex; flex-direction:column; gap:var(--gap-card); }
+.card { display:flex; flex-direction:column; gap:var(--gap-block);
+  padding:24px 26px; background:var(--paper);
+  border:1px solid var(--rule-strong); border-radius:var(--radius);
+  transition:background-color .14s ease, border-color .14s ease; }
+.card:hover { background:var(--hover); border-color:var(--ink); }
+/* Reviewed means "you touched this one": an ink marker, not a hue. */
+.card.reviewed { background:var(--surface); border-color:var(--ink);
+  box-shadow:inset 3px 0 0 var(--ink); }
+.card.reviewed:hover { background:var(--hover-strong); }
+/* Two fixed header columns instead of a wrapping flex row: the title column takes
+   the remaining width and the score/recommendation column keeps its rule, so the
+   hairline between them never ends up floating on a line of its own. */
+.card-head { display:grid; grid-template-columns:minmax(0, 1fr) auto;
+  gap:16px 24px; align-items:start; }
+.card-title { min-width:0; display:flex; flex-direction:column; gap:4px; }
+.card-title h3 { font-size:var(--fs-title); line-height:1.3; letter-spacing:-.01em;
+  overflow-wrap:anywhere; }
 .card-sub { display:flex; flex-wrap:wrap; gap:6px; align-items:baseline;
-  font-size:13px; color:var(--muted); }
-.card-sub .dot { color:var(--hairline); }
-.card-score { display:flex; flex-direction:column; align-items:flex-end; gap:8px; }
-.score { font-size:30px; line-height:1; font-weight:600; letter-spacing:-.03em;
-  color:var(--soft-ink); font-variant-numeric:tabular-nums; }
-.score-max { font-size:12px; font-weight:500; color:var(--muted); letter-spacing:0; }
-/* Recommendation states stay monochromatic: weight, not hue. */
-.card.rec-apply .score { color:var(--ink); }
+  font-size:var(--fs-small); }
+.card-sub .company { color:var(--soft-ink); font-weight:600; }
+.card-sub .location { color:var(--muted); }
+.card-sub .dot { color:var(--rule-strong); }
+/* The right-hand side of a row: the model's score and badge, then the one action
+   that leaves the report. A hairline marks where the header's title column ends
+   and the score/recommendation column begins. */
+.card-side { display:flex; flex-direction:column; align-items:flex-end; gap:12px;
+  min-width:0; padding-left:20px; border-left:1px solid var(--hairline); }
+.card-score { display:flex; align-items:center; gap:10px; }
+.offer-link { display:inline-flex; align-items:center; gap:7px;
+  font-size:var(--fs-small); font-weight:600; text-decoration:none; color:var(--ink);
+  background:var(--paper); border:1px solid var(--rule-strong);
+  border-radius:var(--radius); padding:7px 13px;
+  transition:background-color .14s ease, border-color .14s ease, color .14s ease; }
+.offer-link::after { content:"\\2197"; font-family:var(--font-mono); }
+.offer-link:hover { background:var(--ink); border-color:var(--ink); color:var(--paper); }
+.offer-link:active { background:var(--soft-ink); border-color:var(--soft-ink); }
+.score { display:inline-flex; align-items:baseline; gap:3px;
+  font-family:var(--font-mono); font-size:var(--fs-display); line-height:1;
+  font-weight:600; letter-spacing:-.02em; color:var(--ink);
+  font-variant-numeric:tabular-nums; }
+.score-max { font-family:var(--font-sans); font-size:var(--fs-micro); font-weight:600;
+  color:var(--muted); letter-spacing:0; }
+/* Model-axis weight only: apply reads loudest, skip and need_more_info recede. */
+.card.rec-apply .score { color:var(--signal); }
 .card.rec-skip .score, .card.rec-need_more_info .score { color:var(--muted); }
 
-.badge { font-size:12px; font-weight:600; padding:4px 12px; white-space:nowrap;
-  border-radius:var(--radius-badge); border:1px solid var(--hairline);
-  background:var(--surface); color:var(--muted); }
-.badge-apply { background:var(--ink); border-color:var(--ink); color:var(--surface); }
+/* The badge belongs to the model axis. The accent marks "apply" and nothing else;
+   human feedback never uses it (see .decision-btn below). */
+.badge { display:inline-flex; align-items:baseline; font-family:var(--font-sans);
+  font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
+  letter-spacing:.06em; white-space:nowrap; padding:4px 8px;
+  border:1px solid var(--hairline); border-radius:2px; background:var(--surface);
+  color:var(--muted); }
+.badge::before { content:"Modelo"; margin-right:5px; padding-right:5px;
+  border-right:1px solid currentColor; }
+.badge-apply { background:var(--signal); border-color:var(--signal); color:#ffffff; }
 .badge-consider { background:var(--paper); border-color:var(--ink); color:var(--ink); }
-.badge-skip { background:var(--canvas); border-color:var(--hairline); color:var(--muted); }
-.badge-need_more_info { background:transparent; border-style:dashed; color:var(--muted); }
-.badge-unscored { background:transparent; border-style:dashed; color:var(--muted); }
+.badge-skip { background:var(--surface); border-color:var(--hairline); color:var(--muted); }
+.badge-need_more_info { background:transparent; border-style:dashed;
+  border-color:var(--rule-strong); color:var(--muted); }
+.badge-unscored { background:transparent; border-style:dashed;
+  border-color:var(--rule-strong); color:var(--muted); }
 
-.meta { list-style:none; display:flex; flex-wrap:wrap; gap:8px 20px; margin:0; padding:0;
-  font-size:13px; color:var(--muted); }
-.meta li { display:inline-flex; gap:6px; align-items:baseline; }
-.meta-key { font-weight:600; color:var(--soft-ink); }
-.rationale { font-size:14px; color:var(--soft-ink); background:var(--surface);
-  border:1px solid var(--hairline); border-radius:var(--radius-nested); padding:14px 16px; }
-.rationale strong { color:var(--ink); }
-.grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));
-  gap:var(--gap-3); }
-.grid > div { display:flex; flex-direction:column; gap:8px; background:var(--surface);
-  border:1px solid var(--hairline); border-radius:var(--radius-nested); padding:12px 14px; }
-.grid ul { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:4px;
-  font-size:13px; color:var(--soft-ink); }
+/* Exactly six facts per offer, so three fixed columns fill two tidy rows and the
+   longer values ("27.82 días (fecha de publicación)") stop wrapping mid-phrase.
+   The rule above the facts is the boundary between the offer header (title, score,
+   recommendation) and the stored facts underneath; the whitespace carries the rest. */
+.meta { list-style:none; display:grid;
+  grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px 18px; margin:0;
+  padding:14px 0 0; border-top:1px solid var(--hairline);
+  font-size:var(--fs-small); }
+.meta li { display:flex; gap:6px; align-items:baseline; min-width:0; }
+.meta-key { flex:0 0 auto; font-size:var(--fs-micro); text-transform:uppercase;
+  letter-spacing:.06em; color:var(--muted); }
+.meta-value { color:var(--soft-ink); overflow-wrap:anywhere; }
 
-.feedback { display:flex; flex-direction:column; gap:10px;
-  border-top:1px solid var(--hairline); padding-top:var(--gap-4); }
-.feedback-hint { font-size:12.5px; }
-.feedback-controls { display:flex; flex-wrap:wrap; gap:8px; }
-.decision-btn { background:var(--canvas); border-color:transparent; }
-.decision-btn:hover:not(:disabled) { background:#ececec; }
-.decision-btn.selected { background:var(--ink); border-color:var(--ink);
-  color:var(--surface); font-weight:600; }
-.feedback textarea { min-height:60px; resize:vertical; }
-.decision-state { font-size:13px; color:var(--soft-ink); }
+/* An inset rule block rather than a colour band: the explanation is marked with a
+   heavier left rule on a sunken surface, so it reads as a quotation of the model. */
+.rationale { font-size:var(--fs-small); color:var(--soft-ink); background:var(--surface);
+  border:1px solid var(--hairline); border-left:3px solid var(--rule-strong);
+  padding:10px 12px; }
+.rationale strong { display:block; font-size:var(--fs-micro); text-transform:uppercase;
+  letter-spacing:.06em; color:var(--muted); }
 
-.analytics { display:flex; flex-direction:column; gap:var(--gap-4);
-  background:var(--paper); border:1px solid var(--hairline);
-  border-radius:var(--radius-card); padding:var(--pad-card);
-  box-shadow:var(--shadow-quiet); }
-.analytics > .muted { font-size:13px; }
-.table-wrap { overflow-x:auto; background:var(--paper);
-  border:1px solid var(--hairline); border-radius:var(--radius-nested); }
-table { border-collapse:collapse; width:100%; font-size:13px; }
-caption { caption-side:top; text-align:left; padding:12px 14px; font-size:12.5px;
-  color:var(--muted); border-bottom:1px solid var(--hairline); }
-th, td { padding:10px 14px; text-align:left; white-space:nowrap;
+/* Native disclosure: the platform owns the keyboard and screen-reader behaviour.
+   The whole row is the hit target, the chevron states open/closed, and hovering or
+   focusing it is obvious without a heavy chrome. */
+.explain { border-top:1px solid var(--hairline); }
+.explain > summary { display:flex; align-items:center; gap:9px; cursor:pointer;
+  padding:10px 12px; border-radius:var(--radius); font-size:var(--fs-small);
+  font-weight:700; color:var(--ink);
+  transition:background-color .14s ease, color .14s ease; }
+.explain > summary::-webkit-details-marker { display:none; }
+.explain > summary::before { content:""; flex:0 0 auto; width:0; height:0;
+  border-top:5px solid transparent; border-bottom:5px solid transparent;
+  border-left:7px solid var(--rule-strong);
+  transition:transform .16s ease, border-left-color .14s ease; }
+.explain > summary:hover { background:var(--hover-strong); }
+.explain > summary:hover::before { border-left-color:var(--ink); }
+.explain > summary:active { background:var(--hairline); }
+.explain[open] > summary::before { transform:rotate(90deg); border-left-color:var(--ink); }
+.explain-body { display:flex; flex-direction:column; gap:14px; padding:6px 14px 12px; }
+
+/* Provenance and the four scoring lists are the last band of the explanation. With
+   JavaScript off they are direct children of the offer, so they carry the same
+   hairline boundary the disclosure draws when it is present. */
+.grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));
+  gap:12px; }
+.card > .grid { border-top:1px solid var(--hairline); padding-top:14px; }
+.grid > div { display:flex; flex-direction:column; gap:6px; background:var(--surface);
+  border:1px solid var(--hairline); border-radius:var(--radius); padding:10px 12px; }
+.grid ul { margin:0; padding-left:16px; display:flex; flex-direction:column; gap:3px;
+  font-size:var(--fs-small); color:var(--soft-ink); }
+
+/* Human axis: weight, shape and an ink rule. No accent colour anywhere here, so a
+   reader can never mistake this for the model recommendation. The heading repeats
+   the ink square of the "Mi decisión" legend, which is the axis marker. */
+.feedback { display:flex; flex-direction:column; gap:12px; border-top:2px solid var(--ink);
+  padding-top:16px; }
+.feedback h4 { display:flex; align-items:center; gap:7px; color:var(--ink); }
+.feedback h4::before { content:""; flex:0 0 auto; width:9px; height:9px;
+  border:1px solid var(--ink); background:var(--ink); }
+.feedback-hint { font-size:var(--fs-micro); }
+.feedback-controls { display:inline-flex; flex-wrap:wrap; }
+.decision-btn { border-radius:0; border-left-width:0; background:var(--paper);
+  padding:9px 15px; }
+.decision-btn:first-child { border-radius:2px 0 0 2px; border-left-width:1px; }
+.decision-btn:last-child { border-radius:0 2px 2px 0; }
+.decision-btn:hover:not(:disabled) { background:var(--hover-strong); border-color:var(--ink); }
+.decision-btn:active:not(:disabled) { background:var(--hairline); }
+.decision-btn.selected { background:var(--ink); border-color:var(--ink); color:var(--paper); }
+.decision-btn.selected:hover:not(:disabled) { background:var(--soft-ink);
+  border-color:var(--soft-ink); }
+/* The check mark repeats the pressed state, so selection never rests on colour. */
+.decision-btn.selected::before { content:"\\2713"; margin-right:7px; }
+.feedback textarea { resize:vertical; min-height:56px; }
+.decision-state { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px;
+  font-size:var(--fs-small); color:var(--soft-ink); }
+/* Transient, per-row confirmation. It is a polite live region, so it is announced
+   once and then removed; it never blocks the next mark. */
+.decision-saved { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
+  letter-spacing:.07em; color:var(--ink); }
+
+/* The analytics region is one sunken surface panel, deliberately not a paper
+   sheet: the offers list is a run of separated paper blocks, so the two regions
+   can never be mistaken for each other. */
+.block { display:flex; flex-direction:column; gap:14px; background:var(--surface);
+  border:1px solid var(--rule-strong); border-radius:var(--radius);
+  padding:18px 20px; }
+.block > .muted { font-size:var(--fs-small); }
+.method { background:var(--paper); border:1px solid var(--hairline);
+  border-radius:var(--radius); padding:0; overflow:hidden; }
+.method > summary { display:flex; align-items:center; gap:9px; cursor:pointer;
+  padding:10px 12px; font-size:var(--fs-small); font-weight:700; color:var(--ink);
+  transition:background-color .14s ease; }
+.method > summary::-webkit-details-marker { display:none; }
+.method > summary::before { content:""; flex:0 0 auto; width:0; height:0;
+  border-top:5px solid transparent; border-bottom:5px solid transparent;
+  border-left:7px solid var(--rule-strong);
+  transition:transform .16s ease, border-left-color .14s ease; }
+.method > summary:hover { background:var(--paper); }
+.method > summary:hover::before { border-left-color:var(--ink); }
+.method[open] > summary::before { transform:rotate(90deg); border-left-color:var(--ink); }
+.method p { margin:0; padding:0 12px 12px; font-size:var(--fs-small);
+  color:var(--soft-ink); }
+
+.table-wrap { overflow-x:auto; border:1px solid var(--hairline);
+  border-radius:var(--radius); background:var(--paper); }
+table { border-collapse:collapse; width:100%; font-size:var(--fs-small); }
+caption { caption-side:top; text-align:left; padding:10px 12px;
+  font-size:var(--fs-small); color:var(--muted);
   border-bottom:1px solid var(--hairline); }
-thead th { background:var(--surface); color:var(--muted); font-size:12px;
-  font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
+th, td { padding:7px 10px; text-align:left; white-space:nowrap;
+  border-bottom:1px solid var(--hairline); }
+thead th { background:var(--surface); color:var(--muted); font-size:var(--fs-micro);
+  font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
 tbody tr:last-child td { border-bottom:0; }
 tbody tr:hover td { background:var(--surface); }
-/* Every column after the keyword is numeric, so it aligns and tabulates. */
-th + th, td + td { text-align:right; font-variant-numeric:tabular-nums; }
+/* Every column after the keyword is numeric, so it aligns, tabulates and uses mono. */
+th + th, td + td { text-align:right; font-family:var(--font-mono);
+  font-variant-numeric:tabular-nums; }
+th:first-child, td:first-child { text-align:left; font-family:var(--font-sans); }
+/* Each header cell holds the sort control, so the hit target is the whole label.
+   The arrow is a faint "sortable" hint, ink when that column is the active sort,
+   and the direction is mirrored in aria-sort so it is never glyph-only. */
+.sort-btn { font:inherit; color:inherit; background:none; border:0; padding:5px 0;
+  display:inline-flex; align-items:center; gap:6px; cursor:pointer;
+  transition:color .14s ease; }
+.sort-btn::after { content:"\\2191"; color:var(--rule-strong); font-family:var(--font-sans);
+  transition:color .14s ease; }
+.sort-btn:hover { color:var(--ink); }
+.sort-btn:hover::after { color:var(--ink); }
+th[aria-sort="ascending"] .sort-btn::after { content:"\\2191"; color:var(--ink); }
+th[aria-sort="descending"] .sort-btn::after { content:"\\2193"; color:var(--ink); }
 
-.two-col { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));
-  gap:var(--gap-3); }
+.two-col { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; }
 .two-col > section { display:flex; flex-direction:column; gap:10px;
-  background:var(--surface); border:1px solid var(--hairline);
-  border-radius:var(--radius-nested); padding:16px; }
-.two-col h3 { font-size:14px; font-weight:600; letter-spacing:-.01em; }
-.two-col ol { margin:0; padding-left:20px; display:flex; flex-direction:column; gap:6px;
-  font-size:13px; color:var(--soft-ink); }
+  background:var(--paper); border:1px solid var(--hairline);
+  border-radius:var(--radius); padding:14px; }
+.two-col h3 { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
+  letter-spacing:.07em; color:var(--ink); }
+.two-col ol { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:4px;
+  font-size:var(--fs-small); color:var(--soft-ink); }
 
-.empty { padding:40px var(--gap-6); text-align:center; color:var(--muted);
-  background:var(--paper); border:1px dashed var(--hairline);
-  border-radius:var(--radius-card); }
-footer { padding-top:var(--pad-card); border-top:1px solid var(--hairline);
-  font-size:12.5px; }
-.toast { position:fixed; bottom:var(--gap-6); right:var(--gap-6); z-index:50;
-  max-width:min(380px, calc(100vw - 48px)); background:var(--paper); color:var(--ink);
-  border:1px solid var(--hairline); border-radius:var(--radius-interactive);
-  padding:12px 16px; font-size:13px; box-shadow:var(--shadow-raised); }
+.empty { padding:32px 16px; text-align:center; color:var(--muted);
+  background:var(--paper); border:1px dashed var(--rule-strong);
+  border-radius:var(--radius); }
+.toast { position:fixed; bottom:20px; right:20px; z-index:50;
+  max-width:min(420px, calc(100vw - 40px)); background:var(--ink); color:var(--paper);
+  border:1px solid var(--ink); border-radius:var(--radius); padding:10px 14px;
+  font-size:var(--fs-small); }
 
-@media (max-width:1080px) {
-  .app { grid-template-columns:minmax(0, 1fr); padding:var(--gap-4); gap:var(--gap-4); }
-  .masthead { padding-bottom:var(--gap-4); }
-  .sidebar { position:static; max-height:none; }
-  .toolbar { position:static; }
-  .kpi-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width:640px) {
-  h1 { font-size:30px; }
-  h2 { font-size:24px; }
-  .kpi-value { font-size:36px; }
-  .kpi-grid { grid-template-columns:minmax(0, 1fr); }
-  .card, .kpi, .notice, .toolbar, .analytics, .side-block, .side-nav { padding:var(--gap-4); }
-  .filter-grow { grid-column:auto; }
-  .actions { width:100%; }
-}
+/* Motion is limited to short colour transitions and the disclosure chevron that
+   answers the reader's own click. Nothing animates on load, nothing loops, and this
+   is the complete reduced-motion guard. */
 @media (prefers-reduced-motion:reduce) {
   * { transition:none !important; animation:none !important; }
 }
@@ -1285,6 +1487,17 @@ _SCRIPT = r"""
     item.appendChild(document.createTextNode(" "));
     item.appendChild(el("span", "meta-value", String(value)));
     return item;
+  }
+
+  // Display-only shortening of the stored ISO timestamp: ``2026-09-08T00:00:00Z``
+  // becomes ``2026-09-08 00:00 UTC`` so the value stops wrapping mid-token. The
+  // payload keeps the original string, and anything the pattern does not fully
+  // match (another precision, an offset) is shown verbatim rather than guessed at.
+  function displayTimestamp(value) {
+    if (typeof value !== "string") { return String(value); }
+    var match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(?::\d{2})?(?:\.\d+)?Z?$/
+      .exec(value.trim());
+    return match ? (match[1] + " " + match[2] + " UTC") : value;
   }
 
   function loadFeedback() {
@@ -1413,8 +1626,11 @@ _SCRIPT = r"""
         entry.decision = (entry.decision === decision) ? "" : decision;
         entry.updated_at = new Date().toISOString();
         feedback[offer.id] = entry;
-        saveFeedback();
+        var stored = saveFeedback();
+        // Confirm after the re-render so the marker lands on the card that survived
+        // the reviewed/unreviewed filter, not on a node that is about to be replaced.
         syncFeedback(offer.id, { rerender: true });
+        if (stored) { confirmSaved(offer.id); }
       });
       controls.appendChild(button);
     });
@@ -1435,11 +1651,31 @@ _SCRIPT = r"""
       }, 300);
     });
     box.appendChild(reason);
-    box.appendChild(el("p", "decision-state",
+    var state = el("p", "decision-state");
+    // The text lives in its own node so the transient save confirmation can be
+    // appended next to it without being wiped by the next state update.
+    state.appendChild(el("span", "decision-state-text",
       entry.decision
         ? "Tu decisión: " + labelFrom(FEEDBACK_LABELS, entry.decision, entry.decision)
         : "Sin decisión registrada"));
+    box.appendChild(state);
     return box;
+  }
+
+  // One short, self-removing confirmation per mark. It is a polite live region, so
+  // it is announced once; clicking another offer replaces it instead of stacking
+  // toasts, and nothing is shown when storage already refused the write.
+  var savedTimer = null;
+  function confirmSaved(jobId) {
+    var existing = document.querySelectorAll(".decision-saved");
+    for (var i = 0; i < existing.length; i++) { existing[i].remove(); }
+    var state = document.querySelector('.card[data-job-id="' + jobId + '"] .decision-state');
+    if (!state) { return; }
+    var marker = el("span", "decision-saved", "Guardado en este navegador");
+    marker.setAttribute("role", "status");
+    state.appendChild(marker);
+    if (savedTimer) { window.clearTimeout(savedTimer); }
+    savedTimer = window.setTimeout(function () { marker.remove(); }, 2600);
   }
 
   function syncFeedback(jobId, options) {
@@ -1462,7 +1698,7 @@ _SCRIPT = r"""
       buttons[index].classList.toggle("selected", selected);
       buttons[index].setAttribute("aria-pressed", selected ? "true" : "false");
     });
-    var state = card.querySelector(".decision-state");
+    var state = card.querySelector(".decision-state-text");
     if (state) {
       state.textContent = entry.decision
         ? "Tu decisión: " + labelFrom(FEEDBACK_LABELS, entry.decision, entry.decision)
@@ -1478,11 +1714,13 @@ _SCRIPT = r"""
     var head = el("header", "card-head");
     var titleBox = el("div", "card-title");
     titleBox.appendChild(el("h3", null, offer.title));
+    // Company and location live here and only here: the meta grid below carries the
+    // scoring facts, so the row does not repeat the same two values twice.
     var sub = el("p", "card-sub");
-    sub.appendChild(el("span", null, offer.company));
+    sub.appendChild(el("span", "company", offer.company));
     if (offer.location) {
       sub.appendChild(el("span", "dot", "\u00b7"));
-      sub.appendChild(el("span", null, offer.location));
+      sub.appendChild(el("span", "location", offer.location));
     }
     titleBox.appendChild(sub);
     head.appendChild(titleBox);
@@ -1504,13 +1742,27 @@ _SCRIPT = r"""
     var badge = el("span", "badge badge-" + recommendation, recommendationText);
     badge.title = "Recomendación del modelo: " + recommendationText;
     scoreBox.appendChild(badge);
-    head.appendChild(scoreBox);
+    // The right-hand column: the model's score and badge, then the one control that
+    // leaves the report, as a bordered link rather than underlined prose buried in
+    // the facts list.
+    var side = el("div", "card-side");
+    side.appendChild(scoreBox);
+    var href = safeHttpUrl(offer.url);
+    if (href) {
+      var link = el("a", "offer-link", "Ver la oferta");
+      link.href = href;
+      link.rel = "noopener noreferrer";
+      link.target = "_blank";
+      link.title = "Abre la oferta en LinkedIn en una pestaña nueva";
+      side.appendChild(link);
+    }
+    head.appendChild(side);
     card.appendChild(head);
 
     var meta = el("ul", "meta");
-    meta.appendChild(metaItem("Empresa", offer.company));
-    if (offer.location) { meta.appendChild(metaItem("Ubicación", offer.location)); }
-    if (offer.posted_at) { meta.appendChild(metaItem("Publicada", offer.posted_at)); }
+    if (offer.posted_at) {
+      meta.appendChild(metaItem("Publicada", displayTimestamp(offer.posted_at)));
+    }
     var age = (offer.age_days === null)
       ? "antigüedad desconocida"
       : (offer.age_days + (offer.age_days === 1 ? " día" : " días") +
@@ -1522,17 +1774,6 @@ _SCRIPT = r"""
     if (offer.scorer) {
       var scorerText = offer.scorer + (offer.model ? " (" + offer.model + ")" : "");
       meta.appendChild(metaItem("Evaluador", scorerText));
-    }
-    var href = safeHttpUrl(offer.url);
-    if (href) {
-      var link = el("a", null, "Ver la oferta");
-      link.href = href;
-      link.rel = "noopener noreferrer";
-      link.target = "_blank";
-      link.title = "Abre la oferta en LinkedIn en una pestaña nueva";
-      var linkItem = el("li");
-      linkItem.appendChild(link);
-      meta.appendChild(linkItem);
     }
     card.appendChild(meta);
 
@@ -1565,6 +1806,38 @@ _SCRIPT = r"""
     document.getElementById("empty-state").hidden = matchesList.length !== 0;
     document.getElementById("offer-count").textContent =
       "Mostrando " + matchesList.length + " de " + payload.offers.length + " ofertas";
+  }
+
+  // Only the five inputs that narrow the list; ordering is already reported by the
+  // order control itself.
+  function activeFilterCount() {
+    var count = 0;
+    if (filters.text) { count += 1; }
+    if (filters.recommendation) { count += 1; }
+    if (filters.minScore !== null) { count += 1; }
+    if (filters.keyword) { count += 1; }
+    if (filters.review) { count += 1; }
+    return count;
+  }
+
+  // The rail says how much is narrowing the list, and Restablecer is only offered
+  // when it would actually change something.
+  function refreshFilterState() {
+    var count = activeFilterCount();
+    var summary = document.getElementById("filters-summary");
+    summary.textContent = (count === 0)
+      ? "Sin filtros activos"
+      : (count === 1 ? "1 filtro activo" : count + " filtros activos");
+    summary.classList.toggle("active", count > 0);
+    document.getElementById("reset-filters").disabled =
+      (count === 0 && filters.sort === "score");
+  }
+
+  // Every control that changes the visible set goes through here, so the list and
+  // the filter summary can never disagree.
+  function applyFilters() {
+    renderOffers();
+    refreshFilterState();
   }
 
   function cell(text) { return el("td", null, text); }
@@ -1701,29 +1974,29 @@ _SCRIPT = r"""
   function bindFilters() {
     document.getElementById("filter-text").addEventListener("input", function (event) {
       filters.text = event.target.value.trim();
-      renderOffers();
+      applyFilters();
     });
     document.getElementById("filter-recommendation").addEventListener("change", function (event) {
       filters.recommendation = event.target.value;
-      renderOffers();
+      applyFilters();
     });
     document.getElementById("filter-min-score").addEventListener("input", function (event) {
       var raw = event.target.value.trim();
       var parsed = parseFloat(raw);
       filters.minScore = raw === "" || isNaN(parsed) ? null : parsed;
-      renderOffers();
+      applyFilters();
     });
     document.getElementById("filter-keyword").addEventListener("change", function (event) {
       filters.keyword = event.target.value;
-      renderOffers();
+      applyFilters();
     });
     document.getElementById("filter-review").addEventListener("change", function (event) {
       filters.review = event.target.value;
-      renderOffers();
+      applyFilters();
     });
     document.getElementById("filter-sort").addEventListener("change", function (event) {
       filters.sort = event.target.value;
-      renderOffers();
+      applyFilters();
     });
     document.getElementById("reset-filters").addEventListener("click", function () {
       filters = { text: "", recommendation: "", minScore: null, keyword: "", review: "", sort: "score" };
@@ -1733,7 +2006,8 @@ _SCRIPT = r"""
       document.getElementById("filter-keyword").value = "";
       document.getElementById("filter-review").value = "";
       document.getElementById("filter-sort").value = "score";
-      renderOffers();
+      applyFilters();
+      document.getElementById("filter-text").focus();
     });
     document.getElementById("export-feedback").addEventListener("click", exportFeedback);
   }
@@ -1759,7 +2033,156 @@ _SCRIPT = r"""
   });
   bindFilters();
   refreshFeedbackCount();
-  renderOffers();
+  applyFilters();
+})();
+
+// ---------------------------------------------------------------------------
+// Progressive enhancement appended after the report script above. The offer cards,
+// their rationale, and their provenance lists are already complete and readable
+// without this block; it only adds a native disclosure so a long offer list stays
+// fast to scan. <details>/<summary> is used on purpose: the platform owns the
+// keyboard and screen-reader behaviour, so no custom ARIA has to reimplement it.
+// The report script itself is untouched.
+// ---------------------------------------------------------------------------
+(function () {
+  "use strict";
+
+  var container = document.getElementById("offers");
+  if (!container) { return; }
+
+  function enhance(card) {
+    if (card.getAttribute("data-explain") === "ready") { return; }
+    var grid = card.querySelector(".grid");
+    if (!grid) { return; }
+    var rationale = card.querySelector(".rationale");
+    var block = document.createElement("details");
+    block.className = "explain";
+    var summary = document.createElement("summary");
+    summary.textContent = "Explicabilidad del puntaje y procedencia";
+    var body = document.createElement("div");
+    body.className = "explain-body";
+    if (rationale) { body.appendChild(rationale); }
+    body.appendChild(grid);
+    block.appendChild(summary);
+    block.appendChild(body);
+    card.insertBefore(block, card.querySelector(".feedback"));
+    card.setAttribute("data-explain", "ready");
+  }
+
+  function enhanceAll() {
+    var cards = container.querySelectorAll(".card");
+    for (var i = 0; i < cards.length; i++) { enhance(cards[i]); }
+  }
+
+  // -------------------------------------------------------------------------
+  // Keyword table: reorder the rows already in the DOM by clicking a header. The
+  // analytics values are computed in Python and never change here; only the display
+  // order of the rendered rows does, so sorting costs a handful of comparisons.
+  // -------------------------------------------------------------------------
+  function sortCell(text) {
+    var cleaned = text.replace("%", "").trim();
+    var parsed = parseFloat(cleaned);
+    var numeric = (cleaned !== "" && cleaned !== "sin dato" && !isNaN(parsed));
+    return { number: numeric ? parsed : null, text: cleaned };
+  }
+
+  // A value the stored data cannot support ("sin dato") sorts last in both
+  // directions instead of pretending to be a low number.
+  function compareCells(left, right, descending) {
+    var a = left.number;
+    var b = right.number;
+    if (a !== null && b !== null) {
+      return descending ? (b - a) : (a - b);
+    }
+    if (a === null && b === null) {
+      var text = left.text.localeCompare(right.text, "es");
+      return descending ? -text : text;
+    }
+    return (a === null) ? 1 : -1;
+  }
+
+  function sortRows(table, columnIndex, direction) {
+    var body = table.querySelector("tbody");
+    if (!body) { return; }
+    var rows = Array.prototype.slice.call(body.querySelectorAll("tr"));
+    var descending = direction === "descending";
+    rows.sort(function (left, right) {
+      return compareCells(
+        sortCell(left.cells[columnIndex].textContent),
+        sortCell(right.cells[columnIndex].textContent),
+        descending
+      );
+    });
+    rows.forEach(function (row) { body.appendChild(row); });
+  }
+
+  function makeSortable(table) {
+    var headers = table.querySelectorAll("thead th");
+    var caption = table.querySelector("caption");
+    if (caption) {
+      caption.textContent = caption.textContent +
+        " Haga clic en un encabezado para ordenar las filas.";
+    }
+    for (var index = 0; index < headers.length; index++) {
+      makeHeaderSortable(table, headers, index);
+    }
+  }
+
+  function makeHeaderSortable(table, headers, columnIndex) {
+    var header = headers[columnIndex];
+    var label = header.textContent;
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "sort-btn";
+    button.textContent = label;
+    button.title = "Ordenar por " + label;
+    header.textContent = "";
+    // aria-sort is mirrored on the header cell, so the direction never rests on the
+    // arrow glyph alone. "none" is the honest state for a column that is not sorted.
+    header.setAttribute("aria-sort", "none");
+    header.appendChild(button);
+    button.addEventListener("click", function () {
+      var descending = header.getAttribute("aria-sort") === "ascending";
+      for (var i = 0; i < headers.length; i++) {
+        headers[i].setAttribute("aria-sort", "none");
+      }
+      header.setAttribute("aria-sort", descending ? "descending" : "ascending");
+      sortRows(table, columnIndex, descending ? "descending" : "ascending");
+    });
+  }
+
+  var keywordTable = document.querySelector("#keyword-table table");
+  if (keywordTable) { makeSortable(keywordTable); }
+
+  function setAll(open) {
+    var blocks = container.querySelectorAll("details.explain");
+    for (var i = 0; i < blocks.length; i++) { blocks[i].open = open; }
+  }
+
+  var controls = document.getElementById("explain-controls");
+  if (controls) {
+    var expand = document.createElement("button");
+    expand.type = "button";
+    expand.className = "btn btn-ghost";
+    expand.textContent = "Expandir todo";
+    expand.title = "Abre la explicabilidad de todas las ofertas listadas";
+    expand.addEventListener("click", function () { setAll(true); });
+    var collapse = document.createElement("button");
+    collapse.type = "button";
+    collapse.className = "btn btn-ghost";
+    collapse.textContent = "Contraer todo";
+    collapse.title = "Cierra la explicabilidad de todas las ofertas listadas";
+    collapse.addEventListener("click", function () { setAll(false); });
+    controls.appendChild(expand);
+    controls.appendChild(collapse);
+  }
+
+  enhanceAll();
+  // renderOffers() rebuilds every card on each filter change, so re-apply the
+  // disclosure to the freshly built nodes instead of holding card state.
+  if (window.MutationObserver) {
+    new MutationObserver(enhanceAll).observe(container, { childList: true });
+  }
 })();
 """
 
