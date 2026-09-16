@@ -843,6 +843,96 @@ def test_dashboard_exposes_accessible_kpi_and_provenance_structure(db_file: Path
     assert "La posición observada es procedencia" in html_text
 
 
+# ---------------------------------------------------------------------------
+# Visual system: light blueprint on frosted paper
+# ---------------------------------------------------------------------------
+
+
+def test_report_uses_the_light_blueprint_design_tokens(db_file: Path) -> None:
+    """The report ships one light token set, an app shell, and no dark mode.
+
+    The design contract is deliberately asserted here so a later style change
+    cannot silently reintroduce a dark palette, a coloured accent, or an
+    external font, all of which would break the single-file offline promise.
+    """
+    html_text = generate_and_read(db_file)
+
+    assert "color-scheme: light;" in html_text
+    assert "prefers-color-scheme" not in html_text
+    for token in (
+        "--canvas:#f5f5f5",
+        "--paper:#ffffff",
+        "--surface:#fafafa",
+        "--ink:#0a0a0a",
+        "--soft-ink:#171717",
+        "--muted:#737373",
+        "--hairline:#e5e5e5",
+        "--ember:#e7000b",
+        "--space:4px",
+        "--max-width:1280px",
+        "--radius-card:24px",
+        "--radius-interactive:18px",
+        "--radius-nested:10px",
+        "--radius-badge:18px",
+    ):
+        assert token in html_text, token
+
+    # The retired dark-mode/coloured accent palette must not come back.
+    for retired in ("--accent", "--ok-soft", "--warn-soft", "prefers-color"):
+        assert retired not in html_text, retired
+
+    # Geist with system fallback only: no @font-face, no remote asset URL.
+    assert "--font-sans:Geist, Inter, system-ui" in html_text
+    assert "font:14px/1.55 var(--font-sans)" in html_text
+    assert "@font-face" not in html_text
+    assert not re.search(r'url\(\s*["\']?https?://', html_text)
+
+    # Heading scale 24/30/36/48 with a tight display tracking.
+    assert "h1 { font-size:36px" in html_text
+    assert "h2 { font-size:30px" in html_text
+    assert "h3 { font-size:24px" in html_text
+    assert ".kpi-value { font-size:48px" in html_text
+
+    # App shell: masthead + sidebar + content, still one self-contained file.
+    for hook in (
+        'class="app"',
+        'class="masthead"',
+        'class="sidebar"',
+        'class="content"',
+        'class="kpi-grid"',
+        'class="filters"',
+        'class="two-col"',
+    ):
+        assert hook in html_text, hook
+
+
+def test_ember_is_reserved_for_warning_and_error_states(db_file: Path) -> None:
+    """Red marks only real warning/error UI, never a recommendation state.
+
+    Every rule that reaches for the ember token must be the warning notice (the
+    token definition itself lives in ``:root``). Recommendation badges and KPI
+    modifiers stay monochromatic, so the reader never learns to read a hue as a
+    score.
+    """
+    html_text = generate_and_read(db_file)
+    style = re.search(r"<style>(.*?)</style>", html_text, re.DOTALL)
+    assert style is not None, "the report must embed its stylesheet"
+    css = style.group(1)
+
+    # One literal definition, referenced by token everywhere else.
+    assert css.count("#e7000b") == 1
+    ember_rules = [rule for rule in css.split("}") if "--ember" in rule]
+    assert ember_rules, "the ember token must be defined and used"
+    for rule in ember_rules:
+        assert ":root" in rule or ".notice.warn" in rule, rule
+
+    # Recommendation styling carries weight, not hue.
+    badges = [rule for rule in css.split("}") if ".badge-" in rule]
+    assert badges, "the recommendation badges must be styled"
+    for rule in badges:
+        assert "--ember" not in rule and "#e7000b" not in rule, rule
+
+
 def test_feedback_region_accessible_name_identifies_the_offer(db_file: Path) -> None:
     """Each card's feedback region is named with its own title and company.
 
