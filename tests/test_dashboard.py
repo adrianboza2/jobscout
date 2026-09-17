@@ -11,7 +11,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -19,10 +19,18 @@ import pytest
 from conftest import FIXTURES, no_network
 
 from jobscout.cli import EXIT_ERROR, EXIT_OK, main
+from jobscout.collectors.linkedin_details import (
+    DEFINITIVE_MISSING_STATUSES as FETCHER_DEFINITIVE_STATUSES,
+)
 from jobscout.dashboard import (
     DEFAULT_TOP,
+    DETAIL_EVIDENCE_WINDOW_DAYS,
+    DETAIL_STATES,
+    DEFINITIVE_MISSING_HTTP_STATUSES,
     MAX_TOP,
     DashboardError,
+    _classify_detail_state,
+    _detail_evidence,
     build_payload,
     embed_json,
     generate_dashboard,
@@ -35,6 +43,7 @@ from jobscout.db import (
     connect_readonly,
     create_search_run,
     init_db,
+    insert_detail_fetch,
     insert_evaluation,
     record_run_item,
     store_posting,
@@ -42,9 +51,11 @@ from jobscout.db import (
     upsert_profile,
 )
 from jobscout.models import (
+    DetailFetchStatus,
     DuplicateKind,
     Evaluation,
     FeedbackDecision,
+    JobDetailFetch,
     JobFeedback,
     JobPosting,
     Recommendation,
@@ -134,6 +145,54 @@ def _observe(
             created_at="2026-09-15T10:00:00Z",
         ),
     )
+
+
+def _detail_fetch(**overrides) -> JobDetailFetch:
+    """An in-memory fetch attempt, for the pure classification tests."""
+    payload = {
+        "job_id": 1,
+        "source": "linkedin",
+        "url": "https://www.linkedin.com/jobs/view/1/",
+        "status": DetailFetchStatus.FAILED,
+        "stored_at": "2026-09-15T12:00:00Z",
+    }
+    payload.update(overrides)
+    return JobDetailFetch(**payload)
+
+
+def _insert_fetch(
+    conn: sqlite3.Connection,
+    job_id: int,
+    *,
+    status: DetailFetchStatus,
+    http_status: int | None = None,
+    fetched_at: str | None = None,
+    stored_at: str = "2026-09-15T12:00:00Z",
+    raw_document_id: int | None = None,
+    url: str | None = None,
+    final_url: str | None = None,
+) -> None:
+    """Persist one detail-fetch attempt with explicit timestamps/provenance."""
+    insert_detail_fetch(
+        conn,
+        JobDetailFetch(
+            job_id=int(job_id),
+            source="linkedin",
+            url=url or f"https://www.linkedin.com/jobs/view/{job_id}/role",
+            final_url=final_url,
+            status=status,
+            http_status=http_status,
+            content_status="ok" if status is DetailFetchStatus.OK else None,
+            fetched_at=fetched_at,
+            stored_at=stored_at,
+            raw_document_id=raw_document_id,
+        ),
+    )
+
+
+def _resight_dashboard_job(conn: sqlite3.Connection, source_job_id: str, *, now: str) -> None:
+    """Re-observe a stored posting through the normal ``store_posting`` path."""
+    store_posting(conn, _posting(source_job_id=source_job_id), now=now)
 
 
 def _seed_dashboard_db(path: Path) -> dict[str, int]:
@@ -1407,6 +1466,330 @@ def test_safe_url_drops_non_http_schemes() -> None:
         _safe_url(" https://www.linkedin.com/jobs/view/1 ")
         == "https://www.linkedin.com/jobs/view/1"
     )
+
+
+# ---------------------------------------------------------------------------
+# Detail-fetch link evidence (read-only, OL-7)
+# ---------------------------------------------------------------------------
+
+
+def test_detail_state_classification_is_honest_for_every_state() -> None:
+    assert _classify_detail_state(None, now=NOW) == "unchecked"
+    assert (
+        _classify_detail_state(_detail_fetch(status=DetailFetchStatus.SKIPPED), now=NOW)
+        == "skipped"
+    )
+    for success in (DetailFetchStatus.OK, DetailFetchStatus.PARTIAL):
+        fetch = _detail_fetch(
+            status=success, http_status=200, fetched_at="2026-09-10T12:00:00Z"
+        )
+        assert _classify_detail_state(fetch, now=NOW) == "ok"
+        old = _detail_fetch(
+            status=success, http_status=200, fetched_at="2026-07-01T12:00:00Z"
+        )
+        assert _classify_detail_state(old, now=NOW) == "stale"
+    assert _classify_detail_state(_detail_fetch(http_status=404), now=NOW) == "definitive_missing"
+    assert _classify_detail_state(_detail_fetch(http_status=410), now=NOW) == "definitive_missing"
+    # A failure that never received an HTTP response is retryable...
+    assert _classify_detail_state(_detail_fetch(http_status=None), now=NOW) == "retryable_failure"
+    # ...unless a raw body proves a response arrived, or a status was recorded.
+    assert (
+        _classify_detail_state(_detail_fetch(http_status=None, raw_document_id=7), now=NOW)
+        == "failed"
+    )
+    assert _classify_detail_state(_detail_fetch(http_status=500), now=NOW) == "failed"
+    assert _classify_detail_state(_detail_fetch(http_status=403), now=NOW) == "failed"
+    # The seven states are the complete, documented vocabulary.
+    assert set(DETAIL_STATES) == {
+        "unchecked",
+        "skipped",
+        "ok",
+        "stale",
+        "definitive_missing",
+        "retryable_failure",
+        "failed",
+    }
+
+
+def test_detail_state_uses_the_explicit_window_and_injectable_now() -> None:
+    assert DETAIL_EVIDENCE_WINDOW_DAYS == 21
+
+    fetch = _detail_fetch(status=DetailFetchStatus.OK, fetched_at="2026-09-10T12:00:00Z")
+    # The same stored evidence is current now and stale twenty days later.
+    assert _classify_detail_state(fetch, now=NOW) == "ok"
+    assert _classify_detail_state(fetch, now=NOW + timedelta(days=20)) == "stale"
+
+    # Exactly the window is still current; one second past it is not.
+    exactly = _detail_fetch(status=DetailFetchStatus.OK, fetched_at="2026-08-26T12:00:00Z")
+    assert _classify_detail_state(exactly, now=NOW) == "ok"
+    past = _detail_fetch(status=DetailFetchStatus.OK, fetched_at="2026-08-26T11:59:59Z")
+    assert _classify_detail_state(past, now=NOW) == "stale"
+
+
+def test_dashboard_definitive_statuses_match_the_detail_fetcher() -> None:
+    # The dashboard does not import the collector, so a contract pins them.
+    assert DEFINITIVE_MISSING_HTTP_STATUSES == FETCHER_DEFINITIVE_STATUSES == frozenset({404, 410})
+
+
+def test_detail_evidence_refutes_resighted_404_and_keeps_redirect_evidence_safe() -> None:
+    missing = _detail_fetch(http_status=404, stored_at="2026-09-10T12:00:00Z")
+
+    refuted = _detail_evidence(missing, now=NOW, last_seen_at="2026-09-15T12:00:00Z")
+    assert refuted["state"] == "definitive_missing"
+    assert refuted["refuted"] is True
+
+    unrefuted = _detail_evidence(missing, now=NOW, last_seen_at="2026-09-01T12:00:00Z")
+    assert unrefuted["refuted"] is False
+    assert _detail_evidence(missing, now=NOW)["refuted"] is False
+
+    # A failed attempt never exposes a redirect, so it can never read as a link.
+    broken = _detail_fetch(
+        http_status=404, final_url="https://www.linkedin.com/jobs/view/999/"
+    )
+    assert _detail_evidence(broken, now=NOW, last_seen_at="2026-09-15T12:00:00Z")["final_url"] is None
+
+    # A safe redirect on a successful attempt is kept as evidence.
+    redirect = _detail_fetch(
+        status=DetailFetchStatus.OK,
+        http_status=200,
+        fetched_at="2026-09-10T12:00:00Z",
+        url="https://www.linkedin.com/jobs/view/1/",
+        final_url="https://www.linkedin.com/jobs/view/999/",
+    )
+    assert (
+        _detail_evidence(redirect, now=NOW)["final_url"]
+        == "https://www.linkedin.com/jobs/view/999/"
+    )
+    # An echo of the requested URL is not a redirect, and neither is an unsafe one.
+    echo = _detail_fetch(
+        status=DetailFetchStatus.OK,
+        http_status=200,
+        fetched_at="2026-09-10T12:00:00Z",
+        url="https://www.linkedin.com/jobs/view/1/",
+        final_url="https://www.linkedin.com/jobs/view/1/",
+    )
+    assert _detail_evidence(echo, now=NOW)["final_url"] is None
+    unsafe = _detail_fetch(
+        status=DetailFetchStatus.OK,
+        http_status=200,
+        fetched_at="2026-09-10T12:00:00Z",
+        final_url="javascript:alert(1)",
+    )
+    assert _detail_evidence(unsafe, now=NOW)["final_url"] is None
+
+
+def test_detail_evidence_for_an_unchecked_offer_is_serializable() -> None:
+    evidence = _detail_evidence(None, now=NOW)
+
+    assert evidence == {
+        "state": "unchecked",
+        "checked_at": None,
+        "age_days": None,
+        "window_days": 21,
+        "http_status": None,
+        "content_status": None,
+        "refuted": False,
+        "final_url": None,
+    }
+    # Every value is already a JSON primitive, so the payload stays serializable.
+    assert json.loads(json.dumps(evidence)) == evidence
+
+
+def test_payload_detail_reports_only_the_latest_fetch(db_file: Path) -> None:
+    conn = connect(db_file)
+    try:
+        job, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="7777777777",
+                url="https://www.linkedin.com/jobs/view/7777777777/latest",
+                title="Staff Data Engineer",
+                company="Delta Corp",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+        # A stale success followed by a newer skip: only the skip may surface.
+        _insert_fetch(
+            conn,
+            int(job.id),
+            status=DetailFetchStatus.OK,
+            http_status=200,
+            fetched_at="2026-07-01T12:00:00Z",
+        )
+        _insert_fetch(
+            conn,
+            int(job.id),
+            status=DetailFetchStatus.SKIPPED,
+            stored_at="2026-09-15T12:00:00Z",
+        )
+    finally:
+        conn.close()
+
+    payload = _payload(db_file, top=10)
+    detail = next(offer for offer in payload["offers"] if offer["id"] == job.id)["detail"]
+
+    assert detail["state"] == "skipped"
+    assert detail["window_days"] == DETAIL_EVIDENCE_WINDOW_DAYS == 21
+    assert set(detail) == {
+        "state",
+        "checked_at",
+        "age_days",
+        "window_days",
+        "http_status",
+        "content_status",
+        "refuted",
+        "final_url",
+    }
+
+
+def test_report_renders_neutral_detail_evidence_near_the_title(db_file: Path) -> None:
+    conn = connect(db_file)
+    try:
+        refuted, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="7777777777",
+                url="https://www.linkedin.com/jobs/view/7777777777/refuted",
+                title="Staff Data Engineer",
+                company="Delta Corp",
+            ),
+            now="2026-09-10T10:00:00Z",
+        )
+        # A 404 at T1, then an ordinary re-sighting at T2 refutes the evidence.
+        _insert_fetch(
+            conn,
+            int(refuted.id),
+            status=DetailFetchStatus.FAILED,
+            http_status=404,
+            stored_at="2026-09-10T11:00:00Z",
+        )
+        _resight_dashboard_job(conn, "7777777777", now="2026-09-15T10:00:00Z")
+
+        redirected, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="8888888888",
+                url="https://www.linkedin.com/jobs/view/8888888888/redirected",
+                title="Site Reliability Engineer",
+                company="Epsilon LLC",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+        _insert_fetch(
+            conn,
+            int(redirected.id),
+            status=DetailFetchStatus.OK,
+            http_status=200,
+            fetched_at="2026-09-10T12:00:00Z",
+            url="https://www.linkedin.com/jobs/view/8888888888/redirected",
+            final_url="https://www.linkedin.com/jobs/view/8888888888/site-reliability-engineer",
+        )
+    finally:
+        conn.close()
+
+    html_text = generate_and_read(db_file)
+    payload = _extract_payload(html_text)
+    refuted_offer = next(offer for offer in payload["offers"] if offer["id"] == refuted.id)
+    redirect_offer = next(offer for offer in payload["offers"] if offer["id"] == redirected.id)
+
+    assert refuted_offer["detail"]["state"] == "definitive_missing"
+    assert refuted_offer["detail"]["refuted"] is True
+    assert (
+        redirect_offer["detail"]["final_url"]
+        == "https://www.linkedin.com/jobs/view/8888888888/site-reliability-engineer"
+    )
+
+    # The evidence is built with DOM APIs and inserted with the title, not in the
+    # model axis (.card-side) nor the human axis (.feedback).
+    assert "function renderDetailEvidence(offer)" in html_text
+    assert "if (detailBox) { titleBox.appendChild(detailBox); }" in html_text
+    assert 'el("p", "detail-evidence")' in html_text
+    assert "La evidencia fue refutada por un re-avistamiento posterior de la oferta." in html_text
+    # Any redirect href goes through the same client-side URL guard.
+    assert "var finalHref = safeHttpUrl(detail.final_url);" in html_text
+    assert "link.href = finalHref;" in html_text
+    assert "card-side.appendChild(detailBox)" not in html_text
+    assert "renderFeedback(offer)" in html_text and "detailBox" not in re.search(
+        r"function renderFeedback\(offer\) \{(.*?)\n  \}", html_text, re.DOTALL
+    ).group(1)
+
+
+def test_detail_evidence_never_writes_to_the_database_or_local_storage(db_file: Path) -> None:
+    conn = connect(db_file)
+    try:
+        job, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="7777777777",
+                url="https://www.linkedin.com/jobs/view/7777777777/write",
+                title="Staff Data Engineer",
+                company="Delta Corp",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+        _insert_fetch(
+            conn,
+            int(job.id),
+            status=DetailFetchStatus.OK,
+            http_status=200,
+            fetched_at="2026-09-10T12:00:00Z",
+        )
+    finally:
+        conn.close()
+
+    before_records = _database_fingerprint(db_file)
+    before_bytes = db_file.read_bytes()
+
+    html_text = generate_and_read(db_file)
+
+    assert _database_fingerprint(db_file) == before_records
+    assert db_file.read_bytes() == before_bytes
+    # The evidence renderer never touches browser storage either.
+    renderer = re.search(
+        r"function renderDetailEvidence\(offer\) \{(.*?)\n  \}", html_text, re.DOTALL
+    )
+    assert renderer is not None
+    assert "localStorage" not in renderer.group(1)
+    assert "setItem" not in renderer.group(1)
+
+
+def test_detail_evidence_css_stays_neutral_and_keeps_the_six_kpi_shell(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
+
+    detail_rules = [rule for rule in css.split("}") if ".detail-evidence" in rule]
+    assert detail_rules, "the detail evidence band must be styled"
+    for rule in detail_rules:
+        assert "--signal" not in rule, rule
+        assert "--ember" not in rule, rule
+        assert "#e7000b" not in rule, rule
+        assert "@media" not in rule, rule
+
+    # No new media query and no seventh KPI.
+    assert css.count("@media") == 1
+    assert re.findall(r"@media\s*\(([^)]*)\)", css) == ["prefers-reduced-motion:reduce"]
+    assert "grid-template-columns:repeat(6, minmax(0, 1fr))" in css
+    cards = re.search(r"var cards = \[(.*?)\];", html_text, re.DOTALL)
+    assert cards is not None
+    assert cards.group(1).count('["') == 6
+
+
+def test_detail_state_labels_cover_every_state_in_neutral_spanish(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    block = re.search(r"var DETAIL_STATE_LABELS = \{(.*?)\n  \};", html_text, re.DOTALL)
+    assert block is not None
+    assert re.findall(r"([a-z_]+):", block.group(1)) == list(DETAIL_STATES)
+    for label in (
+        "sin consultar el detalle",
+        "consulta de detalle omitida",
+        "evidencia vigente",
+        "evidencia anterior a la ventana",
+        "la última consulta respondió 404/410",
+        "fallo de transporte reintentable",
+        "fallo con respuesta HTTP",
+    ):
+        assert label in html_text, label
 
 
 # ---------------------------------------------------------------------------

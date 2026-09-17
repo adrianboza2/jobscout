@@ -41,8 +41,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
-from .db import connect_readonly
-from .models import _loads
+from .db import connect_readonly, latest_detail_fetches_for_jobs
+from .models import DetailFetchStatus, JobDetailFetch, _loads
 from .timeutil import parse_datetime, utcnow, utcnow_iso
 
 #: Default report location. ``/reports/`` is git-ignored, so a generated report
@@ -70,6 +70,46 @@ MAX_RATIONALE_CHARS = 800
 #: is the honest, schema-supported proxy for how apply-able a keyword's results
 #: still are.
 FRESH_WINDOW_DAYS = 21
+
+#: A detail-fetch evidence row counts as *current* when it is at most this many
+#: days old. It matches :data:`FRESH_WINDOW_DAYS` but stays a separate, named
+#: boundary because it answers a different question: whether the last link check
+#: is still recent, not whether the posting itself is young.
+DETAIL_EVIDENCE_WINDOW_DAYS = 21
+
+#: Honest link-evidence states. Each one is a fact about the single latest
+#: detail-fetch attempt that is actually stored, never a guess:
+#:
+#: ``unchecked``          no attempt has ever been recorded;
+#: ``skipped``            the latest attempt was deliberately not performed;
+#: ``ok``                 the latest success (ok/partial) is within the window;
+#: ``stale``              the latest success is older than the window;
+#: ``definitive_missing`` the latest attempt returned HTTP 404/410;
+#: ``retryable_failure``  the latest failure never received an HTTP response;
+#: ``failed``             the latest failure recorded any other HTTP response.
+DETAIL_STATE_UNCHECKED = "unchecked"
+DETAIL_STATE_SKIPPED = "skipped"
+DETAIL_STATE_OK = "ok"
+DETAIL_STATE_STALE = "stale"
+DETAIL_STATE_DEFINITIVE_MISSING = "definitive_missing"
+DETAIL_STATE_RETRYABLE_FAILURE = "retryable_failure"
+DETAIL_STATE_FAILED = "failed"
+
+DETAIL_STATES: tuple[str, ...] = (
+    DETAIL_STATE_UNCHECKED,
+    DETAIL_STATE_SKIPPED,
+    DETAIL_STATE_OK,
+    DETAIL_STATE_STALE,
+    DETAIL_STATE_DEFINITIVE_MISSING,
+    DETAIL_STATE_RETRYABLE_FAILURE,
+    DETAIL_STATE_FAILED,
+)
+
+#: HTTP statuses that prove a posting is gone. Mirrors
+#: ``collectors.linkedin_details.DEFINITIVE_MISSING_STATUSES``; the dashboard
+#: deliberately does not import the network collector, so a contract test pins
+#: the two constants together and a drift fails loudly.
+DEFINITIVE_MISSING_HTTP_STATUSES = frozenset({404, 410})
 
 #: Recommendation values shown in the UI. ``unscored`` is not a stored value; it
 #: is the display bucket for jobs with no successful evaluation.
@@ -232,11 +272,18 @@ def _string_list(value: Any) -> list[str]:
     return [text for item in loaded if (text := str(item).strip())]
 
 
-def _age_days(value: str | None, *, now: datetime) -> float | None:
+def _age_days_exact(value: str | None, *, now: datetime) -> float | None:
+    """Unrounded age in days, for threshold comparisons that must stay exact."""
     parsed = parse_datetime(value)
     if parsed is None:
         return None
-    return round((now - parsed).total_seconds() / 86400.0, 2)
+    return (now - parsed).total_seconds() / 86400.0
+
+
+def _age_days(value: str | None, *, now: datetime) -> float | None:
+    """Display age in days, rounded; ``None`` when the timestamp is unusable."""
+    exact = _age_days_exact(value, now=now)
+    return None if exact is None else round(exact, 2)
 
 
 def _concisify(text: str | None) -> str:
@@ -624,7 +671,10 @@ def build_payload(
     top = _validate_top(top)
     reference = now or utcnow()
     rows = _fetch_active_jobs(conn, top=top)
-    keywords_by_job = _fetch_job_keywords(conn, [int(row["id"]) for row in rows])
+    job_ids = [int(row["id"]) for row in rows]
+    keywords_by_job = _fetch_job_keywords(conn, job_ids)
+    # One batched SELECT for every shown offer instead of one query per offer.
+    detail_by_job = latest_detail_fetches_for_jobs(conn, job_ids)
 
     offers: list[dict[str, Any]] = []
     for row in rows:
@@ -672,6 +722,11 @@ def build_payload(
                 "blockers": _string_list(row["blockers_json"]),
                 "unknowns": _string_list(row["unknowns_json"]),
                 "keywords": keywords_by_job.get(job_id, []),
+                "detail": _detail_evidence(
+                    detail_by_job.get(job_id),
+                    now=reference,
+                    last_seen_at=row["last_seen_at"],
+                ),
             }
         )
 
@@ -705,6 +760,110 @@ def _safe_url(value: Any) -> str | None:
     if not any(lowered.startswith(scheme) for scheme in _ALLOWED_URL_SCHEMES):
         return None
     return text
+
+
+def _detail_checked_at(fetch: JobDetailFetch) -> str | None:
+    """When the attempt's evidence was produced, or ``None`` when unusable."""
+    return fetch.fetched_at or fetch.stored_at or None
+
+
+def _classify_detail_state(
+    fetch: JobDetailFetch | None,
+    *,
+    now: datetime,
+    window_days: int = DETAIL_EVIDENCE_WINDOW_DAYS,
+) -> str:
+    """Classify the single latest detail-fetch attempt into an honest state.
+
+    Only the stored evidence is consulted, so the result can never claim a link
+    is broken because of a redirect or a guess. A success whose age cannot be
+    computed is reported as ``stale`` rather than ``ok``: freshness the data
+    cannot prove is never credited.
+    """
+    if fetch is None:
+        return DETAIL_STATE_UNCHECKED
+    status = str(fetch.status)
+    if status == DetailFetchStatus.SKIPPED:
+        return DETAIL_STATE_SKIPPED
+    if status in (DetailFetchStatus.OK, DetailFetchStatus.PARTIAL):
+        # The exact age is compared, not the rounded display value, so "exactly
+        # the window" stays current and one second past it does not.
+        age = _age_days_exact(_detail_checked_at(fetch), now=now)
+        if age is not None and age <= window_days:
+            return DETAIL_STATE_OK
+        return DETAIL_STATE_STALE
+    # Any other stored attempt is a failure; classify it by what was recorded.
+    if fetch.http_status in DEFINITIVE_MISSING_HTTP_STATUSES:
+        return DETAIL_STATE_DEFINITIVE_MISSING
+    if fetch.http_status is None and fetch.raw_document_id is None:
+        return DETAIL_STATE_RETRYABLE_FAILURE
+    return DETAIL_STATE_FAILED
+
+
+def _redirect_evidence(fetch: JobDetailFetch, *, is_success: bool) -> str | None:
+    """A redirect's final URL only as safe evidence, never as a broken link.
+
+    The value is exposed only for a successful attempt, only when it is a safe
+    http(s) URL, and only when it actually differs from the requested URL: a
+    stored echo of the requested URL is not a redirect, and a failed attempt's
+    URL is never presented as a destination.
+    """
+    if not is_success:
+        return None
+    final = _safe_url(fetch.final_url)
+    if final is None:
+        return None
+    requested = _safe_url(fetch.url)
+    if requested is not None and final == requested:
+        return None
+    return final
+
+
+def _detail_evidence(
+    fetch: JobDetailFetch | None,
+    *,
+    now: datetime,
+    last_seen_at: str | None = None,
+    window_days: int = DETAIL_EVIDENCE_WINDOW_DAYS,
+) -> dict[str, Any]:
+    """Serializable link evidence for one offer.
+
+    ``state`` is :func:`_classify_detail_state`. ``refuted`` is True only for a
+    404/410 that a later re-sighting contradicts (``last_seen_at`` newer than
+    the attempt), which is exactly the case where a visible offer's death
+    evidence was already disproved by the pipeline. A redirect's ``final_url``
+    is attached only as safe evidence of a successful redirect.
+    """
+    state = _classify_detail_state(fetch, now=now, window_days=window_days)
+    if fetch is None:
+        return {
+            "state": state,
+            "checked_at": None,
+            "age_days": None,
+            "window_days": int(window_days),
+            "http_status": None,
+            "content_status": None,
+            "refuted": False,
+            "final_url": None,
+        }
+    checked_at = _detail_checked_at(fetch)
+    refuted = bool(
+        state == DETAIL_STATE_DEFINITIVE_MISSING
+        and last_seen_at
+        and checked_at
+        and str(last_seen_at) > str(checked_at)
+    )
+    is_success = state in (DETAIL_STATE_OK, DETAIL_STATE_STALE)
+    return {
+        "state": state,
+        "checked_at": checked_at,
+        "age_days": _age_days(checked_at, now=now),
+        "window_days": int(window_days),
+        "http_status": fetch.http_status,
+        "content_status": fetch.content_status,
+        "refuted": refuted,
+        "final_url": _redirect_evidence(fetch, is_success=is_success),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1195,6 +1354,16 @@ p.filters-summary.active { color:var(--ink); }
 .card-sub .company { color:var(--soft-ink); font-weight:600; }
 .card-sub .location { color:var(--muted); }
 .card-sub .dot { color:var(--rule-strong); }
+/* Link-liveness evidence is a neutral fact band inside the title column. It is
+   neither the model axis (the accent badge/score) nor the human axis (the ink
+   feedback rule), so it carries no hue at all: muted micro text and a hairline. */
+.detail-evidence { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline;
+  font-size:var(--fs-micro); color:var(--muted); }
+.detail-evidence-state { font-weight:700; letter-spacing:.04em; }
+.detail-evidence-note { color:var(--soft-ink); }
+.detail-evidence-redirect { font-family:var(--font-mono); overflow-wrap:anywhere; }
+.detail-evidence-link { color:var(--muted); }
+.detail-evidence-link:hover { color:var(--ink); }
 /* The right-hand side of a row: the model's score and badge, then the one action
    that leaves the report. A hairline marks where the header's title column ends
    and the score/recommendation column begins. */
@@ -1419,6 +1588,18 @@ _SCRIPT = r"""
   };
   var DUPLICATE_LABELS = {
     new: "nueva", exact_duplicate: "duplicado exacto", probable_duplicate: "duplicado probable"
+  };
+  // Neutral link-evidence wording. The state keys stay English in the payload;
+  // only these labels are translated, and none of them asserts that a link is
+  // broken: each one restates the stored evidence, nothing more.
+  var DETAIL_STATE_LABELS = {
+    unchecked: "sin consultar el detalle",
+    skipped: "consulta de detalle omitida",
+    ok: "evidencia vigente",
+    stale: "evidencia anterior a la ventana",
+    definitive_missing: "la última consulta respondió 404/410",
+    retryable_failure: "fallo de transporte reintentable",
+    failed: "fallo con respuesta HTTP"
   };
 
   var dataNode = document.getElementById("jobscout-data");
@@ -1706,6 +1887,55 @@ _SCRIPT = r"""
     }
   }
 
+  function detailAgeText(detail) {
+    var age = detail.age_days;
+    if (age === null || age === undefined) { return "sin fecha utilizable"; }
+    return "hace " + age + (age === 1 ? " día" : " días");
+  }
+
+  function detailStateText(detail) {
+    if (detail.state === "ok") {
+      return "Detalle: " + detailAgeText(detail);
+    }
+    if (detail.state === "stale") {
+      return "Detalle: evidencia con más de " + detail.window_days +
+        " días (" + detailAgeText(detail) + ")";
+    }
+    if (detail.state === "definitive_missing") {
+      var code = (detail.http_status === null || detail.http_status === undefined)
+        ? "404/410" : String(detail.http_status);
+      return "Detalle: la última consulta respondió " + code;
+    }
+    return "Detalle: " + labelFrom(DETAIL_STATE_LABELS, detail.state, detail.state);
+  }
+
+  // Link evidence sits with the offer title, kept apart from both judgement axes
+  // (the model badge/score and the human feedback block). Every value is written
+  // through textContent and any href goes through safeHttpUrl, so a stored URL can
+  // never become an unguarded or broken link.
+  function renderDetailEvidence(offer) {
+    var detail = offer.detail;
+    if (!detail || !detail.state) { return null; }
+    var box = el("p", "detail-evidence");
+    box.appendChild(el("span", "detail-evidence-state", detailStateText(detail)));
+    if (detail.refuted) {
+      box.appendChild(el("span", "detail-evidence-note",
+        "La evidencia fue refutada por un re-avistamiento posterior de la oferta."));
+    }
+    var finalHref = safeHttpUrl(detail.final_url);
+    if (finalHref) {
+      var redirect = el("span", "detail-evidence-redirect");
+      redirect.appendChild(document.createTextNode("Redirección observada: "));
+      var link = el("a", "detail-evidence-link", finalHref);
+      link.href = finalHref;
+      link.rel = "noopener noreferrer";
+      link.target = "_blank";
+      redirect.appendChild(link);
+      box.appendChild(redirect);
+    }
+    return box;
+  }
+
   function renderCard(offer) {
     var card = el("article", "card");
     card.setAttribute("data-job-id", String(offer.id));
@@ -1723,6 +1953,8 @@ _SCRIPT = r"""
       sub.appendChild(el("span", "location", offer.location));
     }
     titleBox.appendChild(sub);
+    var detailBox = renderDetailEvidence(offer);
+    if (detailBox) { titleBox.appendChild(detailBox); }
     head.appendChild(titleBox);
 
     var scoreBox = el("div", "card-score");
