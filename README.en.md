@@ -219,6 +219,37 @@ recommendations, or the database.
   says so: the evidence was refuted. Brokenness is never invented or inferred
   from a redirect.
 
+### Preference filters (exclusions)
+
+Next to the professional-fit score, every offer is checked against the user's
+**explicit exclusions**. This is a separate axis: it never edits the score, the
+recommendation, or the stored evaluation, and it is recomputed when the offer is
+read instead of being persisted as a second versioned verdict. Classification is
+deterministic and **offline**; there is no model call.
+
+| Outcome | Meaning |
+|---------|---------|
+| `pass` | No exclusion cue was found. |
+| `flag` | Ambiguous match (for example "turnos" without saying they rotate, or a SOC role with no operational evidence); surfaced for human review. |
+| `fail` | Clear match with an exclusion: rotating shifts, or an operational SOC role. |
+
+Implemented exclusions:
+
+- **Rotating shifts** in Spanish and English (`turnos rotativos`, `rotación de
+  turnos`, `rotating shifts`, `shift rotation`, `24/7 shifts`). A `24/7` mention
+  without shifts is only `flag`, and a flexible schedule or occasional on-call
+  never produces `fail`.
+- **Operational SOC** only when the term implies monitoring, operations,
+  on-call/shifts, or continuous surveillance (for example `SOC Analyst` with
+  `24/7`, `SIEM monitoring`, `incident monitoring`). A generic SOC mention, a
+  knowledge requirement, or `SOC 2` (compliance) stay eligible; a SOC role with
+  no operational evidence is `flag`.
+
+The report shows a neutral (hue-free) band next to the title with the outcome,
+the reason, and the evidence, and the summary counts excluded vs. flagged
+offers. The CLI exposes the same verdict in `list`, `rank`, and `score` (a
+`[preference=...]` marker in text and a `preference` object in `--json`).
+
 ## CLI reference
 
 Global options: `--db PATH`, `--profile PATH`, `--json` (before or after the
@@ -473,6 +504,7 @@ export button is the only way to keep your decisions.
 │   ├── normalize.py          # Job normalization
 │   ├── dedupe.py             # Fingerprints and exact/probable deduplication
 │   ├── pipeline.py           # Fixture, search, and detail ingestion
+│   ├── preference.py         # Preference exclusions (offline, score untouched)
 │   ├── dashboard.py          # Self-contained HTML report generator
 │   ├── url_policy.py         # URL and redirect validation
 │   ├── collectors/           # LinkedIn guest, fixtures, rate limit, HTTP transport

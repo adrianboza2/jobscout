@@ -79,6 +79,7 @@ from .keywords import (
 )
 from .models import EvaluationStatus, ScorerName, SearchRunStatus
 from .pipeline import ingest_collector_result, ingest_detail_results, ingest_fixture
+from .preference import PreferenceAssessment, PreferenceOutcome, assess_preference
 from .scoring import SCORERS, evaluate_job, load_profile
 from .scoring.profile import ProfileError
 from .timeutil import iso_days_ago
@@ -174,7 +175,18 @@ def _emit(payload: dict[str, Any], *, as_json: bool, text: str) -> None:
         _write_line(text)
 
 
-def _job_line(item: Any) -> str:
+def _preference_marker(preference: PreferenceAssessment | None) -> str:
+    """A short text marker for a preference verdict, empty when nothing to say.
+
+    A PASS is silent: it is the default and printing it on every line would bury
+    the offers that need a human look. FAIL and FLAG are surfaced.
+    """
+    if preference is None or preference.outcome is PreferenceOutcome.PASS:
+        return ""
+    return f"  [preference={preference.outcome}]"
+
+
+def _job_line(item: Any, preference: PreferenceAssessment | None = None) -> str:
     job = item.job
     score = "  n/a" if item.score is None else f"{item.score:5.1f}"
     recommendation = item.recommendation or "-"
@@ -182,10 +194,19 @@ def _job_line(item: Any) -> str:
     return (
         f"#{job.id:<4} {score}  {recommendation:<14} {job.title or '(untitled)'}"
         f" @ {job.company or '(unknown company)'}{location}  [{job.content_status}]"
+        f"{_preference_marker(preference)}"
     )
 
 
-def _print_evaluation(evaluation: Any) -> None:
+def _job_payload(item: Any, preference: PreferenceAssessment | None = None) -> dict[str, Any]:
+    """One list/rank entry, with the preference verdict attached when computed."""
+    payload = item.to_dict()
+    if preference is not None:
+        payload["preference"] = preference.to_dict()
+    return payload
+
+
+def _print_evaluation(evaluation: Any, preference: PreferenceAssessment | None = None) -> None:
     header = (
         f"job #{evaluation.job_id}  scorer={evaluation.scorer}  "
         f"status={evaluation.status}  score={evaluation.overall_score}  "
@@ -194,6 +215,12 @@ def _print_evaluation(evaluation: Any) -> None:
     _write_line(header)
     if evaluation.rationale:
         _write_line(f"  rationale: {evaluation.rationale}")
+    if preference is not None:
+        _write_line(
+            f"  preference: {preference.outcome}  {preference.reason}"
+        )
+        for item in preference.evidence:
+            _write_line(f"      evidence: {item}")
     for dimension in evaluation.dimensions:
         _write_line(
             f"  - {dimension.name}: {dimension.score} (weight {dimension.weight}) "
@@ -844,11 +871,17 @@ def cmd_list(args: argparse.Namespace, settings: Settings) -> int:
             min_score=args.min_score,
             include_inactive=args.include_inactive,
         )
+        preferences = {item.job.id: assess_preference(item.job) for item in items}
     finally:
         conn.close()
-    text = "\n".join(_job_line(item) for item in items) or "no jobs stored yet"
+    text = "\n".join(
+        _job_line(item, preferences.get(item.job.id)) for item in items
+    ) or "no jobs stored yet"
     _emit(
-        {"count": len(items), "jobs": [item.to_dict() for item in items]},
+        {
+            "count": len(items),
+            "jobs": [_job_payload(item, preferences.get(item.job.id)) for item in items],
+        },
         as_json=getattr(args, "as_json", False),
         text=text,
     )
@@ -866,11 +899,17 @@ def cmd_rank(args: argparse.Namespace, settings: Settings) -> int:
             scored_only=True,
             rank_by_score=True,
         )
+        preferences = {item.job.id: assess_preference(item.job) for item in items}
     finally:
         conn.close()
-    text = "\n".join(_job_line(item) for item in items) or "no scored jobs yet"
+    text = "\n".join(
+        _job_line(item, preferences.get(item.job.id)) for item in items
+    ) or "no scored jobs yet"
     _emit(
-        {"count": len(items), "jobs": [item.to_dict() for item in items]},
+        {
+            "count": len(items),
+            "jobs": [_job_payload(item, preferences.get(item.job.id)) for item in items],
+        },
         as_json=getattr(args, "as_json", False),
         text=text,
     )
@@ -909,7 +948,12 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
                 scorer_name=args.scorer,
                 settings=settings,
             )
-            results.append(evaluation.to_dict())
+            # Preference is computed from the same stored text and reported
+            # beside the evaluation; it never edits the score or the record.
+            preference = assess_preference(job)
+            result = evaluation.to_dict()
+            result["preference"] = preference.to_dict()
+            results.append(result)
             if str(evaluation.status) == EvaluationStatus.OK.value:
                 ok_count += 1
             else:
@@ -917,7 +961,7 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
                     {"job_id": job.id, "status": str(evaluation.status), "error": evaluation.error}
                 )
             if not as_json:
-                _print_evaluation(evaluation)
+                _print_evaluation(evaluation, preference)
                 _write_line()
     finally:
         conn.close()

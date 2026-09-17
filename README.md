@@ -218,6 +218,37 @@ oferta y nunca altera puntajes, recomendaciones ni la base.
   informe lo dice: la evidencia fue refutada. La rotura no se inventa ni se
   deduce de una redirección.
 
+### Filtros de preferencia (exclusiones)
+
+Además del puntaje de encaje profesional, cada oferta se contrasta con las
+**exclusiones explícitas** del usuario. Es un eje separado: no edita el puntaje,
+la recomendación ni la evaluación guardada, y se recalcula al leer la oferta, no
+se persiste como una segunda sentencia versionada. La clasificación es
+determinista y **sin conexión**; no hay ninguna llamada a un modelo.
+
+| Resultado | Significado |
+|-----------|-------------|
+| `pass` | No se encontró ninguna coincidencia con una exclusión. |
+| `flag` | Coincidencia dudosa (por ejemplo "turnos" sin decir que rotan, o un rol SOC sin evidencia operativa); se muestra para revisión humana. |
+| `fail` | Coincidencia clara con una exclusión: turnos rotativos o SOC operativo. |
+
+Exclusiones implementadas:
+
+- **Turnos rotativos** en español e inglés (`turnos rotativos`, `rotación de
+  turnos`, `rotating shifts`, `shift rotation`, `24/7 shifts`). Un `24/7` sin
+  turnos solo se marca `flag`, y un horario flexible o unas guardias puntuales
+  nunca producen `fail`.
+- **SOC operativo** solo cuando el término implica monitorización, operaciones,
+  guardias/turnos o vigilancia continua (por ejemplo `SOC Analyst` con `24/7`,
+  `SIEM monitoring`, `incident monitoring`). Un SOC genérico, un requisito de
+  conocimiento o `SOC 2` (cumplimiento) quedan elegibles; un rol SOC sin
+  evidencia operativa se marca `flag`.
+
+El informe muestra una banda neutra (sin color) junto al título con el resultado,
+la razón y la evidencia, y el resumen agrega cuántas ofertas quedan excluidas y
+cuántas por revisar. El CLI expone el mismo veredicto en `list`, `rank` y `score`
+(marcador `[preference=...]` en texto y un objeto `preference` en `--json`).
+
 ## Referencia de CLI
 
 Opciones globales: `--db PATH`, `--profile PATH`, `--json` (antes o después del
@@ -478,6 +509,7 @@ forma de conservar tus decisiones.
 │   ├── normalize.py          # Normalización de ofertas
 │   ├── dedupe.py             # Huellas y deduplicación exacta/probable
 │   ├── pipeline.py           # Ingesta de fixtures, búsquedas y detalles
+│   ├── preference.py         # Exclusiones de preferencia (offline, sin tocar el puntaje)
 │   ├── dashboard.py          # Generador del informe HTML autocontenido
 │   ├── url_policy.py         # Validación de URLs y redirecciones
 │   ├── collectors/           # LinkedIn guest, fixtures, rate limit, transporte HTTP

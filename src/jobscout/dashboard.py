@@ -43,6 +43,7 @@ from typing import Any, Sequence
 
 from .db import connect_readonly, latest_detail_fetches_for_jobs
 from .models import DetailFetchStatus, JobDetailFetch, _loads
+from .preference import PreferenceOutcome, assess_text
 from .timeutil import parse_datetime, utcnow, utcnow_iso
 
 #: Default report location. ``/reports/`` is git-ignored, so a generated report
@@ -114,6 +115,10 @@ DEFINITIVE_MISSING_HTTP_STATUSES = frozenset({404, 410})
 #: Recommendation values shown in the UI. ``unscored`` is not a stored value; it
 #: is the display bucket for jobs with no successful evaluation.
 RECOMMENDATION_ORDER: tuple[str, ...] = ("apply", "consider", "skip", "need_more_info")
+
+#: Preference verdicts, in display order. A separate axis from the model
+#: recommendation: it never changes the score and is recomputed from stored text.
+PREFERENCE_ORDER: tuple[str, ...] = ("pass", "flag", "fail")
 
 _ALLOWED_URL_SCHEMES = ("http://", "https://")
 
@@ -311,6 +316,7 @@ def _fetch_active_jobs(
                j.location AS location,
                j.url AS url,
                j.source AS source,
+               j.description AS description,
                j.posted_at AS posted_at,
                j.first_seen_at AS first_seen_at,
                j.last_seen_at AS last_seen_at,
@@ -608,6 +614,11 @@ def _summary(
             counts[recommendation] += 1
         else:
             counts["need_more_info"] += 1
+    preference_counts = {name: 0 for name in PREFERENCE_ORDER}
+    for offer in offers:
+        outcome = (offer.get("preference") or {}).get("outcome")
+        if outcome in preference_counts:
+            preference_counts[outcome] += 1
     total = int(conn.execute("SELECT COUNT(*) FROM jobs WHERE is_active = 1").fetchone()[0])
     human_reviewed_jobs = int(conn.execute("SELECT COUNT(*) FROM job_feedback").fetchone()[0])
     return {
@@ -616,6 +627,9 @@ def _summary(
         "scored": len(scored),
         "unscored": len(offers) - len(scored),
         "recommendations": counts,
+        # Preference verdicts are recomputed from the stored posting text and are
+        # deliberately separate from the model recommendation above.
+        "preferences": preference_counts,
         "keywords": keyword_count,
         # Imported human decisions, a different signal from the model
         # recommendation and the only source of the human rate columns.
@@ -687,6 +701,18 @@ def build_payload(
             age_days = _age_days(first_seen_at, now=reference)
             age_source = "first_seen" if age_days is not None else "unknown"
         score = row["score"]
+        # Preference is a second, independent axis. It is recomputed from the
+        # stored posting text on every payload build, never persisted alongside
+        # (or instead of) the evaluation, so the model score and its history are
+        # untouched. The description is read for detection but never serialized.
+        preference = assess_text(
+            row["title"],
+            row["description"],
+            row["employment_type"],
+            row["seniority"],
+            row["location"],
+            row["company"],
+        )
         offers.append(
             {
                 "id": job_id,
@@ -722,6 +748,7 @@ def build_payload(
                 "blockers": _string_list(row["blockers_json"]),
                 "unknowns": _string_list(row["unknowns_json"]),
                 "keywords": keywords_by_job.get(job_id, []),
+                "preference": preference.to_dict(),
                 "detail": _detail_evidence(
                     detail_by_job.get(job_id),
                     now=reference,
@@ -1364,6 +1391,15 @@ p.filters-summary.active { color:var(--ink); }
 .detail-evidence-redirect { font-family:var(--font-mono); overflow-wrap:anywhere; }
 .detail-evidence-link { color:var(--muted); }
 .detail-evidence-link:hover { color:var(--ink); }
+/* Preference exclusions are a third, independent fact band. Like the link
+   evidence it carries no hue, so it can never be mistaken for the model accent
+   or for the human feedback axis; a FAIL only gains weight, not a colour. */
+.preference-evidence { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline;
+  font-size:var(--fs-micro); color:var(--muted); }
+.preference-evidence-state { font-weight:700; letter-spacing:.04em; }
+.preference-fail .preference-evidence-state { color:var(--ink); }
+.preference-evidence-reason { color:var(--soft-ink); }
+.preference-evidence-cue { font-family:var(--font-mono); overflow-wrap:anywhere; }
 /* The right-hand side of a row: the model's score and badge, then the one action
    that leaves the report. A hairline marks where the header's title column ends
    and the score/recommendation column begins. */
@@ -1601,6 +1637,13 @@ _SCRIPT = r"""
     retryable_failure: "fallo de transporte reintentable",
     failed: "fallo con respuesta HTTP"
   };
+  // Preference verdicts are a separate axis from the model recommendation and
+  // the human decision. The stored keys stay English; only the labels change.
+  var PREFERENCE_LABELS = {
+    pass: "sin exclusión",
+    flag: "revisar exclusión",
+    fail: "coincide con una exclusión"
+  };
 
   var dataNode = document.getElementById("jobscout-data");
   var payload;
@@ -1744,7 +1787,10 @@ _SCRIPT = r"""
     if (filters.review === "unreviewed" && reviewed) { return false; }
     if (filters.text) {
       var needle = filters.text.toLowerCase();
+      var pref = offer.preference || {};
       var haystack = [offer.title, offer.company, offer.location]
+        .concat(pref.evidence || [])
+        .concat([pref.reason || ""])
         .join(" ").toLowerCase();
       if (haystack.indexOf(needle) === -1) { return false; }
     }
@@ -1936,6 +1982,28 @@ _SCRIPT = r"""
     return box;
   }
 
+  // Preference evidence sits with the offer title, apart from the model and
+  // human axes. A PASS stays quiet: the absence of an exclusion is the default,
+  // and only FAIL/FLAG justify a band a reader has to see.
+  function preferenceStateText(preference) {
+    return "Preferencia: " + labelFrom(PREFERENCE_LABELS, preference.outcome, preference.outcome);
+  }
+
+  function renderPreference(offer) {
+    var preference = offer.preference;
+    if (!preference || !preference.outcome || preference.outcome === "pass") { return null; }
+    var box = el("p", "preference-evidence preference-" + preference.outcome);
+    box.appendChild(el("span", "preference-evidence-state", preferenceStateText(preference)));
+    if (preference.reason) {
+      box.appendChild(el("span", "preference-evidence-reason", preference.reason));
+    }
+    if (preference.evidence && preference.evidence.length) {
+      box.appendChild(el("span", "preference-evidence-cue",
+        "Evidencia: " + preference.evidence.join(", ")));
+    }
+    return box;
+  }
+
   function renderCard(offer) {
     var card = el("article", "card");
     card.setAttribute("data-job-id", String(offer.id));
@@ -1955,6 +2023,8 @@ _SCRIPT = r"""
     titleBox.appendChild(sub);
     var detailBox = renderDetailEvidence(offer);
     if (detailBox) { titleBox.appendChild(detailBox); }
+    var preferenceBox = renderPreference(offer);
+    if (preferenceBox) { titleBox.appendChild(preferenceBox); }
     head.appendChild(titleBox);
 
     var scoreBox = el("div", "card-score");
@@ -2149,6 +2219,7 @@ _SCRIPT = r"""
     host.textContent = "";
     var summary = payload.summary;
     var recommendations = summary.recommendations || {};
+    var preferences = summary.preferences || {};
     var cards = [
       ["Ofertas mostradas", summary.jobs_shown, ""],
       ["Con puntaje", summary.scored, ""],
@@ -2169,6 +2240,8 @@ _SCRIPT = r"""
       "Ofertas activas en la base: " + summary.active_jobs +
       " \u00b7 Sin puntaje entre las mostradas: " + summary.unscored +
       " \u00b7 Requieren más información: " + (recommendations.need_more_info || 0) +
+      " \u00b7 Preferencia: " + (preferences.fail || 0) + " excluida(s), " +
+      (preferences.flag || 0) + " por revisar" +
       " \u00b7 Palabras clave analizadas: " + summary.keywords +
       " \u00b7 Feedback humano importado: " + (summary.human_reviewed_jobs || 0);
   }
