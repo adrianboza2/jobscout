@@ -166,6 +166,32 @@ python -m jobscout import-feedback jobscout-feedback.json
 
 There is still no automatic scheduling: importing is a command you run yourself.
 
+### Link evidence (detail)
+
+Each offer shows a **link evidence** line next to its title, kept apart from the
+two decision axes. It is a stored fact, not a recommendation: it is computed only
+from that offer's latest `fetch-details` attempt, and it never changes scores,
+recommendations, or the database.
+
+| State | Meaning |
+|-------|---------|
+| `unchecked` | No detail attempt has been recorded. |
+| `skipped` | The latest attempt was deliberately skipped. |
+| `ok` | The latest attempt succeeded (ok/partial) within the 21-day window. |
+| `stale` | The latest attempt succeeded but is older than the 21-day window. |
+| `definitive_missing` | The latest attempt returned HTTP 404/410. |
+| `retryable_failure` | The latest attempt failed without receiving an HTTP response. |
+| `failed` | The latest attempt failed with another recorded HTTP response. |
+
+- The 21-day window is explicit; evidence with no usable date is reported as
+  `stale`, never as current.
+- A redirect's `final_url` is shown only as safe evidence of a successful
+  attempt, goes through the same URL validation as every other link, and only
+  when it differs from the requested URL. It is never presented as a broken link.
+- If a visible offer has a 404/410 and a later re-sighting exists, the report
+  says so: the evidence was refuted. Brokenness is never invented or inferred
+  from a redirect.
+
 ## CLI reference
 
 Global options: `--db PATH`, `--profile PATH`, `--json` (before or after the
@@ -177,7 +203,7 @@ subcommand), and `--version`.
 | `ingest-fixture PATH [--source S] [--label L]` | Normalize, deduplicate, and store a JSON fixture (offline). |
 | `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--dry-run \| --confirm-network]` | Bounded public search. Disabled without `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | List the keyword families and the exact command per query (no network, no database). |
-| `fetch-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich jobs with the full description. Defaults to jobs that are not yet enriched. |
+| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich jobs with the full description. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score. |
 | `rank [--top N] [--min-score S]` | Jobs with a successful score, best first. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evaluate jobs and print the explainable result. |
@@ -201,7 +227,24 @@ python -m jobscout fetch-details --dry-run                                      
 python -m jobscout fetch-details --fixture tests/fixtures/linkedin_detail_responses.json
 python -m jobscout fetch-details --max-items 5 --confirm-network                      # live, bounded
 python -m jobscout fetch-details --all --max-items 10 --confirm-network               # re-fetch everything
+python -m jobscout fetch-details --refresh --stale-days 14 --dry-run                  # refresh plan, offline
 ```
+
+`--refresh` is mutually exclusive with `--job-id` and `--all`. It only considers
+active offers that already have fetch history and whose latest attempt is one of:
+
+- an `ok`/`partial` fetch older than the cutoff (`--stale-days`, default `0`);
+- a `failed` attempt that never received an HTTP response (`http_status` and
+  `raw_document_id` both null), i.e. a retryable transient failure;
+- a `404`/`410` refuted by a later re-sighting.
+
+Inactive offers, never-fetched offers, `skipped` attempts, and failures that did
+record an HTTP response stay out. With `--stale-days 0` there is no age floor.
+The `--max-items` budget is spent on the oldest evidence first.
+
+`--refresh --dry-run` is read-only and offline: it never creates the database or
+writes a row. A real refresh keeps the same network gates as the rest of
+`fetch-details` (`--confirm-network`, or `--fixture` to stay offline).
 
 `fetch-details` does not re-score on its own: run `score --all --rescore` after
 enriching.

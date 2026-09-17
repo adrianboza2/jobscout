@@ -167,6 +167,32 @@ python -m jobscout import-feedback jobscout-feedback.json
 
 Todavía no hay programación automática: importar es un comando que ejecutas tú.
 
+### Evidencia del enlace (detalle)
+
+Cada oferta muestra, junto al título, una línea de **evidencia del enlace**
+separada de los dos ejes de decisión. Es un hecho guardado, no una
+recomendación: se calcula solo con el último intento de `fetch-details` de esa
+oferta y nunca altera puntajes, recomendaciones ni la base.
+
+| Estado | Significado |
+|--------|-------------|
+| `unchecked` | No hay ningún intento de detalle registrado. |
+| `skipped` | El último intento se omitió a propósito. |
+| `ok` | El último intento tuvo éxito (ok/partial) dentro de la ventana de 21 días. |
+| `stale` | El último intento tuvo éxito pero es anterior a la ventana de 21 días. |
+| `definitive_missing` | El último intento respondió 404/410. |
+| `retryable_failure` | El último intento falló sin recibir una respuesta HTTP. |
+| `failed` | El último intento falló con otra respuesta HTTP registrada. |
+
+- La ventana de 21 días es explícita; una evidencia sin fecha utilizable se
+  informa como `stale`, nunca como vigente.
+- Un `final_url` de redirección se muestra solo como evidencia segura de un
+  intento exitoso, con la misma validación de URL que el resto de enlaces, y
+  solo si difiere de la URL solicitada. Nunca se presenta como enlace roto.
+- Si una oferta visible tiene un 404/410 y hubo un re-avistamiento posterior, el
+  informe lo dice: la evidencia fue refutada. La rotura no se inventa ni se
+  deduce de una redirección.
+
 ## Referencia de CLI
 
 Opciones globales: `--db PATH`, `--profile PATH`, `--json` (antes o después del
@@ -178,7 +204,7 @@ subcomando) y `--version`.
 | `ingest-fixture PATH [--source S] [--label L]` | Normaliza, deduplica y guarda un fixture JSON (sin red). |
 | `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--dry-run \| --confirm-network]` | Búsqueda pública acotada. Deshabilitada sin `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | Lista las familias de palabras clave y el comando exacto por consulta (sin red, sin base de datos). |
-| `fetch-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas con la descripción completa. Por defecto, las que aún no están enriquecidas. |
+| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas con la descripción completa. Por defecto, las que aún no están enriquecidas; `--refresh` vuelve sobre las ya consultadas con evidencia obsoleta o reintentable. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje. |
 | `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. |
@@ -202,7 +228,26 @@ python -m jobscout fetch-details --dry-run                                      
 python -m jobscout fetch-details --fixture tests/fixtures/linkedin_detail_responses.json
 python -m jobscout fetch-details --max-items 5 --confirm-network                      # real, acotado
 python -m jobscout fetch-details --all --max-items 10 --confirm-network               # re-extrae todo
+python -m jobscout fetch-details --refresh --stale-days 14 --dry-run                  # plan de refresco, offline
 ```
+
+`--refresh` es una selección mutuamente excluyente con `--job-id` y `--all`. Solo
+considera ofertas activas que ya tienen historial de fetch y cuyo último intento
+es uno de estos:
+
+- un `ok`/`partial` anterior al cutoff (`--stale-days`, por defecto `0`);
+- un `failed` que nunca recibió respuesta HTTP (`http_status` y `raw_document_id`
+  nulos), es decir un fallo transitorio reintentable;
+- un `404`/`410` refutado por un re-avistamiento posterior.
+
+Quedan fuera las inactivas, las que nunca se consultaron, los intentos `skipped`
+y los fallos que sí registraron una respuesta HTTP. Con `--stale-days 0` no hay
+piso de antigüedad. El presupuesto de `--max-items` se gasta primero en la
+evidencia más vieja.
+
+`--refresh --dry-run` es de solo lectura y sin red: nunca crea la base ni escribe
+filas. Un refresco real conserva sus mismas barreras de red que el resto de
+`fetch-details` (`--confirm-network`, o `--fixture` para trabajar offline).
 
 `fetch-details` no vuelve a puntuar por sí solo: ejecuta
 `score --all --rescore` después de enriquecer.
