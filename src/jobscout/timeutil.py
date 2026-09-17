@@ -121,3 +121,16 @@ def age_days(value: str | None, *, now: datetime | None = None) -> float | None:
         return None
     reference = now or utcnow()
     return (reference - parsed).total_seconds() / 86400.0
+
+
+def iso_days_ago(days: float, *, now: datetime | None = None) -> str:
+    """ISO-8601 UTC timestamp for ``days`` before the reference time.
+
+    This is the single, pure boundary that turns a relative "how stale"
+    threshold into the absolute cutoff a query can compare timestamps against.
+    ``days`` may be any non-negative number; ``0`` yields the reference instant
+    itself (no age floor). Passing ``now`` makes the result deterministic in
+    tests instead of reading the clock.
+    """
+    reference = now or utcnow()
+    return to_iso(reference - timedelta(days=days))

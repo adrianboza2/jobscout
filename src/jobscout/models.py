@@ -241,6 +241,9 @@ class JobDetailFetch:
     run_id: int | None = None
     source: str | None = "linkedin"
     url: str | None = None
+    #: URL actually served after any allowed redirect. Nullable because OL-5
+    #: is the slice that captures it; every row predating that stays NULL.
+    final_url: str | None = None
     status: DetailFetchStatus = DetailFetchStatus.FAILED
     http_status: int | None = None
     content_status: str | None = None

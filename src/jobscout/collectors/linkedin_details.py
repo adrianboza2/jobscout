@@ -31,6 +31,7 @@ import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Callable, Sequence
+from urllib.parse import urlsplit
 
 from ..config import (
     HARD_MAX_ITEMS,
@@ -47,6 +48,7 @@ from ..models import (
 )
 from ..normalize import content_hash, extract_linkedin_job_id, html_to_text, normalize_text
 from ..timeutil import utcnow_iso
+from ..url_policy import is_http_scheme
 from .base import (
     TRUNCATION_HEADER,
     AccessDeniedError,
@@ -72,6 +74,11 @@ DESCRIPTION_CLASS_MARKERS = (
 
 #: Descriptions below this length are treated as "not actually a description".
 MIN_DESCRIPTION_CHARS = 10
+
+#: HTTP statuses that prove a posting is definitively gone rather than
+#: temporarily unavailable. Only these may trigger a lifecycle transition, and
+#: they are kept machine-readable on :attr:`DetailItem.http_status`.
+DEFINITIVE_MISSING_STATUSES = frozenset({404, 410})
 
 #: A LinkedIn numeric job id: at least 4 ASCII digits and nothing else. This is
 #: the same lower bound used by :func:`jobscout.normalize.extract_linkedin_job_id`,
@@ -113,6 +120,10 @@ class DetailItem:
     job_id: int
     source_job_id: str | None = None
     url: str | None = None
+    #: URL actually served after an allowed redirect, or ``None`` when the
+    #: response was not a redirect (or its target was rejected as unsafe). It is
+    #: captured from ``response.url`` and never triggers a second request.
+    final_url: str | None = None
     status: DetailFetchStatus = DetailFetchStatus.FAILED
     description: str | None = None
     content_status: ContentStatus = ContentStatus.PARTIAL
@@ -126,6 +137,19 @@ class DetailItem:
     notes: str | None = None
     #: Index into :attr:`DetailResult.raw_documents`; resolved to an id on persist.
     raw_document_index: int | None = None
+
+    @property
+    def is_definitive_missing(self) -> bool:
+        """True when a FAILED fetch proved the posting is gone (HTTP 404/410).
+
+        Non-definitive failures (transient, access denied, oversized body) and
+        non-failed statuses never report this, so the pipeline cannot mistake a
+        temporary glitch for a lifecycle transition.
+        """
+        return (
+            self.status is DetailFetchStatus.FAILED
+            and self.http_status in DEFINITIVE_MISSING_STATUSES
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -214,6 +238,34 @@ def build_detail_url(template: str, source_job_id: str) -> str:
     if "{id}" in template:
         return template.replace("{id}", str(source_job_id))
     return f"{template.rstrip('/')}/{source_job_id}"
+
+
+def sanitize_final_url(requested_url: str | None, response_url: str | None) -> str | None:
+    """Return the safe final URL of an allowed redirect, else ``None``.
+
+    Only a genuine, safely shaped redirect target is kept. The value is dropped
+    when the response URL is missing, identical to the requested URL (no redirect
+    happened), uses a non-HTTP(S) scheme, or embeds credentials
+    (``https://user:pass@host``). The host policy itself was already enforced by
+    the transport's redirect handler; this function only rejects values that must
+    never reach the ``job_detail_fetches.final_url`` column.
+
+    ``None`` is the honest "no redirect was observed" value, so callers persist
+    ``NULL`` instead of echoing the requested URL as if it were a redirect.
+    """
+    requested = str(requested_url or "").strip()
+    candidate = str(response_url or "").strip()
+    if not candidate or candidate == requested:
+        return None
+    if not is_http_scheme(candidate):
+        return None
+    try:
+        netloc = urlsplit(candidate).netloc
+    except ValueError:
+        return None
+    if "@" in netloc:
+        return None
+    return candidate
 
 
 def plan_detail_targets(
@@ -494,16 +546,28 @@ def fetch_linkedin_details(
                 on_attempt=on_attempt,
             )
         except NotFoundError as exc:
-            # A definitive per-item answer: record it and keep going.
+            # A definitive per-item answer: record it and keep going. The HTTP
+            # status is kept machine-readable so the pipeline can tell a gone
+            # posting (404/410) from a transient or access failure.
+            not_found_response = exc.response
             item = DetailItem(
                 job_id=job_id,
                 source_job_id=target.source_job_id,
                 url=target.url,
                 status=DetailFetchStatus.FAILED,
+                http_status=(
+                    not_found_response.status_code
+                    if not_found_response is not None
+                    else None
+                ),
                 error=str(exc),
             )
             _record_detail_response(
-                result, exc.response, target.url, max_bytes=settings.raw_max_bytes, item=item
+                result,
+                not_found_response,
+                target.url,
+                max_bytes=settings.raw_max_bytes,
+                item=item,
             )
             result.items.append(item)
             result.requests_made += 1
@@ -549,6 +613,10 @@ def fetch_linkedin_details(
             job_id=job_id,
             source_job_id=target.source_job_id,
             url=target.url,
+            # ``response.url`` is the final URL after the transport's redirect
+            # handler already vetted the hop. Capturing it here performs no
+            # additional request and does not treat a redirect as an expiry.
+            final_url=sanitize_final_url(target.url, response.url),
             fetched_at=response.fetched_at,
             http_status=response.status_code,
             byte_size=len(body.encode("utf-8", errors="replace")),
@@ -618,6 +686,7 @@ def fetch_linkedin_details(
 
 
 __all__ = [
+    "DEFINITIVE_MISSING_STATUSES",
     "DESCRIPTION_CLASS_MARKERS",
     "DetailFetchConfig",
     "DetailItem",
@@ -629,4 +698,5 @@ __all__ = [
     "parse_detail_description",
     "plan_detail_targets",
     "resolve_source_job_id",
+    "sanitize_final_url",
 ]

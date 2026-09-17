@@ -46,7 +46,7 @@ from .models import (
 )
 from .timeutil import utcnow_iso
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS search_runs (
@@ -185,6 +185,7 @@ CREATE TABLE IF NOT EXISTS job_detail_fetches (
     run_id INTEGER REFERENCES search_runs(id) ON DELETE SET NULL,
     source TEXT,
     url TEXT,
+    final_url TEXT,
     status TEXT NOT NULL DEFAULT 'failed',
     http_status INTEGER,
     content_status TEXT,
@@ -284,8 +285,36 @@ def connect_readonly(db_path: str | Path) -> sqlite3.Connection | None:
     return conn
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    """Names of the columns that actually exist for ``table`` right now.
+
+    ``PRAGMA table_info`` is used instead of trusting ``user_version`` so a
+    migration can verify the live shape before changing anything.
+    """
+    return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _migrate_v4_add_final_url(conn: sqlite3.Connection) -> None:
+    """Add the nullable ``job_detail_fetches.final_url`` column if missing."""
+    if "final_url" in _table_columns(conn, "job_detail_fetches"):
+        return
+    conn.execute("ALTER TABLE job_detail_fetches ADD COLUMN final_url TEXT")
+
+
+def _apply_migrations(conn: sqlite3.Connection, current: int) -> None:
+    """Upgrade an existing database in place from ``current`` to v4.
+
+    ``SCHEMA_SQL`` only uses ``CREATE TABLE IF NOT EXISTS``, so it can create a
+    brand-new database with the current shape but can never add a column to a
+    table that already exists. Every migration here is therefore additive and
+    idempotent: it inspects the live schema and only changes what is missing.
+    """
+    if current < 4:
+        _migrate_v4_add_final_url(conn)
+
+
 def init_db(conn: sqlite3.Connection) -> int:
-    """Create the schema if needed and return the schema version."""
+    """Create the schema if needed, migrate older databases, return the version."""
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
     if current > SCHEMA_VERSION:
         raise RuntimeError(
@@ -293,6 +322,7 @@ def init_db(conn: sqlite3.Connection) -> int:
         )
     with conn:
         conn.executescript(SCHEMA_SQL)
+        _apply_migrations(conn, current)
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     return SCHEMA_VERSION
 
@@ -394,6 +424,7 @@ def _row_to_detail_fetch(row: sqlite3.Row) -> JobDetailFetch:
         run_id=row["run_id"],
         source=row["source"],
         url=row["url"],
+        final_url=row["final_url"],
         status=DetailFetchStatus(row["status"]),
         http_status=row["http_status"],
         content_status=row["content_status"],
@@ -894,6 +925,95 @@ def jobs_needing_details(
     return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
 
 
+#: Joins a job to its single most recent detail-fetch attempt (highest id,
+#: matching :func:`latest_detail_fetch`). A job with no fetch rows never matches,
+#: so "refresh" only considers offers that already have fetch history.
+_LATEST_DETAIL_FETCH_JOIN = """
+    JOIN job_detail_fetches f ON f.id = (
+        SELECT latest.id FROM job_detail_fetches latest
+        WHERE latest.job_id = j.id
+        ORDER BY latest.id DESC
+        LIMIT 1
+    )
+"""
+
+
+def _jobs_needing_refresh_predicate() -> str:
+    """SQL for "the latest detail fetch warrants a refresh".
+
+    Exactly three cases qualify, all evaluated on the latest attempt only:
+
+    1. ``ok``/``partial`` evidence older than the ``?`` cutoff (stale content);
+    2. a ``failed`` attempt that never received an HTTP response
+       (``http_status IS NULL`` and no stored ``raw_document_id``), which is a
+       transient/transport failure worth retrying;
+    3. a ``failed`` 404/410 that a later re-sighting refutes
+       (``jobs.last_seen_at`` newer than the fetch), which the ingestion pipeline
+       would otherwise leave as a permanent death signal.
+
+    Skipped attempts, failed attempts with a recorded HTTP response, and every
+    status not listed above are intentionally excluded. The single ``?`` is the
+    cutoff timestamp; callers must pass it as the first parameter.
+    """
+    return (
+        "("
+        "(f.status IN ('ok', 'partial') "
+        "AND COALESCE(f.fetched_at, f.stored_at) < ?) "
+        "OR (f.status = 'failed' AND f.http_status IS NULL "
+        "AND f.raw_document_id IS NULL) "
+        "OR (f.status = 'failed' AND f.http_status IN (404, 410) "
+        "AND j.last_seen_at > COALESCE(f.fetched_at, f.stored_at))"
+        ")"
+    )
+
+
+def count_jobs_needing_refresh(conn: sqlite3.Connection, *, cutoff: str) -> int:
+    """Number of active jobs whose latest fetch evidence warrants a refresh."""
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM jobs j "
+            + _LATEST_DETAIL_FETCH_JOIN
+            + " WHERE j.is_active = 1 AND "
+            + _jobs_needing_refresh_predicate(),
+            (cutoff,),
+        ).fetchone()[0]
+    )
+
+
+def jobs_needing_refresh(
+    conn: sqlite3.Connection,
+    *,
+    cutoff: str,
+    limit: int | None = None,
+    job_ids: Sequence[int] | None = None,
+) -> list[Job]:
+    """Active jobs whose latest detail-fetch evidence warrants a refresh.
+
+    Only jobs that already have fetch history are considered; offers never
+    fetched are the default ``fetch-details`` selection, not this one. Ordering
+    is deterministic and prioritizes the oldest evidence first
+    (``COALESCE(fetched_at, stored_at) ASC``), with ``id ASC`` breaking ties, so
+    a bounded refresh spends its budget on the stalest offers.
+    """
+    clauses = ["j.is_active = 1", _jobs_needing_refresh_predicate()]
+    params: list[Any] = [cutoff]
+    if job_ids:
+        placeholders = ",".join("?" for _ in job_ids)
+        clauses.append(f"j.id IN ({placeholders})")
+        params.extend(int(job_id) for job_id in job_ids)
+    sql = (
+        "SELECT j.* FROM jobs j "
+        + _LATEST_DETAIL_FETCH_JOIN
+        + " WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY COALESCE(f.fetched_at, f.stored_at) ASC, j.id ASC"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
+
+
 def update_job_content(
     conn: sqlite3.Connection,
     job_id: int,
@@ -926,6 +1046,24 @@ def update_job_content(
         )
 
 
+def deactivate_job(conn: sqlite3.Connection, job_id: int) -> bool:
+    """Mark one job inactive without deleting it or any of its history.
+
+    A definitive detail failure (HTTP 404/410) means the posting is gone, so the
+    row is hidden from the default listings while its evaluations, feedback, and
+    fetch provenance stay queryable. Returns ``True`` only when an *active* row
+    actually changed, so callers can report a real lifecycle transition instead
+    of a repeated no-op. A later re-sighting reactivates the job through
+    :func:`store_posting`.
+    """
+    with conn:
+        cursor = conn.execute(
+            "UPDATE jobs SET is_active = 0 WHERE id = ? AND is_active = 1",
+            (int(job_id),),
+        )
+    return cursor.rowcount > 0
+
+
 # ---------------------------------------------------------------------------
 # Job detail fetches
 # ---------------------------------------------------------------------------
@@ -939,16 +1077,17 @@ def insert_detail_fetch(
         cursor = conn.execute(
             """
             INSERT INTO job_detail_fetches (
-                job_id, run_id, source, url, status, http_status, content_status,
-                description_chars, byte_size, sha256, content_hash, fetched_at,
-                stored_at, raw_document_id, error, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                job_id, run_id, source, url, final_url, status, http_status,
+                content_status, description_chars, byte_size, sha256, content_hash,
+                fetched_at, stored_at, raw_document_id, error, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(fetch.job_id),
                 fetch.run_id,
                 fetch.source,
                 fetch.url,
+                fetch.final_url,
                 str(fetch.status),
                 fetch.http_status,
                 fetch.content_status,
@@ -986,6 +1125,38 @@ def latest_detail_fetch(
         (int(job_id),),
     ).fetchone()
     return _row_to_detail_fetch(row) if row else None
+
+
+def latest_detail_fetches_for_jobs(
+    conn: sqlite3.Connection, job_ids: Sequence[int]
+) -> dict[int, JobDetailFetch]:
+    """Latest detail-fetch attempt per job, in one read-only SELECT.
+
+    The dashboard needs one evidence row per visible offer. Calling
+    :func:`latest_detail_fetch` per offer would cost one query per row (N+1);
+    this reader instead groups the history in SQL and joins the single highest
+    ``id`` per job, the same attempt :func:`latest_detail_fetch` reports.
+    Read-only by construction: it runs a single SELECT and never writes.
+    Jobs with no fetch rows are simply absent from the mapping, so callers can
+    tell "never checked" apart from "checked and failed".
+    """
+    ids = [int(job_id) for job_id in job_ids]
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    rows = conn.execute(
+        f"""
+        SELECT f.* FROM job_detail_fetches f
+        JOIN (
+            SELECT job_id, MAX(id) AS latest_id
+            FROM job_detail_fetches
+            WHERE job_id IN ({placeholders})
+            GROUP BY job_id
+        ) latest ON latest.latest_id = f.id
+        """,
+        ids,
+    ).fetchall()
+    return {int(row["job_id"]): _row_to_detail_fetch(row) for row in rows}
 
 
 def job_detail_fetch_count(conn: sqlite3.Connection) -> int:

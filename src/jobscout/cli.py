@@ -56,6 +56,7 @@ from .db import (
     count_active_jobs,
     count_jobs,
     count_jobs_needing_details,
+    count_jobs_needing_refresh,
     evaluation_count,
     feedback_count,
     get_job,
@@ -63,6 +64,7 @@ from .db import (
     job_detail_fetch_count,
     jobs_needing_details,
     jobs_needing_evaluation,
+    jobs_needing_refresh,
     list_jobs,
     list_search_runs,
 )
@@ -77,10 +79,16 @@ from .models import EvaluationStatus, ScorerName, SearchRunStatus
 from .pipeline import ingest_collector_result, ingest_detail_results, ingest_fixture
 from .scoring import SCORERS, evaluate_job, load_profile
 from .scoring.profile import ProfileError
+from .timeutil import iso_days_ago
 
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_FAIL_CLOSED = 2
+
+#: ``fetch-details --refresh`` age floor when ``--stale-days`` is omitted. ``0``
+#: means "no age floor": every already-fetched offer with stale or retryable
+#: evidence is a candidate, and an explicit ``--stale-days N`` narrows that.
+DEFAULT_REFRESH_STALE_DAYS = 0
 
 SCORER_CHOICES = tuple(SCORERS)
 
@@ -293,6 +301,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     details_selection.add_argument(
         "--all", action="store_true", help="select every active job (not just un-enriched ones)"
+    )
+    details_selection.add_argument(
+        "--refresh",
+        action="store_true",
+        help=(
+            "select active offers whose latest fetch evidence warrants a refresh "
+            "(stale ok/partial, transient failures without an HTTP response, or "
+            "404/410 refuted by a later re-sighting)"
+        ),
+    )
+    details_parser.add_argument(
+        "--stale-days",
+        type=int,
+        default=None,
+        metavar="DAYS",
+        help=(
+            "age floor in days for --refresh; 0 or greater and only valid with "
+            f"--refresh (default: {DEFAULT_REFRESH_STALE_DAYS})"
+        ),
     )
     details_parser.add_argument(
         "--max-items", type=int, default=None, help="item cap (bounded)"
@@ -530,8 +557,48 @@ def cmd_search_linkedin(args: argparse.Namespace, settings: Settings) -> int:
     return EXIT_OK
 
 
+def _effective_stale_days(args: argparse.Namespace) -> int:
+    """Resolve ``--stale-days`` to its effective value (``None`` -> default)."""
+    return DEFAULT_REFRESH_STALE_DAYS if args.stale_days is None else int(args.stale_days)
+
+
+def _refresh_cutoff(args: argparse.Namespace) -> str:
+    """Absolute UTC cutoff a refresh uses for stale ``ok``/``partial`` evidence."""
+    return iso_days_ago(_effective_stale_days(args))
+
+
+def _refresh_output_fields(
+    args: argparse.Namespace, cutoff: str | None
+) -> dict[str, Any]:
+    """Additive JSON fields for a refresh selection (``{}`` otherwise).
+
+    Keeping these out of every other selection means the existing ``--job-id``,
+    ``--all`` and default outputs stay byte-for-byte compatible.
+    """
+    if not getattr(args, "refresh", False) or cutoff is None:
+        return {}
+    return {
+        "selection": "refresh",
+        "stale_days": _effective_stale_days(args),
+        "cutoff": cutoff,
+    }
+
+
+def _refresh_text_line(args: argparse.Namespace, cutoff: str) -> str:
+    days = _effective_stale_days(args)
+    label = "day" if days == 1 else "days"
+    return (
+        f"refresh selection: active offers with stale or retryable evidence "
+        f"(stale-days {days} {label}, cutoff {cutoff})"
+    )
+
+
 def _select_detail_jobs(
-    conn: Any, args: argparse.Namespace, *, limit: int
+    conn: Any,
+    args: argparse.Namespace,
+    *,
+    limit: int,
+    refresh_cutoff: str | None = None,
 ) -> tuple[list[Any], int]:
     """Resolve the selection for ``fetch-details``.
 
@@ -548,6 +615,10 @@ def _select_detail_jobs(
     if args.all:
         total = count_active_jobs(conn)
         return all_active_jobs(conn, limit=limit), max(0, total - limit)
+    if getattr(args, "refresh", False):
+        cutoff = refresh_cutoff or _refresh_cutoff(args)
+        total = count_jobs_needing_refresh(conn, cutoff=cutoff)
+        return jobs_needing_refresh(conn, limit=limit, cutoff=cutoff), max(0, total - limit)
     total = count_jobs_needing_details(conn)
     return jobs_needing_details(conn, limit=limit), max(0, total - limit)
 
@@ -570,7 +641,11 @@ def _open_existing_readonly(db_path: Path) -> sqlite3.Connection | None:
 
 
 def _run_detail_dry_run(
-    args: argparse.Namespace, settings: Settings, config: DetailFetchConfig
+    args: argparse.Namespace,
+    settings: Settings,
+    config: DetailFetchConfig,
+    *,
+    refresh_cutoff: str | None = None,
 ) -> int:
     """Plan ``fetch-details`` without creating or writing a database."""
     jobs: list[Any] = []
@@ -581,7 +656,9 @@ def _run_detail_dry_run(
         note = f"no database at {settings.db_path}; nothing to plan"
     else:
         try:
-            jobs, omitted = _select_detail_jobs(conn, args, limit=config.max_items)
+            jobs, omitted = _select_detail_jobs(
+                conn, args, limit=config.max_items, refresh_cutoff=refresh_cutoff
+            )
         except sqlite3.DatabaseError:
             # Covers a database with no jobscout schema as well as an
             # unreadable/corrupt file: plan nothing instead of crashing.
@@ -597,6 +674,8 @@ def _run_detail_dry_run(
     )
     if note:
         text += f"\n  {note}"
+    if getattr(args, "refresh", False) and refresh_cutoff:
+        text += f"\n  {_refresh_text_line(args, refresh_cutoff)}"
     if omitted:
         text += f"\n  {omitted} selected job(s) omitted by --max-items"
     if skipped:
@@ -609,6 +688,7 @@ def _run_detail_dry_run(
             "planned_urls": planned,
             "skipped_reasons": skipped,
             "note": note,
+            **_refresh_output_fields(args, refresh_cutoff),
         },
         as_json=getattr(args, "as_json", False),
         text=text,
@@ -625,6 +705,17 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
         _write_line(f"invalid detail options: {exc}", stream=sys.stderr)
         return EXIT_ERROR
 
+    # ``--stale-days`` only modifies ``--refresh``; reject it earlier than any
+    # database, fixture, or network work so the failure costs nothing.
+    stale_days = getattr(args, "stale_days", None)
+    if stale_days is not None and not getattr(args, "refresh", False):
+        _write_line("--stale-days requires --refresh", stream=sys.stderr)
+        return EXIT_ERROR
+    if stale_days is not None and int(stale_days) < 0:
+        _write_line("--stale-days must be 0 or greater", stream=sys.stderr)
+        return EXIT_ERROR
+    refresh_cutoff = _refresh_cutoff(args) if getattr(args, "refresh", False) else None
+
     offline_transport = None
     if args.fixture:
         try:
@@ -637,7 +728,11 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
     if args.dry_run:
         # Match ``search-linkedin --dry-run``: plan only, and never create a
         # database. Read the existing database if (and only if) it is present.
-        return _run_detail_dry_run(args, settings, config)
+        # ``--refresh --dry-run`` stays read-only and offline through the same
+        # path: the refresh selection is a plain SELECT on the read-only URI.
+        return _run_detail_dry_run(
+            args, settings, config, refresh_cutoff=refresh_cutoff
+        )
 
     # Refuse before opening the database: an unconfirmed live run must leave no
     # trace and must not create a database file.
@@ -655,7 +750,9 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
     conn = connect(settings.db_path)
     try:
         init_db(conn)
-        jobs, omitted = _select_detail_jobs(conn, args, limit=config.max_items)
+        jobs, omitted = _select_detail_jobs(
+            conn, args, limit=config.max_items, refresh_cutoff=refresh_cutoff
+        )
 
         try:
             # The refusal gate above already required --confirm-network or an
@@ -687,6 +784,8 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
         f"(of {outcome.requested} selected)"
         + (f"\nnote: {outcome.notes}" if outcome.notes else "")
     )
+    if refresh_cutoff:
+        text += f"\n  {_refresh_text_line(args, refresh_cutoff)}"
     if result.truncated:
         text += f"\n  {result.truncated} selected job(s) omitted by --max-items"
     _emit(
@@ -694,6 +793,7 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
             **outcome.to_dict(),
             "planned_urls": result.planned_urls,
             "truncated": result.truncated,
+            **_refresh_output_fields(args, refresh_cutoff),
         },
         as_json=as_json,
         text=text,

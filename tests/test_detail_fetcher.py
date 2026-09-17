@@ -8,6 +8,7 @@ transport. Both are asserted to run under a socket blocker.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,26 +29,43 @@ from jobscout.collectors.linkedin_details import (
     parse_detail_description,
     plan_detail_targets,
     resolve_source_job_id,
+    sanitize_final_url,
 )
 from jobscout.config import HARD_MAX_ITEMS, HARD_MAX_PAGES
 from jobscout.db import (
     all_active_jobs,
+    connect,
+    count_jobs_needing_refresh,
+    deactivate_job,
     detail_fetches_for_job,
     get_job,
+    init_db,
+    insert_detail_fetch,
+    insert_evaluation,
+    insert_raw_document,
     job_detail_fetch_count,
     jobs_needing_details,
+    jobs_needing_refresh,
     latest_detail_fetch,
+    latest_evaluation,
+    list_jobs,
     store_posting,
     update_job_content,
 )
 from jobscout.models import (
     ContentStatus,
     DetailFetchStatus,
+    DuplicateKind,
+    Evaluation,
+    JobDetailFetch,
+    RawDocument,
     RawDocumentKind,
+    ScorerName,
     SearchRunStatus,
 )
 from jobscout.normalize import normalize_job_posting
 from jobscout.pipeline import ingest_detail_results
+from jobscout.timeutil import iso_days_ago, to_iso, utcnow
 
 CARDS_FIXTURE = FIXTURES / "linkedin_search_cards_sample.json"
 DETAIL_RESPONSES = FIXTURES / "linkedin_detail_responses.json"
@@ -318,6 +336,206 @@ def test_jobs_needing_details_selects_only_un_enriched(conn) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Refresh selection: stale and retryable fetch evidence
+# ---------------------------------------------------------------------------
+
+
+#: A fetch before this instant is "stale" for the deterministic DB tests below.
+STALE_CUTOFF = "2026-09-01T00:00:00Z"
+
+
+def _insert_fetch(
+    conn,
+    job,
+    *,
+    status: DetailFetchStatus,
+    http_status: int | None = None,
+    fetched_at: str | None = None,
+    stored_at: str = "2026-09-15T12:00:00Z",
+    raw_document_id: int | None = None,
+) -> None:
+    """Persist one detail-fetch attempt with explicit timestamps/provenance."""
+    insert_detail_fetch(
+        conn,
+        JobDetailFetch(
+            job_id=int(job.id),
+            source="linkedin",
+            url=f"https://www.linkedin.com/jobs/view/{job.source_job_id}/role",
+            status=status,
+            http_status=http_status,
+            content_status="ok" if status is DetailFetchStatus.OK else None,
+            fetched_at=fetched_at,
+            stored_at=stored_at,
+            raw_document_id=raw_document_id,
+        ),
+    )
+
+
+def _resight(conn, source_job_id: str, *, now: str) -> None:
+    """Re-observe a posting through the normal pipeline path (reactivates it)."""
+    posting = normalize_job_posting(_card_payload(source_job_id), source="linkedin")
+    store_posting(conn, posting, now=now)
+
+
+def test_iso_days_ago_is_pure_and_deterministic() -> None:
+    reference = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
+    assert iso_days_ago(0, now=reference) == "2026-09-15T12:00:00Z"
+    assert iso_days_ago(1, now=reference) == "2026-09-14T12:00:00Z"
+    assert iso_days_ago(30, now=reference) == "2026-08-16T12:00:00Z"
+    # Half a day is 12 hours; the result is truncated to whole seconds.
+    assert iso_days_ago(0.5, now=datetime(2026, 9, 15, 12, 0, 30)) == "2026-09-15T00:00:30Z"
+
+
+def test_jobs_needing_refresh_selects_stale_and_retryable_evidence(conn) -> None:
+    stale = _store_card(conn, "3911111111")
+    fresh = _store_card(conn, "3912222222")
+    transient = _store_card(conn, "3913333333")
+    no_http_but_raw = _store_card(conn, "3914444444")
+    http_recorded = _store_card(conn, "3915555555")
+    skipped = _store_card(conn, "3916666666")
+    no_fetch = _store_card(conn, "3917777777")
+
+    _insert_fetch(
+        conn, stale, status=DetailFetchStatus.OK, fetched_at="2026-07-01T00:00:00Z"
+    )
+    # After the cutoff: present but not stale.
+    _insert_fetch(
+        conn, fresh, status=DetailFetchStatus.OK, fetched_at="2026-09-10T00:00:00Z"
+    )
+    # No HTTP response was ever received: a transient failure worth retrying.
+    _insert_fetch(conn, transient, status=DetailFetchStatus.FAILED)
+    # A raw body proves a response was captured even without an http_status.
+    raw_id = insert_raw_document(
+        conn,
+        RawDocument(
+            kind=RawDocumentKind.JOB_DETAIL,
+            sha256="a" * 64,
+            stored_at="2026-09-15T12:00:00Z",
+        ),
+    )
+    _insert_fetch(
+        conn,
+        no_http_but_raw,
+        status=DetailFetchStatus.FAILED,
+        raw_document_id=raw_id,
+    )
+    # A recorded HTTP response (500) is a real answer, not a retryable gap.
+    _insert_fetch(
+        conn, http_recorded, status=DetailFetchStatus.FAILED, http_status=500
+    )
+    # Skipped attempts and never-fetched jobs are never refresh candidates.
+    _insert_fetch(conn, skipped, status=DetailFetchStatus.SKIPPED)
+
+    selected = [job.id for job in jobs_needing_refresh(conn, cutoff=STALE_CUTOFF)]
+    assert selected == [stale.id, transient.id]
+    assert count_jobs_needing_refresh(conn, cutoff=STALE_CUTOFF) == 2
+    # The never-fetched, skipped, fresh, and HTTP-answered jobs stay out.
+    assert no_fetch.id not in selected
+    assert skipped.id not in selected
+    assert fresh.id not in selected
+    assert no_http_but_raw.id not in selected
+    assert http_recorded.id not in selected
+
+
+def test_jobs_needing_refresh_refutes_only_resighted_404(conn) -> None:
+    refuted = _store_card(conn, "3911111111")
+    unrefuted = _store_card(conn, "3912222222")
+    inactive = _store_card(conn, "3913333333")
+
+    # A 404 at T1, then an ordinary re-sighting at T2 refutes the death signal.
+    _insert_fetch(
+        conn,
+        refuted,
+        status=DetailFetchStatus.FAILED,
+        http_status=404,
+        stored_at="2026-08-01T00:00:00Z",
+    )
+    _resight(conn, "3911111111", now="2026-09-16T00:00:00Z")
+
+    # A 410 recorded after the last sighting is not refuted: keep it inactive.
+    _insert_fetch(
+        conn,
+        unrefuted,
+        status=DetailFetchStatus.FAILED,
+        http_status=410,
+        stored_at="2026-09-20T00:00:00Z",
+    )
+    deactivate_job(conn, int(unrefuted.id))
+
+    # A stale success on an inactive offer never comes back through refresh.
+    _insert_fetch(
+        conn, inactive, status=DetailFetchStatus.OK, fetched_at="2026-07-01T00:00:00Z"
+    )
+    deactivate_job(conn, int(inactive.id))
+
+    selected = [job.id for job in jobs_needing_refresh(conn, cutoff=STALE_CUTOFF)]
+    assert selected == [refuted.id]
+
+
+def test_jobs_needing_refresh_reads_only_the_latest_fetch(conn) -> None:
+    hidden = _store_card(conn, "3911111111")
+    visible = _store_card(conn, "3912222222")
+
+    # Stale success, then a newer skip: the latest attempt wins and hides it.
+    _insert_fetch(
+        conn, hidden, status=DetailFetchStatus.OK, fetched_at="2026-07-01T00:00:00Z"
+    )
+    _insert_fetch(
+        conn,
+        hidden,
+        status=DetailFetchStatus.SKIPPED,
+        stored_at="2026-08-01T00:00:00Z",
+    )
+
+    # An older skip, then a newer stale success: the latest attempt selects it.
+    _insert_fetch(
+        conn,
+        visible,
+        status=DetailFetchStatus.SKIPPED,
+        stored_at="2026-07-01T00:00:00Z",
+    )
+    _insert_fetch(
+        conn, visible, status=DetailFetchStatus.OK, fetched_at="2026-08-01T00:00:00Z"
+    )
+
+    assert [job.id for job in jobs_needing_refresh(conn, cutoff=STALE_CUTOFF)] == [
+        visible.id
+    ]
+
+
+def test_jobs_needing_refresh_limit_job_ids_and_order(conn) -> None:
+    newest = _store_card(conn, "3911111111")
+    oldest = _store_card(conn, "3912222222")
+    tied = _store_card(conn, "3913333333")
+
+    _insert_fetch(
+        conn, newest, status=DetailFetchStatus.OK, fetched_at="2026-08-15T00:00:00Z"
+    )
+    _insert_fetch(
+        conn, oldest, status=DetailFetchStatus.OK, fetched_at="2026-06-01T00:00:00Z"
+    )
+    _insert_fetch(
+        conn, tied, status=DetailFetchStatus.OK, fetched_at="2026-06-01T00:00:00Z"
+    )
+
+    # Oldest evidence first; the equal timestamps break by ascending job id.
+    ordered = [
+        job.id for job in jobs_needing_refresh(conn, cutoff=STALE_CUTOFF, limit=3)
+    ]
+    assert ordered == [oldest.id, tied.id, newest.id]
+    assert [
+        job.id for job in jobs_needing_refresh(conn, cutoff=STALE_CUTOFF, limit=2)
+    ] == [oldest.id, tied.id]
+    assert [
+        job.id
+        for job in jobs_needing_refresh(conn, cutoff=STALE_CUTOFF, job_ids=[newest.id])
+    ] == [newest.id]
+    assert count_jobs_needing_refresh(conn, cutoff=STALE_CUTOFF) == 3
+    # A cutoff before every fetch selects nothing.
+    assert jobs_needing_refresh(conn, cutoff="2026-01-01T00:00:00Z") == []
+
+
+# ---------------------------------------------------------------------------
 # Opt-in, dry-run, and refusal
 # ---------------------------------------------------------------------------
 
@@ -462,6 +680,283 @@ def test_fetch_records_not_found_and_continues(conn, settings) -> None:
     assert client.call_count == 2
     assert result.items[0].status is DetailFetchStatus.FAILED
     assert result.items[1].status is DetailFetchStatus.OK
+
+
+# ---------------------------------------------------------------------------
+# Offer lifecycle: definitive 404/410 deactivation
+# ---------------------------------------------------------------------------
+
+
+def test_definitive_missing_requires_failed_status() -> None:
+    # The lifecycle signal is machine-readable and can only be raised by a
+    # FAILED result whose HTTP status is a definitive 404/410.
+    assert DetailItem(job_id=1, http_status=404).status is DetailFetchStatus.FAILED
+    assert DetailItem(
+        job_id=1, status=DetailFetchStatus.FAILED, http_status=404
+    ).is_definitive_missing
+    assert DetailItem(
+        job_id=1, status=DetailFetchStatus.FAILED, http_status=410
+    ).is_definitive_missing
+    assert not DetailItem(
+        job_id=1, status=DetailFetchStatus.FAILED, http_status=503
+    ).is_definitive_missing
+    assert not DetailItem(job_id=1, status=DetailFetchStatus.FAILED).is_definitive_missing
+    assert not DetailItem(
+        job_id=1, status=DetailFetchStatus.PARTIAL, http_status=404
+    ).is_definitive_missing
+
+
+def test_fetch_records_machine_readable_not_found_status(conn, settings) -> None:
+    jobs = [_store_card(conn, "3911111111")]
+    client = FakeHttpClient([response(410, "gone")])
+    result = fetch_linkedin_details(
+        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    item = result.items[0]
+    assert item.status is DetailFetchStatus.FAILED
+    assert item.http_status == 410
+    assert item.is_definitive_missing is True
+    # The status is exposed in the serialized result, not only in the error text.
+    assert item.to_dict()["http_status"] == 410
+
+
+def _missing_detail(job, *, http_status: int) -> DetailItem:
+    return _detail(
+        job,
+        status=DetailFetchStatus.FAILED,
+        http_status=http_status,
+        error=f"not found (HTTP {http_status})",
+    )
+
+
+def test_definitive_missing_detail_deactivates_job_and_keeps_history(conn, settings) -> None:
+    job = _store_card(conn, "3911111111")
+    insert_evaluation(
+        conn,
+        Evaluation(job_id=job.id, scorer=ScorerName.HEURISTIC, overall_score=77),
+    )
+
+    result = DetailResult(items=[_missing_detail(job, http_status=404)], requested=1)
+    outcome = ingest_detail_results(conn, result, settings=settings)
+
+    assert get_job(conn, job.id).is_active is False
+    assert outcome.deactivated == 1
+    # The failure still counts as failed, and the provenance row keeps the status.
+    assert outcome.failed == 1
+    fetch = latest_detail_fetch(conn, job.id)
+    assert fetch.status is DetailFetchStatus.FAILED
+    assert fetch.http_status == 404
+    # The evaluation survives and the default listing hides the inactive job.
+    assert latest_evaluation(conn, job.id).overall_score == 77
+    assert list_jobs(conn, limit=10) == []
+    assert [item.job.id for item in list_jobs(conn, limit=10, include_inactive=True)] == [job.id]
+
+
+@pytest.mark.parametrize("http_status", [500, 503, 403, None])
+def test_non_definitive_failure_does_not_deactivate(conn, settings, http_status) -> None:
+    job = _store_card(conn, "3911111111")
+    result = DetailResult(
+        items=[
+            _detail(
+                job,
+                status=DetailFetchStatus.FAILED,
+                http_status=http_status,
+                error="temporary failure",
+            )
+        ],
+        requested=1,
+    )
+    outcome = ingest_detail_results(conn, result, settings=settings)
+
+    assert get_job(conn, job.id).is_active is True
+    assert outcome.deactivated == 0
+    assert [item.job.id for item in list_jobs(conn, limit=10)] == [job.id]
+
+
+def test_resighting_after_deactivation_reactivates_the_offer(conn, settings) -> None:
+    job = _store_card(conn, "3911111111")
+    ingest_detail_results(
+        conn,
+        DetailResult(items=[_missing_detail(job, http_status=410)], requested=1),
+        settings=settings,
+    )
+    assert get_job(conn, job.id).is_active is False
+
+    # An ordinary re-sighting through the search path restores the offer, exactly
+    # as ``store_posting`` already behaves.
+    posting = normalize_job_posting(_card_payload("3911111111"), source="linkedin")
+    again, decision = store_posting(conn, posting, now="2026-09-16T10:00:00Z")
+
+    assert decision.kind is DuplicateKind.EXACT_DUPLICATE
+    assert again.id == job.id
+    assert again.is_active is True
+    assert [item.job.id for item in list_jobs(conn, limit=10)] == [job.id]
+    assert [item.id for item in jobs_needing_details(conn)] == [job.id]
+
+
+# ---------------------------------------------------------------------------
+# Offer lifecycle: allowed redirect final URL (OL-5)
+# ---------------------------------------------------------------------------
+
+REQUESTED_DETAIL_URL = (
+    "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/3911111111"
+)
+REDIRECT_DETAIL_URL = (
+    "https://es.linkedin.com/jobs-guest/jobs/api/jobPosting/3911111111"
+)
+
+
+def test_sanitize_final_url_keeps_only_safe_redirects() -> None:
+    # A different http(s) URL is the only accepted shape.
+    assert sanitize_final_url(REQUESTED_DETAIL_URL, REDIRECT_DETAIL_URL) == REDIRECT_DETAIL_URL
+    # No redirect observed: an identical, empty, or missing URL is not a redirect.
+    assert sanitize_final_url(REQUESTED_DETAIL_URL, REQUESTED_DETAIL_URL) is None
+    assert sanitize_final_url(REQUESTED_DETAIL_URL, "") is None
+    assert sanitize_final_url(REQUESTED_DETAIL_URL, None) is None
+    assert sanitize_final_url(None, "") is None
+    # Credentials are never persisted, even on an otherwise valid URL.
+    assert sanitize_final_url(
+        REQUESTED_DETAIL_URL, "https://user:pass@www.linkedin.com/jobs/view/1/"
+    ) is None
+    assert sanitize_final_url(
+        REQUESTED_DETAIL_URL, "https://@www.linkedin.com/jobs/view/1/"
+    ) is None
+    # Non-HTTP schemes are refused.
+    assert sanitize_final_url(
+        REQUESTED_DETAIL_URL, "ftp://www.linkedin.com/jobs/view/1/"
+    ) is None
+    assert sanitize_final_url(REQUESTED_DETAIL_URL, "file:///etc/passwd") is None
+
+
+def test_fetch_captures_allowed_redirect_final_url(conn, settings) -> None:
+    jobs = [_store_card(conn, "3911111111")]
+    body = fixture_text("linkedin_detail_page.html")
+    client = FakeHttpClient(
+        [response(200, body, headers={"content-type": "text/html"}, url=REDIRECT_DETAIL_URL)]
+    )
+    result = fetch_linkedin_details(
+        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    item = result.items[0]
+    assert item.status is DetailFetchStatus.OK
+    assert item.url == REQUESTED_DETAIL_URL
+    assert item.final_url == REDIRECT_DETAIL_URL
+    # Capturing the final URL relies on the existing response and sends no
+    # additional request.
+    assert client.call_count == 1
+
+
+def test_fetch_records_no_final_url_without_redirect(conn, settings) -> None:
+    jobs = [_store_card(conn, "3911111111")]
+    body = fixture_text("linkedin_detail_page.html")
+    client = FakeHttpClient(
+        [response(200, body, headers={"content-type": "text/html"}, url=REQUESTED_DETAIL_URL)]
+    )
+    result = fetch_linkedin_details(
+        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    # The requested URL is echoed back, so there was no redirect to persist.
+    assert result.items[0].final_url is None
+
+
+@pytest.mark.parametrize(
+    "unsafe_url",
+    (
+        "https://user:pass@www.linkedin.com/jobs/view/1/",
+        "ftp://www.linkedin.com/jobs/view/1/",
+        "file:///etc/passwd",
+    ),
+)
+def test_fetch_drops_unsafe_redirect_final_url(conn, settings, unsafe_url) -> None:
+    jobs = [_store_card(conn, "3911111111")]
+    body = fixture_text("linkedin_detail_page.html")
+    client = FakeHttpClient(
+        [response(200, body, headers={"content-type": "text/html"}, url=unsafe_url)]
+    )
+    result = fetch_linkedin_details(
+        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    assert result.items[0].status is DetailFetchStatus.OK
+    # The description still enriches the job; only the unsafe URL is dropped.
+    assert result.items[0].final_url is None
+
+
+def test_ingest_persists_redirect_final_url(conn, settings) -> None:
+    job = _store_card(conn, "3911111111")
+    body = fixture_text("linkedin_detail_page.html")
+    client = FakeHttpClient(
+        [response(200, body, headers={"content-type": "text/html"}, url=REDIRECT_DETAIL_URL)]
+    )
+    result = fetch_linkedin_details(
+        jobs=[job], settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    outcome = ingest_detail_results(conn, result, settings=settings)
+
+    assert outcome.enriched == 1
+    fetch = latest_detail_fetch(conn, job.id)
+    assert fetch is not None
+    assert fetch.url == REQUESTED_DETAIL_URL
+    assert fetch.final_url == REDIRECT_DETAIL_URL
+    assert fetch.to_dict()["final_url"] == REDIRECT_DETAIL_URL
+    # A redirect is not an expiry: the offer stays active.
+    assert get_job(conn, job.id).is_active is True
+    assert outcome.deactivated == 0
+
+
+def test_ingest_persists_null_final_url_without_redirect(conn, settings) -> None:
+    job = _store_card(conn, "3911111111")
+    body = fixture_text("linkedin_detail_page.html")
+    client = FakeHttpClient(
+        [response(200, body, headers={"content-type": "text/html"}, url=REQUESTED_DETAIL_URL)]
+    )
+    result = fetch_linkedin_details(
+        jobs=[job], settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    ingest_detail_results(conn, result, settings=settings)
+
+    fetch = latest_detail_fetch(conn, job.id)
+    assert fetch is not None
+    assert fetch.final_url is None
+
+
+@pytest.mark.parametrize("http_status", [404, 410, 500, 503])
+def test_failed_fetch_never_captures_final_url(conn, settings, http_status) -> None:
+    jobs = [_store_card(conn, "3911111111")]
+    # The failing response even advertises a different URL, but a failure is not
+    # a redirect: it must neither become redirect evidence nor change the
+    # lifecycle beyond the existing 404/410 rule.
+    client = FakeHttpClient([response(http_status, "nope", url=REDIRECT_DETAIL_URL)])
+    bounded = settings.with_overrides(http_max_retries=0, request_jitter_seconds=0.0)
+    result = fetch_linkedin_details(
+        jobs, settings=bounded, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    item = result.items[0]
+    assert item.status is DetailFetchStatus.FAILED
+    assert item.final_url is None
+    assert item.is_definitive_missing is (http_status in (404, 410))
+
+
+def test_ingest_propagates_item_final_url_to_provenance(conn, settings) -> None:
+    job = _store_card(conn, "3911111111")
+    ingest_detail_results(
+        conn,
+        DetailResult(
+            items=[
+                _detail(
+                    job,
+                    status=DetailFetchStatus.OK,
+                    http_status=200,
+                    final_url=REDIRECT_DETAIL_URL,
+                )
+            ],
+            requested=1,
+        ),
+        settings=settings,
+    )
+    fetch = latest_detail_fetch(conn, job.id)
+    assert fetch is not None
+    # The pipeline carries the collector's captured value into provenance.
+    assert fetch.final_url == REDIRECT_DETAIL_URL
 
 
 def test_fetch_rejects_oversized_download(conn, settings) -> None:
@@ -1003,6 +1498,239 @@ def test_fetch_details_dry_run_reports_max_items_truncation(db_path, capsys, mon
     )
     payload = json.loads(capsys.readouterr().out)
     assert payload["truncated"] == 0
+
+
+# ---------------------------------------------------------------------------
+# CLI: refresh selection (--refresh / --stale-days)
+# ---------------------------------------------------------------------------
+
+
+def _seed_refresh_db(db_path: Path) -> dict[str, int]:
+    """Seed a file database with one offer per refresh-predicate branch.
+
+    Timestamps are relative to the test's own ``utcnow`` so the CLI's later
+    cutoff stays deterministic regardless of the day the suite runs on.
+    """
+    reference = utcnow()
+    connection = connect(db_path)
+    try:
+        init_db(connection)
+        stale = _store_card(connection, "3921000001")
+        fresh = _store_card(connection, "3921000002")
+        transient = _store_card(connection, "3921000003")
+        skipped = _store_card(connection, "3921000004")
+        never_fetched = _store_card(connection, "3921000005")
+
+        _insert_fetch(
+            connection,
+            stale,
+            status=DetailFetchStatus.OK,
+            fetched_at=iso_days_ago(60, now=reference),
+        )
+        _insert_fetch(
+            connection,
+            fresh,
+            status=DetailFetchStatus.OK,
+            fetched_at=to_iso(reference),
+        )
+        _insert_fetch(connection, transient, status=DetailFetchStatus.FAILED)
+        _insert_fetch(connection, skipped, status=DetailFetchStatus.SKIPPED)
+        return {
+            "stale": int(stale.id),
+            "fresh": int(fresh.id),
+            "transient": int(transient.id),
+            "skipped": int(skipped.id),
+            "never_fetched": int(never_fetched.id),
+        }
+    finally:
+        connection.close()
+
+
+def _age_detail_fetches(db_path: Path, fetched_at: str) -> None:
+    connection = connect(db_path)
+    try:
+        with connection:
+            connection.execute(
+                "UPDATE job_detail_fetches SET fetched_at = ?", (fetched_at,)
+            )
+    finally:
+        connection.close()
+
+
+def test_fetch_details_stale_days_requires_refresh(
+    db_path, capsys, monkeypatch
+) -> None:
+    no_network(monkeypatch)
+
+    # --stale-days without --refresh is rejected before any file is created.
+    assert (
+        main(["--db", str(db_path), "fetch-details", "--stale-days", "5", "--dry-run"])
+        == EXIT_ERROR
+    )
+    assert "--stale-days requires --refresh" in capsys.readouterr().err
+    assert not db_path.exists()
+
+    # A negative age floor is rejected even with a valid selection.
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "fetch-details",
+                "--refresh",
+                "--stale-days",
+                "-1",
+                "--dry-run",
+            ]
+        )
+        == EXIT_ERROR
+    )
+    assert "0 or greater" in capsys.readouterr().err
+    assert not db_path.exists()
+
+
+def test_fetch_details_refresh_dry_run_is_readonly(
+    db_path, capsys, monkeypatch
+) -> None:
+    no_network(monkeypatch)
+    _seed_refresh_db(db_path)
+    before_bytes = db_path.read_bytes()
+    before_names = sorted(path.name for path in db_path.parent.iterdir())
+
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "fetch-details",
+                "--refresh",
+                "--stale-days",
+                "5",
+                "--dry-run",
+                "--json",
+            ]
+        )
+        == EXIT_OK
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is True
+    assert payload["selection"] == "refresh"
+    assert payload["stale_days"] == 5
+    assert payload["cutoff"]
+    # Stale success + transient failure; fresh, skipped and never-fetched stay out.
+    assert payload["selected"] == 2
+    assert len(payload["planned_urls"]) == 2
+
+    # The text report carries the same additive refresh context.
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "fetch-details",
+                "--refresh",
+                "--stale-days",
+                "5",
+                "--dry-run",
+            ]
+        )
+        == EXIT_OK
+    )
+    output = capsys.readouterr().out
+    assert "refresh selection:" in output
+    assert "stale-days 5 days" in output
+
+    # Nothing was written, not even a journal sidecar.
+    assert db_path.read_bytes() == before_bytes
+    assert sorted(path.name for path in db_path.parent.iterdir()) == before_names
+
+
+def test_fetch_details_existing_selections_are_unchanged(
+    db_path, capsys, monkeypatch
+) -> None:
+    no_network(monkeypatch)
+    main(["--db", str(db_path), "ingest-fixture", str(CARDS_FIXTURE)])
+    capsys.readouterr()
+    main(["--db", str(db_path), "list", "--json"])
+    first_id = json.loads(capsys.readouterr().out)["jobs"][0]["job"]["id"]
+
+    # --job-id still selects exactly the requested job.
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "fetch-details",
+                "--job-id",
+                str(first_id),
+                "--dry-run",
+                "--json",
+            ]
+        )
+        == EXIT_OK
+    )
+    by_id = json.loads(capsys.readouterr().out)
+    assert by_id["selected"] == 1
+    assert "selection" not in by_id and "cutoff" not in by_id
+
+    # --all still selects every active job.
+    assert (
+        main(["--db", str(db_path), "fetch-details", "--all", "--dry-run", "--json"])
+        == EXIT_OK
+    )
+    all_payload = json.loads(capsys.readouterr().out)
+    assert all_payload["selected"] == 3
+    assert "selection" not in all_payload and "cutoff" not in all_payload
+
+    # The default still selects only un-enriched jobs (the three cards).
+    assert (
+        main(["--db", str(db_path), "fetch-details", "--dry-run", "--json"]) == EXIT_OK
+    )
+    default_payload = json.loads(capsys.readouterr().out)
+    assert default_payload["selected"] == 3
+    assert "selection" not in default_payload and "cutoff" not in default_payload
+
+
+def test_fetch_details_refresh_live_via_fixture_keeps_history(
+    db_path, capsys, monkeypatch, fast_pacing
+) -> None:
+    no_network(monkeypatch)
+    main(["--db", str(db_path), "ingest-fixture", str(CARDS_FIXTURE)])
+    capsys.readouterr()
+    assert (
+        main(["--db", str(db_path), "fetch-details", "--fixture", str(DETAIL_RESPONSES)])
+        == EXIT_OK
+    )
+    capsys.readouterr()
+
+    # Age the stored evidence so the refresh predicate sees stale successes.
+    _age_detail_fetches(db_path, "2026-07-01T00:00:00Z")
+
+    # A fixture run is offline, so --confirm-network is not required for refresh.
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "fetch-details",
+                "--refresh",
+                "--stale-days",
+                "5",
+                "--fixture",
+                str(DETAIL_RESPONSES),
+                "--json",
+            ]
+        )
+        == EXIT_OK
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["selection"] == "refresh"
+    assert payload["stale_days"] == 5
+    assert payload["cutoff"]
+    assert payload["enriched"] == 3
+
+    # The refresh appended provenance; the first attempts were not deleted.
+    assert job_detail_fetch_count_for(db_path) == 6
 
 
 def test_fetch_details_dry_run_does_not_create_a_database(

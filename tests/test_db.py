@@ -3,32 +3,48 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 from jobscout.db import (
+    SCHEMA_SQL,
     SCHEMA_VERSION,
     all_active_jobs,
+    connect,
     count_jobs,
     create_search_run,
+    deactivate_job,
+    detail_fetches_for_job,
     evaluation_count,
+    evaluations_for_job,
     find_duplicate,
+    get_feedback,
     get_job,
     init_db,
+    insert_detail_fetch,
     insert_evaluation,
     insert_raw_document,
+    job_detail_fetch_count,
     jobs_needing_evaluation,
+    latest_detail_fetch,
+    latest_detail_fetches_for_jobs,
     latest_evaluation,
     list_jobs,
     profile_evidence,
     record_run_item,
     store_posting,
+    upsert_feedback,
     upsert_profile,
 )
 from jobscout.models import (
+    DetailFetchStatus,
     DimensionScore,
     DuplicateKind,
     Evaluation,
+    FeedbackDecision,
+    JobDetailFetch,
+    JobFeedback,
     JobPosting,
     RawDocument,
     RawDocumentKind,
@@ -52,6 +68,58 @@ REQUIRED_TABLES = {
     "job_detail_fetches",
     "job_feedback",
 }
+
+#: The historical v3 shape of ``job_detail_fetches`` (no ``final_url``). Kept
+#: verbatim so the migration test exercises a real pre-v4 table instead of a
+#: current one with the column already present.
+V3_JOB_DETAIL_FETCHES_SQL = """
+CREATE TABLE job_detail_fetches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    run_id INTEGER REFERENCES search_runs(id) ON DELETE SET NULL,
+    source TEXT,
+    url TEXT,
+    status TEXT NOT NULL DEFAULT 'failed',
+    http_status INTEGER,
+    content_status TEXT,
+    description_chars INTEGER NOT NULL DEFAULT 0,
+    byte_size INTEGER NOT NULL DEFAULT 0,
+    sha256 TEXT,
+    content_hash TEXT,
+    fetched_at TEXT,
+    stored_at TEXT NOT NULL,
+    raw_document_id INTEGER REFERENCES raw_documents(id) ON DELETE SET NULL,
+    error TEXT,
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_detail_fetches_job ON job_detail_fetches(job_id, id);
+CREATE INDEX IF NOT EXISTS idx_detail_fetches_run ON job_detail_fetches(run_id);
+"""
+
+
+def _create_v3_database(path: Path) -> sqlite3.Connection:
+    """Build a database that looks like a real pre-v4 install.
+
+    The current ``SCHEMA_SQL`` is applied first (it creates the sibling tables
+    the migration must leave untouched), then ``job_detail_fetches`` is rebuilt
+    in its v3 shape and ``user_version`` is dialed back to 3.
+    """
+    connection = connect(path)
+    connection.executescript(SCHEMA_SQL)
+    connection.executescript(
+        "DROP TABLE job_detail_fetches;" + V3_JOB_DETAIL_FETCHES_SQL
+    )
+    connection.execute("PRAGMA user_version = 3")
+    connection.commit()
+    return connection
+
+
+def _columns(connection: sqlite3.Connection, table: str) -> dict[str, int]:
+    """Column name -> ``notnull`` flag, for schema-shape assertions."""
+    return {
+        row["name"]: int(row["notnull"])
+        for row in connection.execute(f"PRAGMA table_info({table})")
+    }
 
 
 def _posting(**overrides) -> JobPosting:
@@ -87,6 +155,92 @@ def test_init_db_rejects_newer_schema(conn) -> None:
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION + 5}")
     with pytest.raises(RuntimeError):
         init_db(conn)
+
+
+def test_new_database_has_nullable_final_url_column(conn) -> None:
+    assert SCHEMA_VERSION == 4
+    columns = _columns(conn, "job_detail_fetches")
+    assert "final_url" in columns
+    # Nullable: a fresh install never invents a redirect target.
+    assert columns["final_url"] == 0
+
+
+def test_migration_v4_adds_final_url_without_losing_history(tmp_path: Path) -> None:
+    connection = _create_v3_database(tmp_path / "legacy-v3.sqlite3")
+    try:
+        job, _ = store_posting(
+            connection,
+            _posting(source_job_id="3911111111"),
+            now="2026-09-15T10:00:00Z",
+        )
+        insert_evaluation(
+            connection,
+            Evaluation(
+                job_id=job.id,
+                scorer=ScorerName.HEURISTIC,
+                overall_score=88,
+                rationale="keep me",
+            ),
+        )
+        upsert_feedback(
+            connection,
+            JobFeedback(
+                job_id=job.id,
+                decision=FeedbackDecision.REJECT,
+                reason="not a fit",
+                decision_updated_at="2026-09-15T11:00:00Z",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO job_detail_fetches (
+                job_id, source, url, status, http_status, content_status,
+                description_chars, byte_size, fetched_at, stored_at, error, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job.id,
+                "linkedin",
+                "https://www.linkedin.com/jobs/view/3911111111/",
+                "failed",
+                404,
+                "unknown",
+                0,
+                0,
+                "2026-09-15T10:00:00Z",
+                "2026-09-15T10:00:00Z",
+                "not found",
+                "legacy row",
+            ),
+        )
+        connection.commit()
+        # The pre-migration table genuinely lacks the column.
+        assert "final_url" not in _columns(connection, "job_detail_fetches")
+
+        assert init_db(connection) == SCHEMA_VERSION
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert _columns(connection, "job_detail_fetches")["final_url"] == 0
+
+        # Re-running init_db is a no-op, not a second migration.
+        assert init_db(connection) == SCHEMA_VERSION
+
+        # Every pre-existing row survived, including its provenance.
+        assert count_jobs(connection) == 1
+        assert get_job(connection, job.id).source_job_id == "3911111111"
+        assert evaluation_count(connection) == 1
+        assert latest_evaluation(connection, job.id).overall_score == 88
+        feedback = get_feedback(connection, job.id)
+        assert feedback is not None and feedback.reason == "not a fit"
+        assert job_detail_fetch_count(connection) == 1
+
+        legacy = latest_detail_fetch(connection, job.id)
+        assert legacy is not None
+        assert legacy.url == "https://www.linkedin.com/jobs/view/3911111111/"
+        assert legacy.http_status == 404
+        # The migrated column is NULL for history; OL-5 fills it later.
+        assert legacy.final_url is None
+    finally:
+        connection.close()
 
 
 def test_store_posting_persists_and_detects_exact_duplicate(conn) -> None:
@@ -302,6 +456,62 @@ def test_connection_enforces_foreign_keys(conn) -> None:
     assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
 
 
+def test_deactivate_job_hides_without_deleting_history(conn) -> None:
+    job, _ = store_posting(conn, _posting(), now="2026-09-15T10:00:00Z")
+    insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=job.id,
+            scorer=ScorerName.HEURISTIC,
+            overall_score=88,
+            rationale="keep me",
+        ),
+    )
+    upsert_feedback(
+        conn,
+        JobFeedback(
+            job_id=job.id,
+            decision=FeedbackDecision.REJECT,
+            reason="not a fit",
+            decision_updated_at="2026-09-15T11:00:00Z",
+        ),
+    )
+
+    assert deactivate_job(conn, job.id) is True
+    # Idempotent: a second call is a no-op, not a second transition.
+    assert deactivate_job(conn, job.id) is False
+
+    refreshed = get_job(conn, job.id)
+    assert refreshed is not None
+    assert refreshed.is_active is False
+    # Nothing was deleted: the job row and its history survive.
+    assert count_jobs(conn) == 1
+    assert evaluation_count(conn) == 1
+    assert evaluations_for_job(conn, job.id)[0].rationale == "keep me"
+    assert latest_evaluation(conn, job.id).overall_score == 88
+    feedback = get_feedback(conn, job.id)
+    assert feedback is not None and feedback.decision == "reject"
+
+    # Default listings exclude the inactive job; the explicit opt-in includes it.
+    assert list_jobs(conn, limit=10) == []
+    assert [item.job.id for item in list_jobs(conn, limit=10, include_inactive=True)] == [job.id]
+    assert all_active_jobs(conn) == []
+
+
+def test_resighting_reactivates_a_deactivated_job(conn) -> None:
+    posting = _posting()
+    job, _ = store_posting(conn, posting, now="2026-09-15T10:00:00Z")
+    assert deactivate_job(conn, job.id) is True
+    assert get_job(conn, job.id).is_active is False
+
+    again, decision = store_posting(conn, posting, now="2026-09-16T10:00:00Z")
+    assert decision.kind is DuplicateKind.EXACT_DUPLICATE
+    assert again.id == job.id
+    assert again.is_active is True
+    assert again.sighting_count == 2
+    assert [item.job.id for item in list_jobs(conn, limit=10)] == [job.id]
+
+
 def test_store_posting_requires_finalized_posting(conn) -> None:
     with pytest.raises(ValueError):
         store_posting(conn, JobPosting(source="s", title="t", company="c"))
@@ -323,3 +533,124 @@ def test_row_factory_returns_named_rows(conn) -> None:
     assert isinstance(conn, sqlite3.Connection)
     row = conn.execute("SELECT 1 AS one").fetchone()
     assert row["one"] == 1
+
+
+def test_detail_fetch_final_url_round_trip(conn, stored_job) -> None:
+    inserted = insert_detail_fetch(
+        conn,
+        JobDetailFetch(
+            job_id=stored_job.id,
+            source="linkedin",
+            url="https://www.linkedin.com/jobs/view/3901234567/",
+            final_url="https://www.linkedin.com/jobs/view/3909999999/",
+            status=DetailFetchStatus.OK,
+            http_status=200,
+            fetched_at="2026-09-15T10:00:00Z",
+            stored_at="2026-09-15T10:00:00Z",
+        ),
+    )
+    assert inserted.id is not None
+    assert inserted.final_url == "https://www.linkedin.com/jobs/view/3909999999/"
+
+    latest = latest_detail_fetch(conn, stored_job.id)
+    assert latest is not None
+    assert latest.url == "https://www.linkedin.com/jobs/view/3901234567/"
+    assert latest.final_url == "https://www.linkedin.com/jobs/view/3909999999/"
+    # ``to_dict`` exposes the round-tripped value for JSON output.
+    assert latest.to_dict()["final_url"] == "https://www.linkedin.com/jobs/view/3909999999/"
+
+    # A fetch that records no redirect keeps the nullable default.
+    insert_detail_fetch(
+        conn,
+        JobDetailFetch(
+            job_id=stored_job.id,
+            source="linkedin",
+            url="https://www.linkedin.com/jobs/view/3901234567/",
+            status=DetailFetchStatus.FAILED,
+            error="temporary failure",
+        ),
+    )
+    history = detail_fetches_for_job(conn, stored_job.id)
+    assert history[0].final_url is None
+    assert history[1].final_url == "https://www.linkedin.com/jobs/view/3909999999/"
+
+
+def test_latest_detail_fetches_for_jobs_is_batched_and_latest_only(conn) -> None:
+    first, _ = store_posting(conn, _posting(), now="2026-09-15T10:00:00Z")
+    second, _ = store_posting(
+        conn,
+        _posting(
+            source_job_id="5555555555",
+            url="https://www.linkedin.com/jobs/view/5555555555/other",
+            title="Data Engineer",
+            company="Beta Corp",
+        ),
+        now="2026-09-15T11:00:00Z",
+    )
+    never_fetched, _ = store_posting(
+        conn,
+        _posting(
+            source_job_id="6666666666",
+            url="https://www.linkedin.com/jobs/view/6666666666/third",
+            title="Platform Engineer",
+            company="Gamma LLC",
+        ),
+        now="2026-09-15T12:00:00Z",
+    )
+    # Two attempts for one job: the reader must report only the highest id.
+    insert_detail_fetch(
+        conn,
+        JobDetailFetch(
+            job_id=first.id,
+            status=DetailFetchStatus.OK,
+            http_status=200,
+            fetched_at="2026-09-14T10:00:00Z",
+            stored_at="2026-09-14T10:00:00Z",
+        ),
+    )
+    insert_detail_fetch(
+        conn,
+        JobDetailFetch(
+            job_id=first.id,
+            status=DetailFetchStatus.SKIPPED,
+            stored_at="2026-09-15T09:00:00Z",
+        ),
+    )
+    insert_detail_fetch(
+        conn,
+        JobDetailFetch(
+            job_id=second.id,
+            status=DetailFetchStatus.FAILED,
+            http_status=410,
+            stored_at="2026-09-15T09:00:00Z",
+        ),
+    )
+
+    # The reader costs exactly one statement, even across several jobs.
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    try:
+        latest = latest_detail_fetches_for_jobs(
+            conn, [first.id, second.id, never_fetched.id, first.id]
+        )
+    finally:
+        conn.set_trace_callback(None)
+
+    assert set(latest) == {first.id, second.id}
+    assert latest[first.id].status == DetailFetchStatus.SKIPPED
+    assert latest[second.id].http_status == 410
+    # The full history still holds both attempts for the first job.
+    assert len(detail_fetches_for_job(conn, first.id)) == 2
+    detail_statements = [item for item in statements if "job_detail_fetches" in item]
+    assert len(detail_statements) == 1
+    # Read-only by construction.
+    assert detail_statements[0].strip().lower().startswith("select")
+
+
+def test_latest_detail_fetches_for_jobs_handles_empty_and_unfetched(conn) -> None:
+    job, _ = store_posting(conn, _posting(), now="2026-09-15T10:00:00Z")
+
+    assert latest_detail_fetches_for_jobs(conn, []) == {}
+    # A job with no attempts is absent, so callers can tell "never checked".
+    assert latest_detail_fetches_for_jobs(conn, [job.id]) == {}
+    assert latest_detail_fetches_for_jobs(conn, [job.id, job.id]) == {}

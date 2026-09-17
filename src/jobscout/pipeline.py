@@ -17,6 +17,7 @@ from .collectors.linkedin_details import DetailItem, DetailResult
 from .config import Settings, is_safe_to_store
 from .db import (
     create_search_run,
+    deactivate_job,
     finish_search_run,
     get_job,
     insert_detail_fetch,
@@ -269,6 +270,7 @@ class DetailIngestOutcome:
     failed: int = 0
     changed: int = 0
     preserved: int = 0
+    deactivated: int = 0
     job_ids: list[int] = field(default_factory=list)
     raw_document_ids: list[int] = field(default_factory=list)
     notes: str | None = None
@@ -285,6 +287,7 @@ class DetailIngestOutcome:
             "failed": self.failed,
             "changed": self.changed,
             "preserved": self.preserved,
+            "deactivated": self.deactivated,
             "job_ids": list(self.job_ids),
             "raw_document_ids": list(self.raw_document_ids),
             "notes": self.notes,
@@ -416,6 +419,9 @@ def ingest_detail_results(
                 run_id=run.id,
                 source="linkedin",
                 url=item.url,
+                # Carry the already-sanitized redirect target through to
+                # provenance; ``None`` means no redirect was observed.
+                final_url=item.final_url,
                 status=item.status,
                 http_status=item.http_status,
                 content_status=str(content_status),
@@ -433,6 +439,13 @@ def ingest_detail_results(
                 notes=item.notes,
             ),
         )
+
+        # A definitive 404/410 proves the posting is gone: hide it from the
+        # default listings without deleting its history. Only FAILED results
+        # carrying that machine-readable status qualify, so transient or
+        # access failures never change a job's lifecycle.
+        if item.is_definitive_missing and deactivate_job(conn, int(job.id)):
+            outcome.deactivated += 1
 
         if item.status is DetailFetchStatus.OK:
             outcome.enriched += 1
