@@ -93,13 +93,32 @@ def test_score_heuristic_then_rank_and_list(db_path: Path, capsys) -> None:
 
 def test_score_is_idempotent_without_rescore(db_path: Path, capsys) -> None:
     main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
-    args = ["--db", str(db_path), "--profile", str(PROFILE), "score", "--all"]
+    args = [
+        "--db",
+        str(db_path),
+        "--profile",
+        str(PROFILE),
+        "score",
+        "--all",
+        "--scorer",
+        "heuristic",
+    ]
     assert main(args) == EXIT_OK
     capsys.readouterr()
     assert main(args) == EXIT_OK
     assert "scored 0 job(s)" in capsys.readouterr().out
 
-    rescore = ["--db", str(db_path), "--profile", str(PROFILE), "score", "--all", "--rescore"]
+    rescore = [
+        "--db",
+        str(db_path),
+        "--profile",
+        str(PROFILE),
+        "score",
+        "--all",
+        "--scorer",
+        "heuristic",
+        "--rescore",
+    ]
     assert main(rescore) == EXIT_OK
     assert "scored 4 job(s)" in capsys.readouterr().out
 
@@ -111,7 +130,19 @@ def test_score_specific_job_and_unknown_job(db_path: Path, capsys) -> None:
     job_id = json.loads(capsys.readouterr().out)["jobs"][0]["job"]["id"]
 
     assert (
-        main(["--db", str(db_path), "--profile", str(PROFILE), "score", "--job-id", str(job_id)])
+        main(
+            [
+                "--db",
+                str(db_path),
+                "--profile",
+                str(PROFILE),
+                "score",
+                "--job-id",
+                str(job_id),
+                "--scorer",
+                "heuristic",
+            ]
+        )
         == EXIT_OK
     )
     assert f"job #{job_id}" in capsys.readouterr().out

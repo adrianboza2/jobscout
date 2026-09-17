@@ -2,10 +2,9 @@
 
 A **local-first** job search toolkit: it collects public LinkedIn search results
 at very low volume, normalizes and deduplicates them into SQLite, and scores each
-job against a local structured profile. The default scorer is deterministic and
-works offline; two optional scorers are also available — an OpenAI-compatible
-endpoint and a scorer that reuses your already-authenticated OpenCode CLI (no API
-key required).
+job against a local structured profile. The default scorer reuses your already-
+authenticated OpenCode CLI with the free MiMo model; two other scorers are also
+available — a deterministic offline scorer and an OpenAI-compatible endpoint.
 
 Nothing leaves your machine except the requests you explicitly authorize.
 **jobscout never submits job applications.**
@@ -166,6 +165,34 @@ python -m jobscout import-feedback jobscout-feedback.json
 
 There is still no automatic scheduling: importing is a command you run yourself.
 
+Once feedback is imported, `calibrate` produces the evidence of how well the
+model agrees with you:
+
+```bash
+python -m jobscout calibrate                    # each job's latest valid evaluation vs. feedback
+python -m jobscout calibrate --scorer opencode  # only evaluations from that scorer
+python -m jobscout calibrate --json             # machine-readable report
+```
+
+`calibrate` is **read-only and offline**: it opens the database read-only
+(`mode=ro`, `PRAGMA query_only`), issues only `SELECT` statements, and never
+creates the database. It never adjusts prompts, weights, or scores — it only
+produces evidence. It compares the model recommendation with the human decision
+through one explicit mapping:
+
+| Model | Human |
+|-------|-------|
+| `apply` | `apply` |
+| `consider` | `consider` |
+| `skip` | `reject` |
+
+`need_more_info` is **not** part of the three-way agreement: it is reported
+separately as an unresolved category and never silently becomes `skip`. The
+report shows comparable samples, exact agreement, the confusion matrix,
+unresolved counts, and the `overall_score` distribution by human decision. A
+decision with no valid evaluation (`status = 'ok'`) is counted separately and
+stays out of the agreement math.
+
 ### Link evidence (detail)
 
 Each offer shows a **link evidence** line next to its title, kept apart from the
@@ -210,6 +237,7 @@ subcommand), and `--version`.
 | `runs [--limit N]` | Recent search runs and stored counts. |
 | `dashboard [--output PATH] [--top N]` | Write a self-contained local HTML report (read-only, offline). |
 | `import-feedback PATH [--project-id ID]` | Store a dashboard feedback export in SQLite (offline, idempotent). |
+| `calibrate [--scorer heuristic\|llm\|opencode]` | Compare each job's latest valid evaluation with imported human feedback (read-only, offline). |
 
 Exit codes: `0` success, `1` error, `2` refusal (collector disabled, access
 denied, or a request that was intentionally not performed).
@@ -257,6 +285,14 @@ python -m jobscout import-feedback jobscout-feedback.json --json     # machine-r
 python -m jobscout import-feedback old-export.json --project-id ID   # accept a moved database's export
 ```
 
+Calibration report (offline, read-only):
+
+```bash
+python -m jobscout calibrate                          # all imported feedback
+python -m jobscout calibrate --scorer heuristic       # only one scorer's evaluations
+python -m jobscout calibrate --json                   # machine-readable report
+```
+
 ## Scoring
 
 All three scorers return the same explainable shape: `overall_score` (0-100),
@@ -268,9 +304,9 @@ score is auditable after the fact.
 
 | Scorer | When to use it | Requirements |
 |--------|----------------|--------------|
-| `heuristic` (default) | Always available, deterministic, dependency-free | none |
+| `heuristic` | Always available, deterministic, dependency-free | none |
 | `llm` | Any OpenAI-compatible `/chat/completions` endpoint | `JOBSCOUT_LLM_BASE_URL` and `JOBSCOUT_LLM_API_KEY` |
-| `opencode` | You already use OpenCode locally and prefer not to manage a key | an installed, authenticated `opencode` CLI |
+| `opencode` (default) | You already use OpenCode locally and prefer not to manage a key | an installed, authenticated `opencode` CLI |
 
 ### Heuristic (offline)
 
@@ -302,6 +338,9 @@ opencode auth login
 # Default free model: opencode/mimo-v2.5-free
 python -m jobscout score --all --scorer opencode --profile profile.yaml
 ```
+
+When `--scorer` is omitted, OpenCode with MiMo is used. For an explicit offline
+evaluation, use `--scorer heuristic`.
 
 It runs `opencode run --pure --model <model> [--variant minimal] --format json
 <prompt>` as a subprocess argument array — never through a shell. The executable

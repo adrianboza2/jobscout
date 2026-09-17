@@ -1847,6 +1847,8 @@ def test_fetch_details_fixture_smoke_then_score_and_rank(
                 "score",
                 "--all",
                 "--rescore",
+                "--scorer",
+                "heuristic",
                 "--json",
             ]
         )

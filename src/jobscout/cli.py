@@ -8,9 +8,10 @@ Commands
 ``fetch-details``    bounded, explicitly opted-in job-detail enrichment
 ``list``             recent jobs with their latest score
 ``rank``             jobs ordered by score
-``score``            evaluate jobs offline, via an LLM endpoint, or via OpenCode CLI
+``score``            evaluate jobs via OpenCode CLI (default), offline, or an LLM endpoint
 ``keyword-plan``     list the bounded keyword families and the command per query (offline)
 ``import-feedback``  store a dashboard feedback export in SQLite (offline, local)
+``calibrate``        compare the latest valid evaluations with imported human feedback (offline)
 
 Exit codes: ``0`` success, ``1`` error, ``2`` refusal (collector disabled,
 access denied, or an unsafe request that was intentionally not performed).
@@ -33,6 +34,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import __version__
+from .calibration import CalibrationError, build_report
 from .collectors.base import CollectorDisabledError, CollectorError
 from .collectors.fixtures import FixtureDetailTransport, load_detail_fixture
 from .collectors.linkedin import LinkedInSearchConfig, plan_search_urls, search_linkedin
@@ -360,7 +362,12 @@ def build_parser() -> argparse.ArgumentParser:
     selection = score_parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--job-id", type=int, action="append", help="job id (repeatable)")
     selection.add_argument("--all", action="store_true", help="select every active job")
-    score_parser.add_argument("--scorer", choices=SCORER_CHOICES, default=ScorerName.HEURISTIC.value)
+    score_parser.add_argument(
+        "--scorer",
+        choices=SCORER_CHOICES,
+        default=ScorerName.OPENCODE.value,
+        help="scorer backend (default: OpenCode with the configured MiMo model)",
+    )
     score_parser.add_argument("--limit", type=int, default=None)
     score_parser.add_argument(
         "--rescore", action="store_true", help="re-evaluate jobs that already have a score"
@@ -438,6 +445,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     feedback_parser.set_defaults(handler=cmd_import_feedback)
+
+    calibrate_parser = add_common(
+        subparsers.add_parser(
+            "calibrate",
+            help=(
+                "compare the latest valid evaluations with imported human feedback "
+                "(read-only, offline)"
+            ),
+        )
+    )
+    calibrate_parser.add_argument(
+        "--scorer",
+        choices=SCORER_CHOICES,
+        default=None,
+        help=(
+            "only compare evaluations from this scorer (default: each job's latest "
+            "valid evaluation, regardless of scorer)"
+        ),
+    )
+    calibrate_parser.set_defaults(handler=cmd_calibrate)
 
     return parser
 
@@ -1083,6 +1110,48 @@ def cmd_import_feedback(args: argparse.Namespace, settings: Settings) -> int:
         as_json=as_json,
         text=text,
     )
+    return EXIT_OK
+
+
+def cmd_calibrate(args: argparse.Namespace, settings: Settings) -> int:
+    """Report model-vs-human agreement without changing anything.
+
+    The database is opened read-only (``mode=ro`` plus ``PRAGMA query_only``) and
+    every statement is a ``SELECT``: no evaluation, feedback row, prompt, profile,
+    or score is ever written, and no database is created. A missing database is a
+    user-facing error (there is nothing to report yet); an initialized but empty
+    database still produces a zero report, so "no data" is visible rather than
+    mistaken for a failure.
+    """
+    db_path = Path(settings.db_path)
+    missing_message = (
+        f"no database found at {db_path}; run 'jobscout init-db', ingest a fixture "
+        "or a search, score some jobs, and import feedback before calibrating"
+    )
+    if str(db_path) != ":memory:" and not db_path.is_file():
+        _write_line(missing_message, stream=sys.stderr)
+        return EXIT_ERROR
+
+    conn = connect_readonly(db_path)
+    if conn is None:
+        _write_line(missing_message, stream=sys.stderr)
+        return EXIT_ERROR
+    try:
+        try:
+            report = build_report(conn, scorer=getattr(args, "scorer", None))
+        except CalibrationError as exc:
+            _write_line(f"calibration error: {exc}", stream=sys.stderr)
+            return EXIT_ERROR
+        except sqlite3.Error as exc:
+            _write_line(
+                f"calibration error: database at {db_path} could not be read: {exc}",
+                stream=sys.stderr,
+            )
+            return EXIT_ERROR
+    finally:
+        conn.close()
+
+    _emit(report.to_dict(), as_json=getattr(args, "as_json", False), text=report.to_text())
     return EXIT_OK
 
 
