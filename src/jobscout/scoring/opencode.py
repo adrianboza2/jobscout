@@ -80,7 +80,7 @@ from .profile import Profile
 from .schema import parse_llm_evaluation
 
 SCORER_NAME = ScorerName.OPENCODE
-OPENCODE_PROMPT_VERSION = "opencode-v4-balanced-recommendations"
+OPENCODE_PROMPT_VERSION = "opencode-v5-seniority-aware"
 OPENCODE_MAX_JOB_TEXT_CHARS = 6_000
 MAX_ERROR_CHARS = 500
 
@@ -158,12 +158,23 @@ OPENCODE_OUTPUT_CONTRACT = (
     "  unknowns, evidence, or any other keys.\n"
     "- Use one numeric overall_score from 0 to 100, one recommendation from\n"
     "  apply, consider, skip, or need_more_info, and confidence from 0 to 1.\n"
-    "- Calibrate recommendations for a junior candidate: use consider for a\n"
-    "  plausible stretch role with transferable skills, even when experience\n"
-    "  or one non-core technology is missing. Use skip only for a clear hard\n"
-    "  blocker, legal requirement, explicit dealbreaker, or a role clearly\n"
-    "  above the candidate's seniority. Do not treat every preferred or stated\n"
-    "  experience requirement as an automatic hard blocker.\n"
+    "- Calibrate recommendations for a junior candidate and separate hard\n"
+    "  requirements from preferences. A stated preference, or a reasonable\n"
+    "  junior or stretch role, should tend to consider or apply even when it\n"
+    "  asks for more experience than the candidate has.\n"
+    "- Apply the seniority policy: treat 5 or more years of required\n"
+    "  experience, an explicit senior, staff, principal, lead, or manager\n"
+    "  title, or leadership and architectural ownership as core duties as\n"
+    "  strong penalties. Choose skip when one of those clearly defines the\n"
+    "  role; a passing mention of seniority in an otherwise junior or stretch\n"
+    "  posting is not a hard skip.\n"
+    "- Do not skip solely because one or two required technologies are\n"
+    "  unfamiliar. Treat them as learnable gaps when the main role is still\n"
+    "  Cloud, DevOps, DevSecOps, or Platform engineering.\n"
+    "- If most of the required core stack is unfamiliar, treat it as a\n"
+    "  material mismatch and lower both the recommendation and the score.\n"
+    "- Keep explicit dealbreakers, legal requirements, and the user's\n"
+    "  SOC/rotating-shift exclusions as hard limitations.\n"
     "- Keep the JSON compact: single line or minimal whitespace, no\n"
     "  pretty-printing, and no repeating the schema in your answer.\n"
     "- Keep \"rationale\" to one short sentence of at most 160 characters.\n"

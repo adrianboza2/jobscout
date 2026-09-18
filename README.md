@@ -94,6 +94,71 @@ La recolección real está **deshabilitada por defecto** y exige
   solicitud ni escritura.
 - Para probar sin red, usa `--fixture`: nunca toca la red.
 
+## Flujo operativo recomendado (uso real)
+
+Este es el ciclo manual, de punta a punta, para pasar de un perfil a ofertas
+revisadas. Ninguna etapa se ejecuta sola y **jobscout nunca postula**: cada
+comando que toca la red o el modelo lo lanzas tú.
+
+Prepara el perfil real antes de cualquier barrido:
+
+- Tu perfil local es **`profile.yaml`**, seleccionado con `JOBSCOUT_PROFILE_PATH`
+  en `.env` (el valor por defecto es `profile.example.yaml`).
+- `profile.example.yaml` es **solo una plantilla**: cópialo a `profile.yaml` y
+  edítalo. No conviertas la plantilla en tu perfil real ni la subas a Git.
+
+| # | Etapa | Comando seguro | Qué hace | ¿Automático? |
+|---|-------|----------------|----------|--------------|
+| 0 | Preparar perfil | `cp profile.example.yaml profile.yaml` (POSIX) o `Copy-Item profile.example.yaml profile.yaml` (PowerShell), y `JOBSCOUT_PROFILE_PATH=profile.yaml` en `.env` | Defines rol objetivo, seniority, skills, dealbreakers y exclusiones. | Decisión humana |
+| 1 | Barrido controlado | `python -m jobscout keyword-plan` y luego `python -m jobscout search-linkedin --keywords "..." --dry-run`; para ejecutarlo, cambia `--dry-run` por `--confirm-network` | Descubre ofertas nuevas. `keyword-plan` es offline; cada búsqueda real es un acto humano explícito. | Semiautomático: autorizas cada consulta |
+| 2 | Enriquecer | `python -m jobscout fetch-details --max-items 10 --confirm-network` (o `--fixture` para trabajar offline) | Trae la descripción completa de cada oferta, acotado en volumen. | Semiautomático: autorizas cada corrida |
+| 3 | Puntuar con MiMo | `python -m jobscout score --all --scorer opencode` | El puntuador predeterminado (OpenCode + MiMo) evalúa solo las ofertas que aún no tienen evaluación. | El puntaje es automático; la decisión de postular no |
+| 4 | Generar dashboard | `python -m jobscout dashboard --top 25` | Escribe un HTML local con ofertas, puntajes, evidencia del enlace y filtros de preferencia. | Automático y de solo lectura |
+| 5 | Revisar ofertas | Abre `reports/jobscout-dashboard.html` | Tú marcas **Aplicar / Revisar / Descartar** en el navegador. | Decisión humana exclusivamente |
+| 6 | Exportar/importar feedback | Exporta el JSON desde el tablero y ejecuta `python -m jobscout import-feedback jobscout-feedback.json` | Tus decisiones pasan de `localStorage` a la tabla `job_feedback` de SQLite. | Importar es automático una vez que lo invocas |
+| 7 | Calibrar | `python -m jobscout calibrate --scorer opencode` | Compara la recomendación del modelo con tu decisión humana importada. Solo lectura; no ajusta nada. | Automático y de solo lectura |
+| 8 | Analizar keywords | `python -m jobscout dashboard` → sección *rendimiento de palabras clave* | Tras varios ciclos, decides qué familias de búsqueda rinden y cuáles descartar. | Decisión humana |
+
+Notas del ciclo:
+
+- **Nunca se postula automáticamente.** Tampoco hay programador de tareas ni
+  notificaciones: cada corrida la invocas tú.
+- `--rescore` **no es un paso diario**: re-evalúa ofertas ya puntuadas y solo hace
+  falta cuando cambias el perfil o el prompt. Para las ofertas nuevas, el ciclo
+  normal es `score --all --scorer opencode`, que evalúa justo las que todavía no
+  tienen puntaje.
+- `fetch-details` no vuelve a puntuar por sí solo; el paso 3 cierra el
+  enriquecimiento.
+- Cada evaluación queda versionada: guarda el `prompt_version` del puntuador y el
+  `input_fingerprint` del perfil, así que un cambio de política es distinguible
+  sin reescribir el historial.
+
+### Criterio de seniority y tecnologías (prompt v5)
+
+El prompt de OpenCode está versionado como **`opencode-v5-seniority-aware`**. La
+política que aplica MiMo es:
+
+- **Penaliza fuerte, y usa `skip` cuando define el rol:** 5 o más años de
+  experiencia exigidos, títulos explícitos `senior`, `staff`, `principal`,
+  `lead` o `manager`, y liderazgo u ownership arquitectónico como
+  responsabilidad central. Una mención de pasada de "senior" en una oferta por lo
+  demás junior o *stretch* no es un `skip` duro.
+- **No bloquea por una o dos tecnologías faltantes:** si el rol principal sigue
+  siendo Cloud / DevOps / DevSecOps / Platform, esas ausencias se tratan como
+  brechas aprendibles.
+- **Sí bloquea el stack principal equivocado:** si la mayoría del stack central
+  pedido no coincide con tu perfil, es un *mismatch* material y la recomendación y
+  el puntaje bajan mucho.
+- **Distingue requisitos duros de preferencias:** un rol junior o *stretch*
+  razonable tiende a `consider` o `apply` aunque pida más experiencia que la
+  disponible, salvo los umbrales fuertes anteriores.
+- **Mantiene los dealbreakers** y las exclusiones de SOC/turnos rotativos, que
+  además se calculan aparte en los **filtros de preferencia** (offline y sin tocar
+  el puntaje ni la evaluación guardada).
+
+El formato de salida no cambia: un único objeto JSON con `overall_score`,
+`recommendation`, `confidence` y `rationale`.
+
 ## Tablero local (dashboard)
 
 `dashboard` lee la base SQLite existente y escribe **un solo archivo HTML**
@@ -577,8 +642,8 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
   cada query es un `search-linkedin` explícito con `--confirm-network`.
 - Las métricas humanas del tablero (frecuencia de aprobación) requieren importar
   la exportación de feedback; mientras no se importe, quedan en *sin dato*. La
-  comparación/calibración entre recomendación del modelo y decisión humana sigue
-  pendiente (ver `NEXT_STEPS.md`, Prioridad 4).
+  comparación entre recomendación del modelo y decisión humana está disponible con
+  `calibrate` (solo lectura, sin ajustar prompts ni puntajes).
 - **No hay programador de tareas, notificaciones ni postulación automática** — por
   diseño. La importación de feedback existe, pero solo se ejecuta cuando invocas
   `import-feedback`.

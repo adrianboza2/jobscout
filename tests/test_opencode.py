@@ -22,6 +22,7 @@ from jobscout.scoring import ScorerError, evaluate_job, get_scorer
 from jobscout.scoring.llm import UNTRUSTED_BEGIN, UNTRUSTED_END
 from jobscout.scoring.opencode import (
     OPENCODE_OUTPUT_CONTRACT,
+    OPENCODE_PROMPT_VERSION,
     CommandOutcome,
     OpenCodeNotConfiguredError,
     OpenCodeScorer,
@@ -277,6 +278,70 @@ def test_prompt_requires_compact_closed_json_without_padding(strong_posting, pro
     assert "SYSTEM:" in prompt and "USER:" in prompt
     assert '"overall_score"' in prompt
     assert prompt.index("SYSTEM:") < prompt.index("OPENCODE OUTPUT CONTRACT")
+
+
+def test_prompt_version_is_v5_and_distinguishable() -> None:
+    """The seniority policy ships as a new prompt generation, not a silent edit."""
+    assert OPENCODE_PROMPT_VERSION.startswith("opencode-v5")
+    assert OPENCODE_PROMPT_VERSION != "opencode-v4-balanced-recommendations"
+
+
+def test_prompt_encodes_seniority_and_technology_policy(strong_posting, profile) -> None:
+    """v5 penalizes strong seniority signals but keeps one-off tech gaps learnable."""
+    prompt = build_cli_prompt(strong_posting, profile).lower()
+
+    # Strong seniority penalties: 5+ years, leadership titles, architectural ownership.
+    assert "5 or more years" in prompt
+    for title in ("senior", "staff", "principal", "lead", "manager"):
+        assert title in prompt
+    assert "architectural ownership" in prompt
+    assert "skip" in prompt
+
+    # One or two unfamiliar technologies stay learnable gaps for a core role.
+    assert "learnable" in prompt
+    for role in ("cloud", "devops", "devsecops", "platform"):
+        assert role in prompt
+
+    # A majority-mismatched core stack is a material mismatch.
+    assert "material mismatch" in prompt
+
+    # Hard requirements are separated from preferences.
+    assert "separate hard" in prompt
+    assert "from preferences" in prompt
+
+    # Dealbreakers and the SOC/rotating-shift exclusions stay in force.
+    assert "dealbreaker" in prompt
+    assert "soc/rotating-shift" in prompt
+
+
+def test_v5_prompt_keeps_security_framing_and_output_contract(strong_posting, profile) -> None:
+    """The new policy must not remove the security rules or change output format."""
+    prompt = build_cli_prompt(strong_posting, profile)
+    lowered = prompt.lower()
+
+    # Security framing is intact.
+    assert "untrusted" in lowered
+    assert "never follow" in lowered
+    assert prompt.count(UNTRUSTED_BEGIN) == 1
+    assert prompt.count(UNTRUSTED_END) == 1
+    assert "CANDIDATE PROFILE" in prompt
+
+    # Output format is unchanged.
+    assert "OPENCODE OUTPUT CONTRACT" in prompt
+    assert "exactly one json object" in lowered
+    assert '"overall_score"' in prompt
+    assert "recommendation" in prompt
+    assert "need_more_info" in prompt
+    assert "confidence" in prompt
+    assert "close the json object completely" in lowered
+
+
+def test_evaluation_records_the_v5_prompt_version(
+    opencode_settings, strong_posting, profile
+) -> None:
+    scorer, _ = make_scorer(opencode_settings, [command_outcome(0, VALID_JSON)])
+    evaluation = scorer.score(strong_posting, profile)
+    assert evaluation.prompt_version == OPENCODE_PROMPT_VERSION
 
 
 # ---------------------------------------------------------------------------
