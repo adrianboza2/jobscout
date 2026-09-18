@@ -18,8 +18,10 @@ from pathlib import Path
 from .keywords import UnknownKeywordFamily, get_family
 from .url_policy import (
     UrlPolicyError,
+    validate_getmanfred_url,
     validate_linkedin_url,
     validate_llm_base_url,
+    validate_tecnoempleo_url,
 )
 
 PREFIX = "JOBSCOUT_"
@@ -31,6 +33,21 @@ DEFAULT_LINKEDIN_SEARCH_URL = (
 DEFAULT_LINKEDIN_DETAIL_URL = (
     "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
 )
+#: GetManfred advertises this sitemap in its public ``robots.txt`` (which also
+#: allows ``/``), and its entries are individual offer detail URLs. Inventory
+#: mode reads it without any keyword fan-out.
+DEFAULT_GETMANFRED_SITEMAP_URL = "https://www.getmanfred.com/sitemap-offers.xml"
+DEFAULT_GETMANFRED_OFFER_PATH_PREFIX = "/ofertas-empleo/"
+#: Tecnoempleo's public, server-rendered keyword search lives under this path.
+#: Its ``robots.txt`` allows it (it only disallows private/API/feed paths such
+#: as ``/alertas-empleo-rss.php`` and ``/profesionales/``), which the collector
+#: re-checks at runtime before any request.
+DEFAULT_TECNOEMPLEO_SEARCH_URL = "https://www.tecnoempleo.com/ofertas-trabajo/"
+DEFAULT_TECNOEMPLEO_ROBOTS_URL = "https://www.tecnoempleo.com/robots.txt"
+#: Tecnoempleo offer detail links carry this stable path fragment; the search
+#: page parser uses it to recognise an offer anchor without relying on volatile
+#: CSS class names.
+DEFAULT_TECNOEMPLEO_OFFER_PATH_MARKER = "rf-"
 DEFAULT_LLM_MODEL = "deepseek-v4.1-flash"
 
 # OpenCode CLI scorer. The model id matches the locally configured OpenCode
@@ -356,6 +373,21 @@ class Settings:
     # stored verbatim (see ``collectors.linkedin_details._record_detail_response``).
     detail_max_bytes: int = 524_288
 
+    # GetManfred public sitemap inventory (opt-in, disabled by default).
+    getmanfred_sitemap_url: str = DEFAULT_GETMANFRED_SITEMAP_URL
+    getmanfred_offer_path_prefix: str = DEFAULT_GETMANFRED_OFFER_PATH_PREFIX
+    #: Bounded number of child sitemaps to follow when the configured URL is a
+    #: sitemap index rather than a urlset.
+    getmanfred_max_documents: int = 1
+    getmanfred_max_items: int = 40
+
+    # Tecnoempleo public keyword search (opt-in, disabled by default).
+    tecnoempleo_search_url: str = DEFAULT_TECNOEMPLEO_SEARCH_URL
+    tecnoempleo_robots_url: str = DEFAULT_TECNOEMPLEO_ROBOTS_URL
+    tecnoempleo_offer_path_marker: str = DEFAULT_TECNOEMPLEO_OFFER_PATH_MARKER
+    tecnoempleo_max_pages: int = 2
+    tecnoempleo_max_items: int = 40
+
     # LLM scorer (optional; never required for tests)
     llm_base_url: str | None = None
     llm_api_key: str | None = None
@@ -391,6 +423,22 @@ class Settings:
         validate_bounded_int(
             self.detail_max_items, name="detail_max_items", hard_max=HARD_MAX_ITEMS
         )
+        validate_bounded_int(
+            self.getmanfred_max_items, name="getmanfred_max_items", hard_max=HARD_MAX_ITEMS
+        )
+        validate_bounded_int(
+            self.getmanfred_max_documents, name="getmanfred_max_documents", hard_max=HARD_MAX_PAGES
+        )
+        validate_bounded_int(
+            self.tecnoempleo_max_items, name="tecnoempleo_max_items", hard_max=HARD_MAX_ITEMS
+        )
+        validate_bounded_int(
+            self.tecnoempleo_max_pages, name="tecnoempleo_max_pages", hard_max=HARD_MAX_PAGES
+        )
+        if not self.getmanfred_offer_path_prefix.startswith("/"):
+            raise ConfigError("getmanfred_offer_path_prefix must start with '/'")
+        if not self.tecnoempleo_offer_path_marker.strip():
+            raise ConfigError("tecnoempleo_offer_path_marker must be non-empty")
         # Configured endpoints are validated here so no CLI flag, environment
         # variable, or library caller can point the collectors or the LLM
         # scorer at a non-HTTPS scheme, an unrelated host, or a URL carrying
@@ -398,6 +446,9 @@ class Settings:
         try:
             validate_linkedin_url(self.linkedin_search_url, name="linkedin_search_url")
             validate_linkedin_url(self.linkedin_detail_url, name="linkedin_detail_url")
+            validate_getmanfred_url(self.getmanfred_sitemap_url, name="getmanfred_sitemap_url")
+            validate_tecnoempleo_url(self.tecnoempleo_search_url, name="tecnoempleo_search_url")
+            validate_tecnoempleo_url(self.tecnoempleo_robots_url, name="tecnoempleo_robots_url")
             if self.llm_base_url:
                 validate_llm_base_url(self.llm_base_url, name="llm_base_url")
         except UrlPolicyError as exc:
@@ -485,6 +536,25 @@ class Settings:
             detail_max_items=_env_int(merged, "DETAIL_MAX_ITEMS", 20),
             detail_timeout_seconds=_env_float(merged, "DETAIL_TIMEOUT_SECONDS", 20.0),
             detail_max_bytes=_env_int(merged, "DETAIL_MAX_BYTES", 524_288),
+            getmanfred_sitemap_url=_env_str(
+                merged, "GETMANFRED_SITEMAP_URL", DEFAULT_GETMANFRED_SITEMAP_URL
+            ),
+            getmanfred_offer_path_prefix=_env_str(
+                merged, "GETMANFRED_OFFER_PATH_PREFIX", DEFAULT_GETMANFRED_OFFER_PATH_PREFIX
+            ),
+            getmanfred_max_documents=_env_int(merged, "GETMANFRED_MAX_DOCUMENTS", 1),
+            getmanfred_max_items=_env_int(merged, "GETMANFRED_MAX_ITEMS", 40),
+            tecnoempleo_search_url=_env_str(
+                merged, "TECNOEMPLEO_SEARCH_URL", DEFAULT_TECNOEMPLEO_SEARCH_URL
+            ),
+            tecnoempleo_robots_url=_env_str(
+                merged, "TECNOEMPLEO_ROBOTS_URL", DEFAULT_TECNOEMPLEO_ROBOTS_URL
+            ),
+            tecnoempleo_offer_path_marker=_env_str(
+                merged, "TECNOEMPLEO_OFFER_PATH_MARKER", DEFAULT_TECNOEMPLEO_OFFER_PATH_MARKER
+            ),
+            tecnoempleo_max_pages=_env_int(merged, "TECNOEMPLEO_MAX_PAGES", 2),
+            tecnoempleo_max_items=_env_int(merged, "TECNOEMPLEO_MAX_ITEMS", 40),
             llm_base_url=_env_opt_str(merged, "LLM_BASE_URL"),
             llm_api_key=_env_opt_str(merged, "LLM_API_KEY"),
             llm_model=_env_str(merged, "LLM_MODEL", DEFAULT_LLM_MODEL),

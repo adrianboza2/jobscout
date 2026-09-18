@@ -21,6 +21,7 @@ from jobscout.db import (
     find_duplicate,
     get_feedback,
     get_job,
+    get_search_run,
     init_db,
     insert_detail_fetch,
     insert_evaluation,
@@ -114,6 +115,57 @@ def _create_v3_database(path: Path) -> sqlite3.Connection:
     return connection
 
 
+#: The historical v4 shape of ``search_runs``/``search_run_items`` (no
+#: ``cycle_id``/``position_kind``). Kept verbatim so the v5 migration test
+#: exercises a real pre-v5 table instead of a current one.
+V4_SEARCH_RUNS_SQL = """
+CREATE TABLE search_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL,
+    label TEXT,
+    query TEXT,
+    location TEXT,
+    params_json TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    pages_fetched INTEGER NOT NULL DEFAULT 0,
+    items_found INTEGER NOT NULL DEFAULT 0,
+    new_jobs INTEGER NOT NULL DEFAULT 0,
+    duplicate_jobs INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    raw_document_id INTEGER,
+    notes TEXT
+);
+"""
+
+V4_SEARCH_RUN_ITEMS_SQL = """
+CREATE TABLE search_run_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES search_runs(id) ON DELETE CASCADE,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    decision TEXT NOT NULL DEFAULT 'new',
+    rank_in_run INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_run_items_job ON search_run_items(job_id);
+"""
+
+
+def _create_v4_database(path: Path) -> sqlite3.Connection:
+    """Build a database that looks like a real pre-v5 install."""
+    connection = connect(path)
+    connection.executescript(SCHEMA_SQL)
+    connection.executescript(
+        "DROP TABLE search_run_items; DROP TABLE search_runs;"
+        + V4_SEARCH_RUNS_SQL
+        + V4_SEARCH_RUN_ITEMS_SQL
+    )
+    connection.execute("PRAGMA user_version = 4")
+    connection.commit()
+    return connection
+
+
 def _columns(connection: sqlite3.Connection, table: str) -> dict[str, int]:
     """Column name -> ``notnull`` flag, for schema-shape assertions."""
     return {
@@ -158,7 +210,7 @@ def test_init_db_rejects_newer_schema(conn) -> None:
 
 
 def test_new_database_has_nullable_final_url_column(conn) -> None:
-    assert SCHEMA_VERSION == 4
+    assert SCHEMA_VERSION == 5
     columns = _columns(conn, "job_detail_fetches")
     assert "final_url" in columns
     # Nullable: a fresh install never invents a redirect target.
@@ -239,6 +291,63 @@ def test_migration_v4_adds_final_url_without_losing_history(tmp_path: Path) -> N
         assert legacy.http_status == 404
         # The migrated column is NULL for history; OL-5 fills it later.
         assert legacy.final_url is None
+    finally:
+        connection.close()
+
+
+def test_migration_v5_adds_cycle_and_position_without_losing_history(
+    tmp_path: Path,
+) -> None:
+    connection = _create_v4_database(tmp_path / "legacy-v4.sqlite3")
+    try:
+        job, _ = store_posting(
+            connection,
+            _posting(source_job_id="3922222222"),
+            now="2026-09-15T10:00:00Z",
+        )
+        connection.execute(
+            """
+            INSERT INTO search_runs (
+                provider, label, query, location, params_json, status, started_at,
+                new_jobs
+            ) VALUES ('linkedin', 'legacy:kw', 'kw', 'BA', '{}', 'completed', ?, 1)
+            """,
+            ("2026-09-15T10:00:00Z",),
+        )
+        run_id = int(connection.execute("SELECT MAX(id) FROM search_runs").fetchone()[0])
+        connection.execute(
+            """
+            INSERT INTO search_run_items (run_id, job_id, decision, rank_in_run, created_at)
+            VALUES (?, ?, 'new', 3, ?)
+            """,
+            (run_id, job.id, "2026-09-15T10:00:00Z"),
+        )
+        connection.commit()
+
+        # The pre-migration tables genuinely lack the new columns.
+        assert "cycle_id" not in _columns(connection, "search_runs")
+        assert "position_kind" not in _columns(connection, "search_run_items")
+
+        assert init_db(connection) == SCHEMA_VERSION
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        assert _columns(connection, "search_runs")["cycle_id"] == 0
+        assert _columns(connection, "search_run_items")["position_kind"] == 0
+
+        # Re-running init_db is a no-op, not a second migration.
+        assert init_db(connection) == SCHEMA_VERSION
+
+        # Historical rows survive and read as NULL, never as a guessed value.
+        assert count_jobs(connection) == 1
+        run = get_search_run(connection, run_id)
+        assert run is not None
+        assert run.query == "kw"
+        assert run.cycle_id is None
+        item = connection.execute(
+            "SELECT position_kind, rank_in_run FROM search_run_items WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        assert item["position_kind"] is None
+        assert item["rank_in_run"] == 3
     finally:
         connection.close()
 

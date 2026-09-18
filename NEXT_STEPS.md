@@ -101,9 +101,36 @@ on usability rather than decorative expansion.
 
 ## Priority 6 — Expand sources
 
-Add other job platforms through isolated source adapters. Each adapter should
-share the same normalized job contract, deduplication rules, provenance model,
-rate limits, and fail-closed behavior.
+Status: partially implemented and verified offline.
+
+Add other job platforms through isolated source adapters. Each adapter shares the
+same normalized job contract, deduplication rules, provenance model, rate limits,
+and fail-closed behavior.
+
+Implemented:
+
+- (done) provider-agnostic ingestion (`provider` is no longer hardcoded to
+  LinkedIn), preserving LinkedIn and fixture behavior;
+- (done) additive schema v5 provenance: `search_runs.cycle_id` and
+  `search_run_items.position_kind` (nullable, historical rows untouched);
+- (done) provider-scoped keyword analytics keyed by `provider|keyword|cycle`, so
+  the same term is never merged across platforms or cycles;
+- (done) GetManfred public sitemap inventory adapter (`search-getmanfred`): no
+  keyword fan-out, `position_kind = none`, fail-closed on unrecognized XML;
+- (done) Tecnoempleo public server-rendered search adapter
+  (`search-tecnoempleo`): `position_kind = search_rank`, runtime `robots.txt`
+  enforcement, fail-closed on unsupported markup;
+- (done) InfoJobs blocked at the adapter level with no CLI command.
+
+Still open:
+
+- no live run has been performed for either new provider; both are verified only
+  against fixtures and injected transports;
+- Tecnoempleo's `robots.txt` disallows automated/AI crawlers, so its HTML
+  selectors are unverified and must be confirmed manually before a live run;
+- InfoJobs requires an official API authorization and explicit app credentials
+  before any adapter work. The private `candidate/my-infojobs.xhtml` page must
+  never be fetched.
 
 ## Later features
 

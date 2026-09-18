@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
+from .collectors.base import CollectorResult
 from .collectors.fixtures import load_fixture, postings_from_fixture
-from .collectors.linkedin import CollectorResult, LinkedInSearchConfig
 from .collectors.linkedin_details import DetailItem, DetailResult
 from .config import Settings, is_safe_to_store
 from .db import (
@@ -33,6 +33,7 @@ from .models import (
     Job,
     JobDetailFetch,
     JobPosting,
+    PositionKind,
     RawDocument,
     RawDocumentKind,
     SearchRun,
@@ -98,10 +99,24 @@ def ingest_postings(
     notes: str | None = None,
     error: str | None = None,
     items_found: int | None = None,
+    cycle_id: str | None = None,
+    position_kind: PositionKind | str | None = None,
     now: str | None = None,
 ) -> IngestOutcome:
-    """Persist normalized postings under a new search run."""
+    """Persist normalized postings under a new search run.
+
+    ``position_kind`` records how ``rank_in_run`` must be read: an ordered search
+    rank, or ``none`` for an inventory that has no result order. When it is
+    ``none`` the stored rank is forced to ``0`` so no caller can mistake sitemap
+    order for relevance.
+    """
     timestamp = now or utcnow_iso()
+    # ``None`` keeps the historical behavior (sequential observation order),
+    # while an explicit ``none`` records "this source has no result order" and
+    # forces rank 0 so sitemap order is never read as relevance.
+    rank_is_meaningful = (
+        position_kind is None or str(position_kind) != str(PositionKind.NONE)
+    )
     run = create_search_run(
         conn,
         SearchRun(
@@ -109,6 +124,7 @@ def ingest_postings(
             label=label,
             query=query,
             location=location,
+            cycle_id=cycle_id,
             params=params or {},
             status=SearchRunStatus.RUNNING,
             started_at=timestamp,
@@ -117,7 +133,7 @@ def ingest_postings(
     )
     outcome = IngestOutcome(run_id=run.id, status=status, raw_document_ids=list(raw_document_ids or []))
 
-    for rank, posting in enumerate(postings, start=1):
+    for index, posting in enumerate(postings, start=1):
         doc_id = posting.raw_document_id
         job, decision = store_posting(conn, posting, now=timestamp, raw_document_id=doc_id)
         if job.id is None:  # pragma: no cover - defensive
@@ -128,7 +144,8 @@ def ingest_postings(
                 run_id=int(run.id),
                 job_id=job.id,
                 decision=decision.kind,
-                rank_in_run=rank,
+                rank_in_run=index if rank_is_meaningful else 0,
+                position_kind=position_kind,
                 created_at=timestamp,
             ),
         )
@@ -163,6 +180,8 @@ def ingest_fixture(
     source: str = "fixture",
     label: str | None = None,
     settings: Settings | None = None,
+    cycle_id: str | None = None,
+    position_kind: PositionKind | str | None = None,
     now: str | None = None,
 ) -> IngestOutcome:
     """Ingest a JSON fixture end to end: raw document, normalize, dedupe, store."""
@@ -204,31 +223,75 @@ def ingest_fixture(
         status=SearchRunStatus.COMPLETED,
         raw_document_ids=raw_ids,
         notes=f"fixture {payload.path.name}: {len(postings)} posting(s) normalized",
+        cycle_id=cycle_id,
+        position_kind=position_kind,
         now=timestamp,
     )
     return outcome
+
+
+def _default_run_params(config: Any, result: CollectorResult) -> dict[str, Any]:
+    """Build run ``params`` for a collector config, without provider coupling.
+
+    A config may expose ``to_run_params(result)`` for exact, adapter-specific
+    provenance. Otherwise the common collector fields are read defensively, so a
+    new adapter that only exposes ``keywords``/``max_pages`` still records a
+    usable run.
+    """
+    builder = getattr(config, "to_run_params", None)
+    if callable(builder):
+        return dict(builder(result))
+    params: dict[str, Any] = {
+        key: getattr(config, key, None)
+        for key in ("keywords", "location", "max_pages", "max_items", "page_size")
+    }
+    params["planned_urls"] = list(result.planned_urls)
+    params["network_enabled"] = result.status is not SearchRunStatus.DRY_RUN
+    return params
 
 
 def ingest_collector_result(
     conn: Any,
     result: CollectorResult,
     *,
-    config: LinkedInSearchConfig,
-    settings: Settings,
+    config: Any | None = None,
+    settings: Settings | None = None,
+    provider: str | None = None,
+    query: str | None = None,
+    location: str | None = None,
+    params: dict[str, Any] | None = None,
     label: str | None = None,
+    cycle_id: str | None = None,
+    position_kind: PositionKind | str | None = None,
     now: str | None = None,
 ) -> IngestOutcome:
-    """Persist a LinkedIn collector result, including refusals and dry runs."""
+    """Persist any provider's collector result, including refusals and dry runs.
+
+    The provider is no longer hardcoded: it is taken from the explicit argument,
+    then the config's ``provider`` attribute, and only then defaults to
+    ``linkedin`` so existing callers keep working unchanged. ``query`` and
+    ``location`` follow the same precedence, and a config that exposes
+    ``to_run_params`` keeps its exact historical run ``params``.
+    """
     timestamp = now or utcnow_iso()
-    params = {
-        "keywords": config.keywords,
-        "location": config.location,
-        "max_pages": config.max_pages,
-        "max_items": config.max_items,
-        "page_size": config.page_size,
-        "planned_urls": list(result.planned_urls),
-        "network_enabled": result.status != SearchRunStatus.DRY_RUN,
-    }
+    resolved_provider = provider or getattr(config, "provider", None) or "linkedin"
+    resolved_query = query if query is not None else getattr(config, "keywords", None)
+    resolved_location = (
+        location if location is not None else getattr(config, "location", None)
+    )
+    resolved_params = (
+        params if params is not None else _default_run_params(config, result)
+    )
+    resolved_position = (
+        position_kind if position_kind is not None else getattr(config, "position_kind", None)
+    )
+    if label is None:
+        label = (
+            f"{resolved_provider}:{resolved_query}"
+            if resolved_query
+            else f"{resolved_provider}:inventory"
+        )
+
     raw_ids = persist_raw_documents(conn, result.raw_documents)
     for posting in result.postings:
         posting.raw_document_id = raw_ids[0] if raw_ids else None
@@ -236,16 +299,18 @@ def ingest_collector_result(
     outcome = ingest_postings(
         conn,
         result.postings,
-        provider="linkedin",
-        query=config.keywords,
-        location=config.location,
-        label=label or f"linkedin:{config.keywords}",
-        params=params,
+        provider=resolved_provider,
+        query=resolved_query,
+        location=resolved_location,
+        label=label,
+        params=resolved_params,
         status=result.status,
         raw_document_ids=raw_ids,
         notes=result.notes,
         error=result.error,
         items_found=result.items_found or len(result.postings),
+        cycle_id=cycle_id,
+        position_kind=resolved_position,
         now=timestamp,
     )
     if result.pages_fetched:

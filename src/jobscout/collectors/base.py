@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
+from ..models import JobPosting, RawDocument, SearchRunStatus
 from ..normalize import html_to_text
 from ..timeutil import utcnow_iso
 from ..url_policy import is_http_scheme, redirect_allowed
@@ -125,6 +126,26 @@ class HttpClient(Protocol):
         body: bytes | None = None,
     ) -> HttpResponse:  # pragma: no cover - protocol definition
         ...
+
+
+@dataclass
+class CollectorResult:
+    """Outcome of one collection attempt (network, dry run, or refusal).
+
+    Shared by every public provider adapter so the ingestion pipeline, run
+    accounting, and fail-closed statuses behave identically regardless of the
+    source. ``postings`` are already-normalized :class:`JobPosting` objects with
+    the adapter's provider set on ``source``.
+    """
+
+    postings: list[JobPosting] = field(default_factory=list)
+    raw_documents: list[RawDocument] = field(default_factory=list)
+    pages_fetched: int = 0
+    items_found: int = 0
+    status: SearchRunStatus = SearchRunStatus.COMPLETED
+    planned_urls: list[str] = field(default_factory=list)
+    notes: str | None = None
+    error: str | None = None
 
 
 def build_redirect_handler():
@@ -393,6 +414,7 @@ __all__ = [
     "AttemptLog",
     "CollectorDisabledError",
     "CollectorError",
+    "CollectorResult",
     "HttpClient",
     "HttpResponse",
     "NotFoundError",

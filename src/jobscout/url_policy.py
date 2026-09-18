@@ -29,7 +29,21 @@ from urllib.parse import urlsplit
 #: Parent domain that owns every LinkedIn host we accept.
 LINKEDIN_PARENT_DOMAIN = "linkedin.com"
 
-#: Only the default HTTPS port is accepted for LinkedIn endpoints.
+#: Parent domains for the other public providers. A configured endpoint must be
+#: ``https`` on one of these hosts (or a subdomain), with no embedded
+#: credentials and the default HTTPS port, exactly like LinkedIn.
+GETMANFRED_PARENT_DOMAIN = "getmanfred.com"
+TECNOEMPLEO_PARENT_DOMAIN = "tecnoempleo.com"
+
+#: Every parent domain the collectors are allowed to talk to. Redirects may only
+#: cross hosts *within* one of these parent domains, never between them.
+PROVIDER_PARENT_DOMAINS: tuple[str, ...] = (
+    LINKEDIN_PARENT_DOMAIN,
+    GETMANFRED_PARENT_DOMAIN,
+    TECNOEMPLEO_PARENT_DOMAIN,
+)
+
+#: Only the default HTTPS port is accepted for provider endpoints.
 _HTTPS_PORT = 443
 
 _ALLOWED_HTTP_SCHEMES = frozenset({"http", "https"})
@@ -74,12 +88,31 @@ def is_linkedin_host(host: str | None) -> bool:
     )
 
 
-def validate_linkedin_url(url: str, *, name: str = "url") -> str:
-    """Validate a configured LinkedIn endpoint and return it unchanged.
+def _is_host_under(host: str | None, parent: str) -> bool:
+    if not host:
+        return False
+    candidate = host.strip().lower().rstrip(".")
+    return candidate == parent or candidate.endswith(f".{parent}")
 
-    Rejects non-HTTPS schemes, other hosts, embedded credentials, and any port
-    other than the default HTTPS port.
-    """
+
+def is_getmanfred_host(host: str | None) -> bool:
+    """Return whether ``host`` is ``getmanfred.com`` or a ``*.getmanfred.com`` host."""
+    return _is_host_under(host, GETMANFRED_PARENT_DOMAIN)
+
+
+def is_tecnoempleo_host(host: str | None) -> bool:
+    """Return whether ``host`` is ``tecnoempleo.com`` or a ``*.tecnoempleo.com`` host."""
+    return _is_host_under(host, TECNOEMPLEO_PARENT_DOMAIN)
+
+
+def _validate_provider_url(
+    url: str,
+    *,
+    name: str,
+    host_predicate,
+    allowed_hosts: str,
+) -> str:
+    """Shared https/host/credentials/port validation for a provider endpoint."""
     scheme, host, netloc, port = _parse(url, name=name)
     if scheme != "https":
         raise UrlPolicyError(
@@ -88,15 +121,49 @@ def validate_linkedin_url(url: str, *, name: str = "url") -> str:
     _reject_embedded_credentials(netloc, name=name)
     if not host:
         raise UrlPolicyError(f"{name} must include a hostname: {url!r}")
-    if not is_linkedin_host(host):
+    if not host_predicate(host):
         raise UrlPolicyError(
-            f"{name} must point at linkedin.com or a *.linkedin.com host, got {host!r}"
+            f"{name} must point at {allowed_hosts}, got {host!r}"
         )
     if port not in (None, _HTTPS_PORT):
         raise UrlPolicyError(
             f"{name} must use the default HTTPS port, got port {port}"
         )
     return url
+
+
+def validate_linkedin_url(url: str, *, name: str = "url") -> str:
+    """Validate a configured LinkedIn endpoint and return it unchanged.
+
+    Rejects non-HTTPS schemes, other hosts, embedded credentials, and any port
+    other than the default HTTPS port.
+    """
+    return _validate_provider_url(
+        url,
+        name=name,
+        host_predicate=is_linkedin_host,
+        allowed_hosts="linkedin.com or a *.linkedin.com host",
+    )
+
+
+def validate_getmanfred_url(url: str, *, name: str = "url") -> str:
+    """Validate a configured GetManfred endpoint (host allow-list)."""
+    return _validate_provider_url(
+        url,
+        name=name,
+        host_predicate=is_getmanfred_host,
+        allowed_hosts="getmanfred.com or a *.getmanfred.com host",
+    )
+
+
+def validate_tecnoempleo_url(url: str, *, name: str = "url") -> str:
+    """Validate a configured Tecnoempleo endpoint (host allow-list)."""
+    return _validate_provider_url(
+        url,
+        name=name,
+        host_predicate=is_tecnoempleo_host,
+        allowed_hosts="tecnoempleo.com or a *.tecnoempleo.com host",
+    )
 
 
 def validate_llm_base_url(url: str, *, name: str = "llm_base_url") -> str:
@@ -130,11 +197,12 @@ def is_http_scheme(url: str) -> bool:
 def redirect_allowed(source_host: str | None, target_host: str | None) -> bool:
     """Return whether a redirect from ``source_host`` to ``target_host`` is safe.
 
-    Same-host redirects are always allowed (LinkedIn serves ``www`` and locale
-    hosts interchangeably). Cross-host redirects are allowed only when both
-    hosts belong to the same ``linkedin.com`` parent domain, which preserves the
-    real ``www.linkedin.com`` -> ``es.linkedin.com`` behaviour without opening a
-    path to an unrelated host.
+    Same-host redirects are always allowed (a provider may serve ``www`` and
+    locale hosts interchangeably). Cross-host redirects are allowed only when
+    both hosts belong to the same known provider parent domain, which preserves
+    the real ``www.linkedin.com`` -> ``es.linkedin.com`` behaviour for LinkedIn
+    and the equivalent ``www``/``locale`` pattern for GetManfred and Tecnoempleo,
+    without ever opening a path to an unrelated host or across providers.
     """
     source = (source_host or "").strip().lower().rstrip(".")
     target = (target_host or "").strip().lower().rstrip(".")
@@ -142,17 +210,25 @@ def redirect_allowed(source_host: str | None, target_host: str | None) -> bool:
         return False
     if source == target:
         return True
-    if is_linkedin_host(source) and is_linkedin_host(target):
-        return True
+    for parent in PROVIDER_PARENT_DOMAINS:
+        if _is_host_under(source, parent) and _is_host_under(target, parent):
+            return True
     return False
 
 
 __all__ = [
+    "GETMANFRED_PARENT_DOMAIN",
     "LINKEDIN_PARENT_DOMAIN",
+    "PROVIDER_PARENT_DOMAINS",
+    "TECNOEMPLEO_PARENT_DOMAIN",
     "UrlPolicyError",
+    "is_getmanfred_host",
     "is_http_scheme",
     "is_linkedin_host",
+    "is_tecnoempleo_host",
     "redirect_allowed",
+    "validate_getmanfred_url",
     "validate_linkedin_url",
     "validate_llm_base_url",
+    "validate_tecnoempleo_url",
 ]

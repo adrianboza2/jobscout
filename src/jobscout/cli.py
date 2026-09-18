@@ -37,11 +37,21 @@ from . import __version__
 from .calibration import CalibrationError, build_report
 from .collectors.base import CollectorDisabledError, CollectorError
 from .collectors.fixtures import FixtureDetailTransport, load_detail_fixture
+from .collectors.getmanfred import (
+    GetManfredSitemapConfig,
+    plan_sitemap_urls as plan_getmanfred_urls,
+    search_getmanfred,
+)
 from .collectors.linkedin import LinkedInSearchConfig, plan_search_urls, search_linkedin
 from .collectors.linkedin_details import (
     DetailFetchConfig,
     fetch_linkedin_details,
     plan_detail_targets,
+)
+from .collectors.tecnoempleo import (
+    TecnoempleoSearchConfig,
+    plan_search_urls as plan_tecnoempleo_urls,
+    search_tecnoempleo,
 )
 from .config import ConfigError, Settings
 from .dashboard import (
@@ -309,6 +319,12 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument("--max-pages", type=int, default=None, help="page cap (bounded)")
     search_parser.add_argument("--max-items", type=int, default=None, help="item cap (bounded)")
     search_parser.add_argument(
+        "--cycle-id",
+        default=None,
+        metavar="ID",
+        help="group this run with comparable runs from the same search cycle",
+    )
+    search_parser.add_argument(
         "--confirm-network",
         action="store_true",
         help="required acknowledgement that real requests will be sent",
@@ -317,6 +333,71 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="print the request plan without sending anything"
     )
     search_parser.set_defaults(handler=cmd_search_linkedin)
+
+    getmanfred_parser = add_common(
+        subparsers.add_parser(
+            "search-getmanfred",
+            help=(
+                "bounded GetManfred sitemap inventory (opt-in, disabled by default; "
+                "no keyword fan-out)"
+            ),
+        )
+    )
+    getmanfred_parser.add_argument(
+        "--max-documents", type=int, default=None, help="sitemap document cap (bounded)"
+    )
+    getmanfred_parser.add_argument(
+        "--max-items", type=int, default=None, help="item cap (bounded)"
+    )
+    getmanfred_parser.add_argument(
+        "--cycle-id",
+        default=None,
+        metavar="ID",
+        help="group this inventory with comparable runs from the same cycle",
+    )
+    getmanfred_parser.add_argument(
+        "--confirm-network",
+        action="store_true",
+        help="required acknowledgement that real requests will be sent",
+    )
+    getmanfred_parser.add_argument(
+        "--dry-run", action="store_true", help="print the request plan without sending anything"
+    )
+    getmanfred_parser.add_argument("--label", default=None, help="human label for the run")
+    getmanfred_parser.set_defaults(handler=cmd_search_getmanfred)
+
+    tecnoempleo_parser = add_common(
+        subparsers.add_parser(
+            "search-tecnoempleo",
+            help=(
+                "bounded Tecnoempleo public keyword search (opt-in, disabled by default)"
+            ),
+        )
+    )
+    tecnoempleo_parser.add_argument("--keywords", required=True, help="search keywords")
+    tecnoempleo_parser.add_argument("--location", default=None, help="province slug filter")
+    tecnoempleo_parser.add_argument(
+        "--max-pages", type=int, default=None, help="page cap (bounded)"
+    )
+    tecnoempleo_parser.add_argument(
+        "--max-items", type=int, default=None, help="item cap (bounded)"
+    )
+    tecnoempleo_parser.add_argument(
+        "--cycle-id",
+        default=None,
+        metavar="ID",
+        help="group this run with comparable runs from the same search cycle",
+    )
+    tecnoempleo_parser.add_argument(
+        "--confirm-network",
+        action="store_true",
+        help="required acknowledgement that real requests will be sent",
+    )
+    tecnoempleo_parser.add_argument(
+        "--dry-run", action="store_true", help="print the request plan without sending anything"
+    )
+    tecnoempleo_parser.add_argument("--label", default=None, help="human label for the run")
+    tecnoempleo_parser.set_defaults(handler=cmd_search_tecnoempleo)
 
     details_parser = add_common(
         subparsers.add_parser(
@@ -587,7 +668,13 @@ def cmd_search_linkedin(args: argparse.Namespace, settings: Settings) -> int:
         except CollectorDisabledError as exc:  # pragma: no cover - guarded above
             _write_line(f"collector disabled: {exc}", stream=sys.stderr)
             return EXIT_FAIL_CLOSED
-        outcome = ingest_collector_result(conn, result, config=config, settings=settings)
+        outcome = ingest_collector_result(
+            conn,
+            result,
+            config=config,
+            settings=settings,
+            cycle_id=getattr(args, "cycle_id", None),
+        )
     except CollectorError as exc:
         _write_line(f"collection failed: {exc}", stream=sys.stderr)
         return EXIT_FAIL_CLOSED
@@ -604,11 +691,172 @@ def cmd_search_linkedin(args: argparse.Namespace, settings: Settings) -> int:
             + (f"\nerror: {outcome.error}" if outcome.error else "")
         ),
     )
-    if outcome.status == SearchRunStatus.FAILED_CLOSED:
+    return _collection_exit_code(outcome.status)
+
+
+#: One collector's terminal status -> the CLI's exit code. Shared so every
+#: provider reports the same fail-closed/failure/success semantics.
+def _collection_exit_code(status: SearchRunStatus) -> int:
+    if status == SearchRunStatus.FAILED_CLOSED:
         return EXIT_FAIL_CLOSED
-    if outcome.status == SearchRunStatus.FAILED:
+    if status == SearchRunStatus.FAILED:
         return EXIT_ERROR
     return EXIT_OK
+
+
+def cmd_search_getmanfred(args: argparse.Namespace, settings: Settings) -> int:
+    """Run the bounded GetManfred sitemap inventory (no keyword fan-out)."""
+    try:
+        config = GetManfredSitemapConfig(
+            sitemap_url=settings.getmanfred_sitemap_url,
+            offer_path_prefix=settings.getmanfred_offer_path_prefix,
+            max_documents=(
+                args.max_documents
+                if args.max_documents is not None
+                else settings.getmanfred_max_documents
+            ),
+            max_items=(
+                args.max_items
+                if args.max_items is not None
+                else settings.getmanfred_max_items
+            ),
+        )
+    except (ConfigError, ValueError) as exc:
+        _write_line(f"invalid GetManfred options: {exc}", stream=sys.stderr)
+        return EXIT_ERROR
+
+    if args.dry_run:
+        planned = plan_getmanfred_urls(config)
+        _emit(
+            {"dry_run": True, "planned_urls": planned},
+            as_json=getattr(args, "as_json", False),
+            text="dry run, no request performed. Planned requests:\n  "
+            + "\n  ".join(planned),
+        )
+        return EXIT_OK
+
+    if not args.confirm_network:
+        _write_line(
+            "refusing to run: GetManfred collection is disabled by default.\n"
+            "Rerun with --confirm-network to send bounded requests "
+            f"(max {config.max_documents} sitemap document(s), {config.max_items} item(s), "
+            f"{settings.request_delay_seconds:g}s delay), or use --dry-run to inspect the plan.",
+            stream=sys.stderr,
+        )
+        return EXIT_FAIL_CLOSED
+
+    conn = connect(settings.db_path)
+    try:
+        init_db(conn)
+        try:
+            result = search_getmanfred(config, settings=settings, network_enabled=True)
+        except CollectorDisabledError as exc:  # pragma: no cover - guarded above
+            _write_line(f"collector disabled: {exc}", stream=sys.stderr)
+            return EXIT_FAIL_CLOSED
+        outcome = ingest_collector_result(
+            conn,
+            result,
+            config=config,
+            settings=settings,
+            cycle_id=getattr(args, "cycle_id", None),
+            label=args.label,
+        )
+    except CollectorError as exc:
+        _write_line(f"collection failed: {exc}", stream=sys.stderr)
+        return EXIT_FAIL_CLOSED
+    finally:
+        conn.close()
+
+    _emit(
+        {**outcome.to_dict(), "planned_urls": result.planned_urls},
+        as_json=getattr(args, "as_json", False),
+        text=(
+            f"run #{outcome.run_id} [{outcome.status}]: {outcome.items_found} item(s), "
+            f"{outcome.new_jobs} new, {outcome.duplicate_jobs} duplicate(s)"
+            + (f"\nnote: {outcome.notes}" if outcome.notes else "")
+            + (f"\nerror: {outcome.error}" if outcome.error else "")
+        ),
+    )
+    return _collection_exit_code(outcome.status)
+
+
+def cmd_search_tecnoempleo(args: argparse.Namespace, settings: Settings) -> int:
+    """Run the bounded Tecnoempleo public keyword search."""
+    try:
+        config = TecnoempleoSearchConfig(
+            keywords=args.keywords,
+            location=args.location,
+            search_url=settings.tecnoempleo_search_url,
+            robots_url=settings.tecnoempleo_robots_url,
+            offer_path_marker=settings.tecnoempleo_offer_path_marker,
+            max_pages=(
+                args.max_pages
+                if args.max_pages is not None
+                else settings.tecnoempleo_max_pages
+            ),
+            max_items=(
+                args.max_items
+                if args.max_items is not None
+                else settings.tecnoempleo_max_items
+            ),
+        )
+    except (ConfigError, ValueError) as exc:
+        _write_line(f"invalid Tecnoempleo options: {exc}", stream=sys.stderr)
+        return EXIT_ERROR
+
+    if args.dry_run:
+        planned = plan_tecnoempleo_urls(config)
+        _emit(
+            {"dry_run": True, "planned_urls": planned},
+            as_json=getattr(args, "as_json", False),
+            text="dry run, no request performed. Planned requests:\n  "
+            + "\n  ".join(planned),
+        )
+        return EXIT_OK
+
+    if not args.confirm_network:
+        _write_line(
+            "refusing to run: Tecnoempleo collection is disabled by default.\n"
+            "Rerun with --confirm-network to send bounded requests "
+            f"(max {config.max_pages} page(s), {config.max_items} item(s), "
+            f"{settings.request_delay_seconds:g}s delay), or use --dry-run to inspect the plan.",
+            stream=sys.stderr,
+        )
+        return EXIT_FAIL_CLOSED
+
+    conn = connect(settings.db_path)
+    try:
+        init_db(conn)
+        try:
+            result = search_tecnoempleo(config, settings=settings, network_enabled=True)
+        except CollectorDisabledError as exc:  # pragma: no cover - guarded above
+            _write_line(f"collector disabled: {exc}", stream=sys.stderr)
+            return EXIT_FAIL_CLOSED
+        outcome = ingest_collector_result(
+            conn,
+            result,
+            config=config,
+            settings=settings,
+            cycle_id=getattr(args, "cycle_id", None),
+            label=args.label,
+        )
+    except CollectorError as exc:
+        _write_line(f"collection failed: {exc}", stream=sys.stderr)
+        return EXIT_FAIL_CLOSED
+    finally:
+        conn.close()
+
+    _emit(
+        {**outcome.to_dict(), "planned_urls": result.planned_urls},
+        as_json=getattr(args, "as_json", False),
+        text=(
+            f"run #{outcome.run_id} [{outcome.status}]: {outcome.items_found} item(s), "
+            f"{outcome.new_jobs} new, {outcome.duplicate_jobs} duplicate(s)"
+            + (f"\nnote: {outcome.notes}" if outcome.notes else "")
+            + (f"\nerror: {outcome.error}" if outcome.error else "")
+        ),
+    )
+    return _collection_exit_code(outcome.status)
 
 
 def _effective_stale_days(args: argparse.Namespace) -> int:

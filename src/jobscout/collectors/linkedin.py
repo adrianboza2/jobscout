@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Callable
 from urllib.parse import urlencode, urljoin
@@ -37,7 +37,7 @@ from ..config import (
 )
 from ..models import (
     ContentStatus,
-    JobPosting,
+    PositionKind,
     RawDocument,
     RawDocumentKind,
     SearchRunStatus,
@@ -54,6 +54,7 @@ from .base import (
     AccessDeniedError,
     CollectorDisabledError,
     CollectorError,
+    CollectorResult,
     HttpClient,
     HttpResponse,
     RateLimitedError,
@@ -105,19 +106,22 @@ class LinkedInSearchConfig:
         if self.page_size < 1:
             raise ValueError("page_size must be >= 1")
 
+    @property
+    def position_kind(self) -> PositionKind:
+        """LinkedIn search results are an ordered list, so rank is meaningful."""
+        return PositionKind.SEARCH_RANK
 
-@dataclass
-class CollectorResult:
-    """Outcome of one collection attempt (network, dry run, or refusal)."""
-
-    postings: list[JobPosting] = field(default_factory=list)
-    raw_documents: list[RawDocument] = field(default_factory=list)
-    pages_fetched: int = 0
-    items_found: int = 0
-    status: SearchRunStatus = SearchRunStatus.COMPLETED
-    planned_urls: list[str] = field(default_factory=list)
-    notes: str | None = None
-    error: str | None = None
+    def to_run_params(self, result: CollectorResult) -> dict[str, Any]:
+        """Exact historical run provenance for a LinkedIn search."""
+        return {
+            "keywords": self.keywords,
+            "location": self.location,
+            "max_pages": self.max_pages,
+            "max_items": self.max_items,
+            "page_size": self.page_size,
+            "planned_urls": list(result.planned_urls),
+            "network_enabled": result.status is not SearchRunStatus.DRY_RUN,
+        }
 
 
 def build_search_url(base_url: str, config: LinkedInSearchConfig, *, start: int = 0) -> str:

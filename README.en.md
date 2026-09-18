@@ -325,7 +325,9 @@ subcommand), and `--version`.
 |---------|---------|
 | `init-db` | Create or verify the schema. Idempotent. |
 | `ingest-fixture PATH [--source S] [--label L]` | Normalize, deduplicate, and store a JSON fixture (offline). |
-| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--dry-run \| --confirm-network]` | Bounded public search. Disabled without `--confirm-network`. |
+| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Bounded public search. Disabled without `--confirm-network`. |
+| `search-getmanfred [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Public GetManfred sitemap inventory. No keyword fan-out and no ranking. Disabled without `--confirm-network`. |
+| `search-tecnoempleo --keywords K [--location L] [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Bounded Tecnoempleo public server-rendered search. Enforces `robots.txt` at run time. Disabled without `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | List the keyword families and the exact command per query (no network, no database). |
 | `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich jobs with the full description. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score. |
@@ -344,6 +346,38 @@ Inspect a plan without running it:
 ```bash
 python -m jobscout search-linkedin --keywords "senior backend engineer" --location "Buenos Aires, Argentina" --max-pages 2 --dry-run
 ```
+
+Other public sources (opt-in, all disabled by default):
+
+```bash
+python -m jobscout search-getmanfred --dry-run                       # plan, offline: reads the public sitemap
+python -m jobscout search-getmanfred --max-items 40 --confirm-network
+python -m jobscout search-tecnoempleo --keywords "cloud security" --location madrid --dry-run
+python -m jobscout search-tecnoempleo --keywords "cloud security" --max-pages 2 --confirm-network
+```
+
+`search-getmanfred` is an **inventory**, not a search: it takes no keywords, does
+no fan-out, and records every observed position as `position_kind = none` with
+rank `0`. The title is derived from the public URL slug and the company is left
+unknown because the sitemap does not expose it. Postings stay `partial`.
+
+`search-tecnoempleo` uses only the public server-rendered search under
+`/ofertas-trabajo/`. It re-reads `robots.txt` before the first request and fails
+closed when the path is disallowed. It uses no login, cookies, private RSS, or
+unauthorized API. **Declared limitation:** its selectors are not verified against
+a live page (its `robots.txt` disallows automated crawlers), so confirm
+`JOBSCOUT_TECNOEMPLEO_OFFER_PATH_MARKER` before a live run.
+
+Provenance convention: `provider` (platform), `query` (keyword), `cycle_id`
+(comparable search cycle), and `position_kind` (`search_rank` = real search
+position; `none` = inventory with no order). The dashboard keyword analytics are
+keyed by `provider|keyword|cycle`, so the same term on LinkedIn, GetManfred, and
+Tecnoempleo is never merged.
+
+InfoJobs stays **blocked**: `https://www.infojobs.net/candidate/my-infojobs.xhtml`
+is a private, authenticated page and may only be added after an official API
+authorization and explicit app credentials. There is no CLI command and no
+network path.
 
 Detail enrichment:
 

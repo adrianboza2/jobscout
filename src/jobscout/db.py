@@ -46,7 +46,7 @@ from .models import (
 )
 from .timeutil import utcnow_iso
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS search_runs (
@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS search_runs (
     label TEXT,
     query TEXT,
     location TEXT,
+    cycle_id TEXT,
     params_json TEXT NOT NULL DEFAULT '{}',
     status TEXT NOT NULL DEFAULT 'pending',
     started_at TEXT NOT NULL,
@@ -121,6 +122,7 @@ CREATE TABLE IF NOT EXISTS search_run_items (
     job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
     decision TEXT NOT NULL DEFAULT 'new',
     rank_in_run INTEGER NOT NULL DEFAULT 0,
+    position_kind TEXT,
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_run_items_job ON search_run_items(job_id);
@@ -301,8 +303,23 @@ def _migrate_v4_add_final_url(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE job_detail_fetches ADD COLUMN final_url TEXT")
 
 
+def _migrate_v5_add_cycle_and_position(conn: sqlite3.Connection) -> None:
+    """Add the nullable provider/cycle/position provenance columns if missing.
+
+    Both columns are additive and nullable, so historical rows keep their exact
+    values and simply read as ``NULL`` (never guessed or backfilled):
+
+    * ``search_runs.cycle_id`` groups runs from comparable search cycles;
+    * ``search_run_items.position_kind`` records how ``rank_in_run`` must be read.
+    """
+    if "cycle_id" not in _table_columns(conn, "search_runs"):
+        conn.execute("ALTER TABLE search_runs ADD COLUMN cycle_id TEXT")
+    if "position_kind" not in _table_columns(conn, "search_run_items"):
+        conn.execute("ALTER TABLE search_run_items ADD COLUMN position_kind TEXT")
+
+
 def _apply_migrations(conn: sqlite3.Connection, current: int) -> None:
-    """Upgrade an existing database in place from ``current`` to v4.
+    """Upgrade an existing database in place from ``current`` to v5.
 
     ``SCHEMA_SQL`` only uses ``CREATE TABLE IF NOT EXISTS``, so it can create a
     brand-new database with the current shape but can never add a column to a
@@ -311,6 +328,8 @@ def _apply_migrations(conn: sqlite3.Connection, current: int) -> None:
     """
     if current < 4:
         _migrate_v4_add_final_url(conn)
+    if current < 5:
+        _migrate_v5_add_cycle_and_position(conn)
 
 
 def init_db(conn: sqlite3.Connection) -> int:
@@ -403,6 +422,7 @@ def _row_to_search_run(row: sqlite3.Row) -> SearchRun:
         label=row["label"],
         query=row["query"],
         location=row["location"],
+        cycle_id=row["cycle_id"],
         params=_loads(row["params_json"], {}),
         status=SearchRunStatus(row["status"]),
         started_at=row["started_at"],
@@ -523,16 +543,17 @@ def create_search_run(conn: sqlite3.Connection, run: SearchRun) -> SearchRun:
         cursor = conn.execute(
             """
             INSERT INTO search_runs (
-                provider, label, query, location, params_json, status, started_at,
-                finished_at, pages_fetched, items_found, new_jobs, duplicate_jobs,
-                error, raw_document_id, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                provider, label, query, location, cycle_id, params_json, status,
+                started_at, finished_at, pages_fetched, items_found, new_jobs,
+                duplicate_jobs, error, raw_document_id, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 run.provider,
                 run.label,
                 run.query,
                 run.location,
+                run.cycle_id,
                 _dumps(run.params),
                 str(run.status),
                 started,
@@ -612,14 +633,17 @@ def record_run_item(conn: sqlite3.Connection, item: SearchRunItem) -> None:
     with conn:
         conn.execute(
             """
-            INSERT INTO search_run_items (run_id, job_id, decision, rank_in_run, created_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO search_run_items (
+                run_id, job_id, decision, rank_in_run, position_kind, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 item.run_id,
                 item.job_id,
                 str(item.decision),
                 item.rank_in_run,
+                str(item.position_kind) if item.position_kind is not None else None,
                 item.created_at or utcnow_iso(),
             ),
         )

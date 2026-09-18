@@ -85,6 +85,19 @@ class RawDocumentKind(StrEnum):
     LLM_RESPONSE = "llm_response"
 
 
+class PositionKind(StrEnum):
+    """How an observed position should be interpreted.
+
+    ``search_rank`` is a real result position inside a keyword search and is
+    comparable within that provider/keyword/cycle. ``none`` means the provider
+    exposed no ordered search result at all (for example a sitemap inventory),
+    so a stored rank must never be read as a quality or relevance signal.
+    """
+
+    NONE = "none"
+    SEARCH_RANK = "search_rank"
+
+
 class DetailFetchStatus(StrEnum):
     """Outcome of one job-detail fetch attempt."""
 
@@ -272,6 +285,11 @@ class SearchRun:
     label: str | None = None
     query: str | None = None
     location: str | None = None
+    #: Optional grouping id for "comparable search cycles". Runs that share a
+    #: cycle id across providers can be compared without collapsing different
+    #: platforms or sweep dates into one silently-mixed series. Rows predating
+    #: the column (and runs that never set it) stay ``None``.
+    cycle_id: str | None = None
     params: dict[str, Any] = field(default_factory=dict)
     status: SearchRunStatus = SearchRunStatus.PENDING
     started_at: str = ""
@@ -298,6 +316,9 @@ class SearchRunItem:
     job_id: int
     decision: DuplicateKind = DuplicateKind.NEW
     rank_in_run: int = 0
+    #: How :attr:`rank_in_run` must be read. ``None`` is the historical value
+    #: written before the column existed, so old rows are never reinterpreted.
+    position_kind: PositionKind | None = None
     created_at: str = ""
 
 
@@ -473,6 +494,7 @@ __all__ = [
     "JobDetailFetch",
     "JobFeedback",
     "JobPosting",
+    "PositionKind",
     "ProfileEvidence",
     "ProfileSnapshot",
     "RawDocument",
