@@ -25,6 +25,9 @@ from jobscout.db import (
     store_posting,
 )
 from jobscout.feedback import (
+    ACTIVE_DECISIONS,
+    DECISIONS,
+    LEGACY_DECISIONS,
     FeedbackError,
     import_feedback,
     import_feedback_document,
@@ -189,6 +192,63 @@ def test_schema_version_matches_the_stored_database(conn) -> None:
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
     }
     assert "job_feedback" in tables
+
+
+def test_active_vocabulary_is_binary_while_consider_stays_importable() -> None:
+    """New decisions are apply/reject; the legacy value is still accepted."""
+    assert ACTIVE_DECISIONS == ("apply", "reject")
+    assert LEGACY_DECISIONS == ("consider",)
+    # The importer validates against the full vocabulary, so a pre-binary export
+    # is still valid even though the active UI can never create ``consider``.
+    assert set(DECISIONS) == {"apply", "consider", "reject"}
+
+
+def test_legacy_consider_row_is_imported_and_preserved_verbatim(db_file: Path) -> None:
+    outcome = _import(db_file, _write_export(db_file.parent / "legacy.json", _export(
+        {
+            "job_id": 1,
+            "decision": "consider",
+            "reason": "Historic choice",
+            "updated_at": APPLY_AT,
+        }
+    )))
+    assert outcome.imported == 1
+    assert outcome.rejected == []
+
+    conn = connect(db_file)
+    try:
+        stored = get_feedback(conn, 1)
+        assert stored is not None
+        # The legacy value is stored exactly as exported, never converted.
+        assert stored.decision == "consider"
+        assert stored.reason == "Historic choice"
+    finally:
+        conn.close()
+
+
+def test_legacy_consider_can_be_replaced_by_an_active_binary_decision(db_file: Path) -> None:
+    """A newer apply/reject replaces the legacy value; the history is not silent."""
+    _import(db_file, _write_export(db_file.parent / "legacy.json", _export(
+        {"job_id": 1, "decision": "consider", "reason": "Historic", "updated_at": APPLY_AT}
+    )))
+    outcome = _import(db_file, _write_export(db_file.parent / "active.json", _export(
+        {
+            "job_id": 1,
+            "decision": "reject",
+            "reason": "Reconsidered",
+            "updated_at": "2026-09-16T14:30:00.000Z",
+        }
+    )))
+    assert outcome.updated == 1
+
+    conn = connect(db_file)
+    try:
+        stored = get_feedback(conn, 1)
+        assert stored is not None
+        assert stored.decision == "reject"
+        assert stored.reason == "Reconsidered"
+    finally:
+        conn.close()
 
 
 def test_deleting_a_job_removes_its_feedback(db_file: Path) -> None:

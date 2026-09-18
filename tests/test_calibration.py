@@ -14,6 +14,7 @@ import pytest
 
 from jobscout.calibration import (
     HUMAN_LABELS,
+    LEGACY_HUMAN_DECISIONS,
     MODEL_TO_HUMAN,
     SCORE_BUCKETS,
     CalibrationError,
@@ -215,6 +216,37 @@ def test_three_way_confusion_and_agreement(conn) -> None:
         "consider": {"apply": 0, "consider": 1, "reject": 1},
         "skip": {"apply": 0, "consider": 0, "reject": 1},
     }
+
+
+def test_legacy_consider_is_counted_and_flagged_as_legacy(conn) -> None:
+    """A pre-binary row stays comparable and is flagged as legacy, not erased."""
+    legacy_id = _seed_job(conn, 1)
+    _evaluate(conn, legacy_id, recommendation=Recommendation.NEED_MORE_INFO, score=45.0)
+    _decide(conn, legacy_id, "consider")
+    active_id = _seed_job(conn, 2)
+    _evaluate(conn, active_id, recommendation=Recommendation.APPLY, score=88.0)
+    _decide(conn, active_id, "apply")
+
+    report = build_report(conn)
+    payload = report.to_dict()
+
+    assert LEGACY_HUMAN_DECISIONS == ("consider",)
+    assert report.legacy_total == 1
+    assert payload["legacy_total"] == 1
+    assert payload["legacy_human_decisions"] == ["consider"]
+    # The legacy row is still counted in the report and its score distribution.
+    assert report.feedback_total == 2
+    assert payload["score_distribution"]["consider"]["count"] == 1
+    legacy_sample = next(
+        item for item in payload["samples"] if item["human_decision"] == "consider"
+    )
+    assert legacy_sample["legacy"] is True
+    active_sample = next(
+        item for item in payload["samples"] if item["human_decision"] == "apply"
+    )
+    assert active_sample["legacy"] is False
+    # The text report tells a reader the legacy row was kept, not renamed.
+    assert "legacy human decisions" in report.to_text()
 
 
 # ---------------------------------------------------------------------------

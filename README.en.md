@@ -116,7 +116,7 @@ Prepare the real profile before any sweep:
 | 2 | Enrich | `python -m jobscout fetch-details --max-items 10 --confirm-network` (or `--fixture` to stay offline) | Fetches each offer's full description, bounded in volume. | Semi-automatic: you authorize each run |
 | 3 | Score with MiMo | `python -m jobscout score --all --scorer opencode` | The default scorer (OpenCode + MiMo) evaluates only offers that have no evaluation yet. | Scoring is automatic; the apply decision is not |
 | 4 | Generate the dashboard | `python -m jobscout dashboard --top 25` | Writes a local HTML report with offers, scores, link evidence, and preference filters. | Automatic and read-only |
-| 5 | Review offers | Open `reports/jobscout-dashboard.html` | You mark **Aplicar / Revisar / Descartar** in the browser. | Human decision only |
+| 5 | Review offers | Open `reports/jobscout-dashboard.html` | You mark **Aplicar** or **Descartar** in the browser. | Human decision only |
 | 6 | Export/import feedback | Export the JSON from the dashboard, then run `python -m jobscout import-feedback jobscout-feedback.json` | Your decisions move from `localStorage` to the SQLite `job_feedback` table. | Import runs automatically once you invoke it |
 | 7 | Calibrate | `python -m jobscout calibrate --scorer opencode` | Compares the model recommendation with your imported human decision. Read-only; it adjusts nothing. | Automatic and read-only |
 | 8 | Analyze keywords | `python -m jobscout dashboard` → the *rendimiento de palabras clave* section | After several cycles, you decide which search families perform and which to drop. | Human decision |
@@ -202,12 +202,18 @@ These are two different signals, and the report keeps them apart:
 | Read by `jobscout` | yes | only by `import-feedback`, which copies an export into `job_feedback` |
 | Portable | yes, it is in the database | with **Exportar feedback local (JSON)** plus `import-feedback` |
 
-Each job has local feedback buttons (**Aplicar / Revisar / Descartar**, stored as
-`apply` / `consider` / `reject`) and an optional reason box. The human label
-*Revisar* is deliberately distinct from the model recommendation *Considerar*.
-The buttons themselves are **browser-local**: they do not apply, do not touch
-LinkedIn, and write nothing to SQLite. **Exportar feedback local (JSON)**
-downloads `jobscout-feedback.json` (`jobscout.feedback.v1` schema).
+Each job has **two** local feedback buttons (**Aplicar / Descartar**, stored as
+`apply` / `reject`) and an optional reason box. The active decision is binary:
+*Aplicar* or *Descartar*. The buttons themselves are **browser-local**: they do
+not apply, do not touch LinkedIn, and write nothing to SQLite. **Exportar feedback
+local (JSON)** downloads `jobscout-feedback.json` (`jobscout.feedback.v1` schema).
+
+Historical compatibility: `consider` decisions (the old *Revisar* label) are not
+deleted or silently converted. An offer with a stored `consider` shows it as a
+**historical (legacy) decision** and lets you replace it with Aplicar or
+Descartar; the export keeps the `v1` schema and the legacy value verbatim, and the
+importer still accepts it. The model recommendation keeps its own vocabulary
+(`apply` / `consider` / `skip` / `need_more_info`), separate from your decision.
 
 Import that export to make the decisions durable:
 
@@ -249,8 +255,12 @@ through one explicit mapping:
 | Model | Human |
 |-------|-------|
 | `apply` | `apply` |
-| `consider` | `consider` |
+| `consider` | `consider` (legacy) |
 | `skip` | `reject` |
+
+`consider` is **legacy**: the binary dashboard no longer offers it, but a
+historical row is still counted and the report flags it as legacy
+(`legacy_total` / `"legacy": true` on each sample) instead of dropping it.
 
 `need_more_info` is **not** part of the three-way agreement: it is reported
 separately as an unresolved category and never silently becomes `skip`. The
@@ -370,6 +380,15 @@ token matching, never substring: `front` does not match `frontend`). There is no
 private endpoint and no per-keyword request. Each kept offer records the approved
 keywords it matched in `extra['matched_keywords']`, so one offer observed under one
 or several keywords never mixes terms or platforms.
+
+The filter is **exact token matching**: every token of the approved term must
+appear as a whole token in the normalized title/slug. There are no synonyms,
+aliases, or family variants, so `DevOps` does not match `DevSecOps`, `Cloud` does
+not match `Cloud Security`, and a reordered variant does not widen the result.
+The candidate variants observed in the sitemap are **DevOps, DevSecOps, Cloud
+Engineer, Cloud Security, Azure**, and possibly **SRE**; adding them to the
+approved catalog is a **separate decision** (a human catalog review), not
+automatic behavior of this adapter.
 
 `search-tecnoempleo` uses only the public server-rendered search under
 `/ofertas-trabajo/`. It re-reads `robots.txt` before the first request and fails
@@ -568,9 +587,9 @@ How to read the metrics:
 - *Tasa duplicados* is duplicate sightings over total sightings: a keyword that
   only repeats what others already surfaced adds little.
 - *Tasa aplicar (humano)* uses only the imported decisions
-  (`apply`/`consider`/`reject`), never the model recommendation. It reads *sin
-  dato* until there are decisions for that keyword, and `0 %` only when there were
-  real decisions and none was apply.
+  (`apply`/`reject`, plus the legacy `consider` that is still counted), never the
+  model recommendation. It reads *sin dato* until there are decisions for that
+  keyword, and `0 %` only when there were real decisions and none was apply.
 - *Frescura* is the share of postings 21 days old or less among those with a known
   date. jobscout has **no** verified "expired on LinkedIn" signal, so it does not
   invent one: *No activas* is the share of postings jobscout itself deactivated,

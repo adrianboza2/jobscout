@@ -114,7 +114,7 @@ Prepara el perfil real antes de cualquier barrido:
 | 2 | Enriquecer | `python -m jobscout fetch-details --max-items 10 --confirm-network` (o `fetch-tecnoempleo-details` para ofertas de Tecnoempleo, o `--fixture` para trabajar offline) | Trae la descripción completa de cada oferta, acotado en volumen. Solo sube a `ok` cuando reconoce el detalle. | Semiautomático: autorizas cada corrida |
 | 3 | Puntuar con MiMo | `python -m jobscout score --all --scorer opencode` | El puntuador predeterminado (OpenCode + MiMo) evalúa solo las ofertas que aún no tienen evaluación. | El puntaje es automático; la decisión de postular no |
 | 4 | Generar dashboard | `python -m jobscout dashboard --top 25` | Escribe un HTML local con ofertas, puntajes, evidencia del enlace y filtros de preferencia. | Automático y de solo lectura |
-| 5 | Revisar ofertas | Abre `reports/jobscout-dashboard.html` | Tú marcas **Aplicar / Revisar / Descartar** en el navegador. | Decisión humana exclusivamente |
+| 5 | Revisar ofertas | Abre `reports/jobscout-dashboard.html` | Tú marcas **Aplicar** o **Descartar** en el navegador. | Decisión humana exclusivamente |
 | 6 | Exportar/importar feedback | Exporta el JSON desde el tablero y ejecuta `python -m jobscout import-feedback jobscout-feedback.json` | Tus decisiones pasan de `localStorage` a la tabla `job_feedback` de SQLite. | Importar es automático una vez que lo invocas |
 | 7 | Calibrar | `python -m jobscout calibrate --scorer opencode` | Compara la recomendación del modelo con tu decisión humana importada. Solo lectura; no ajusta nada. | Automático y de solo lectura |
 | 8 | Analizar keywords | `python -m jobscout dashboard` → sección *rendimiento de palabras clave* | Tras varios ciclos, decides qué familias de búsqueda rinden y cuáles descartar. | Decisión humana |
@@ -202,12 +202,19 @@ Son dos señales distintas y el informe las mantiene separadas:
 | ¿`jobscout` lo lee? | sí | solo con `import-feedback`, que copia una exportación a `job_feedback` |
 | ¿Es portable? | sí, está en la base | con **Exportar feedback local (JSON)** más `import-feedback` |
 
-Cada oferta tiene botones de feedback local (**Aplicar / Revisar / Descartar**,
-almacenados como `apply` / `consider` / `reject`) y un motivo opcional. La
-etiqueta humana *Revisar* es deliberadamente distinta de la recomendación
-*Considerar* del modelo. Los botones son **solo del navegador**: no postulan, no
-tocan LinkedIn y no escriben en SQLite. **Exportar feedback local (JSON)**
-descarga `jobscout-feedback.json` con el esquema `jobscout.feedback.v1`.
+Cada oferta tiene **dos** botones de feedback local (**Aplicar / Descartar**,
+almacenados como `apply` / `reject`) y un motivo opcional. La decisión activa es
+binaria: *Aplicar* o *Descartar*. Los botones son **solo del navegador**: no
+postulan, no tocan LinkedIn y no escriben en SQLite. **Exportar feedback local
+(JSON)** descarga `jobscout-feedback.json` con el esquema `jobscout.feedback.v1`.
+
+Compatibilidad con el histórico: las decisiones `consider` (histórico *Revisar*
+del tablero anterior) no se borran ni se convierten solas. Una oferta con
+`consider` guardado lo muestra como **decisión histórica (legacy)** y permite
+reemplazarlo con Aplicar o Descartar; la exportación mantiene el esquema `v1` y
+el valor legacy tal cual, y el importador lo sigue aceptando. La recomendación
+del modelo conserva su propio vocabulario (`apply` / `consider` / `skip` /
+`need_more_info`), separado de tu decisión.
 
 Importa esa exportación para que las decisiones queden guardadas:
 
@@ -248,8 +255,12 @@ recomendación del modelo con la decisión humana con un mapeo explícito:
 | Modelo | Humano |
 |--------|--------|
 | `apply` | `apply` |
-| `consider` | `consider` |
+| `consider` | `consider` (legacy) |
 | `skip` | `reject` |
+
+La fila `consider` es **legacy**: el tablero binario ya no la ofrece, pero una
+decisión histórica se sigue contando y el informe la marca como legacy
+(`legacy_total` / `"legacy": true` en cada muestra) en lugar de descartarla.
 
 `need_more_info` **no** forma parte del acuerdo three-way: se informa aparte como
 categoría no resuelta y nunca se convierte en `skip`. El informe muestra las
@@ -370,6 +381,16 @@ petición por palabra clave. Cada oferta conserva en
 `extra['matched_keywords']` las keywords aprobadas que matcheó, de modo que una
 misma oferta observada bajo una o varias keywords no mezcla términos ni
 plataformas.
+
+El filtro es **coincidencia exacta por token**: cada token del término aprobado
+debe aparecer como token completo en el título/slug normalizado. No hay
+sinónimos, alias ni variantes de familia, así que `DevOps` no matchea
+`DevSecOps`, `Cloud` no matchea `Cloud Security` y una variante con otro orden
+tampoco amplía el resultado. Las variantes candidatas observadas en el sitemap
+son **DevOps, DevSecOps, Cloud Engineer, Cloud Security, Azure** y posiblemente
+**SRE**; ampliar el catálogo aprobado con esas variantes es una **decisión
+aparte** (revisión humana del catálogo), no un comportamiento automático de este
+adaptador.
 
 `search-tecnoempleo` usa solo la búsqueda pública server-rendered bajo
 `/ofertas-trabajo/`. Antes del primer request vuelve a leer `robots.txt` y falla
@@ -571,9 +592,10 @@ Cómo leer las métricas:
 - *Tasa duplicados* es apariciones repetidas sobre apariciones totales: una
   palabra clave que solo repite lo que ya trajeron otras aporta poco.
 - *Tasa aplicar (humano)* usa únicamente las decisiones importadas
-  (`apply`/`consider`/`reject`), nunca la recomendación del modelo. Se muestra
-  como *sin dato* mientras no haya decisiones para esa palabra clave, y `0 %` solo
-  cuando hubo decisiones reales y ninguna fue aplicar.
+  (`apply`/`reject`, más el legacy `consider` que se sigue contando), nunca la
+  recomendación del modelo. Se muestra como *sin dato* mientras no haya
+  decisiones para esa palabra clave, y `0 %` solo cuando hubo decisiones reales y
+  ninguna fue aplicar.
 - *Frescura* es la proporción de ofertas de 21 días o menos entre las que tienen
   fecha conocida. jobscout **no** tiene una señal verificada de "oferta expirada
   en LinkedIn", así que no la inventa: *No activas* es la proporción de ofertas

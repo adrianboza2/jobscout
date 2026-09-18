@@ -24,8 +24,11 @@ One display boundary is deliberate: every string a reader sees is
 neutral/professional Spanish, while schema keys, JSON field names, JavaScript
 identifiers, stored recommendation values, and CLI command names stay English.
 Recommendation values (``apply``/``consider``/``skip``/``need_more_info``) and
-human feedback values (``apply``/``consider``/``reject``) are translated for
-display only, so the payload stays round-trippable against the database.
+human feedback values stay English in the payload. Human feedback is now binary
+(``apply``/``reject``); a legacy ``consider`` value is still displayed as a
+historical decision and can be replaced, but it is never offered as a new
+choice. Every value is translated for display only, so the payload stays
+round-trippable against the database.
 """
 
 from __future__ import annotations
@@ -42,7 +45,13 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .db import connect_readonly, latest_detail_fetches_for_jobs
-from .models import DetailFetchStatus, JobDetailFetch, _loads
+from .models import (
+    ACTIVE_FEEDBACK_DECISIONS,
+    LEGACY_FEEDBACK_DECISIONS,
+    DetailFetchStatus,
+    JobDetailFetch,
+    _loads,
+)
 from .preference import PreferenceOutcome, assess_text
 from .timeutil import parse_datetime, utcnow, utcnow_iso
 
@@ -61,6 +70,12 @@ MAX_TOP = 1000
 #: Payload schema written into the HTML and used to shape the localStorage key.
 DASHBOARD_SCHEMA = "jobscout.dashboard.v1"
 FEEDBACK_SCHEMA = "jobscout.feedback.v1"
+
+#: Human feedback decisions the report's active UI offers, and the historical
+#: values it only displays. The JavaScript literals below mirror these; a test
+#: pins both so a legacy ``consider`` cannot silently return as a new choice.
+DASHBOARD_FEEDBACK_DECISIONS: tuple[str, ...] = ACTIVE_FEEDBACK_DECISIONS
+DASHBOARD_LEGACY_FEEDBACK_DECISIONS: tuple[str, ...] = LEGACY_FEEDBACK_DECISIONS
 
 #: Rationale longer than this is truncated in the report so one verbose model
 #: response cannot dominate the page. The stored evaluation keeps the full text.
@@ -1175,8 +1190,9 @@ __STYLE__
       <dd>La calcula el evaluador de jobscout a partir de la oferta y de su perfil. Sus
         marcas no la cambian.</dd>
       <dt class="axis-human">Mi decisión (feedback)</dt>
-      <dd>Su marca manual. Se guarda solo en este navegador y no modifica el puntaje, la
-        recomendación ni la base de datos.</dd>
+      <dd>Su marca manual: <strong>Aplicar</strong> o <strong>Descartar</strong>. Se
+        guarda solo en este navegador y no modifica el puntaje, la recomendación ni la
+        base de datos.</dd>
     </dl>
   </section>
 
@@ -1576,6 +1592,10 @@ p.filters-summary.active { color:var(--ink); }
 .feedback textarea { resize:vertical; min-height:56px; }
 .decision-state { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px;
   font-size:var(--fs-small); color:var(--soft-ink); }
+/* A legacy ``consider`` decision is marked as historical with weight, not hue, so
+   it never reads as one of the two current choices. */
+.decision-state.legacy { font-style:italic; border-left:2px solid var(--rule-strong);
+  padding-left:8px; }
 /* Transient, per-row confirmation. It is a polite live region, so it is announced
    once and then removed; it never blocks the next mark. */
 .decision-saved { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
@@ -1668,13 +1688,18 @@ _SCRIPT = r"""
 
   var EXPECTED_SCHEMA = "jobscout.dashboard.v1";
   // Feedback decisions and recommendation values stay English in storage and in
-  // the payload; only their visible labels are translated for the reader.
-  var FEEDBACK_DECISIONS = ["apply", "consider", "reject"];
+  // the payload; only their visible labels are translated for the reader. The
+  // active human decision is binary; ``consider`` is a legacy value that may
+  // still be present in localStorage from before this workflow.
+  var FEEDBACK_DECISIONS = ["apply", "reject"];
   var RECOMMENDATION_LABELS = {
     apply: "Aplicar", consider: "Considerar", skip: "Descartar",
     need_more_info: "Requiere más información"
   };
-  var FEEDBACK_LABELS = { apply: "Aplicar", consider: "Revisar", reject: "Descartar" };
+  // Labels for the active decision buttons, plus a display-only label for the
+  // legacy value. The legacy value is never a button.
+  var FEEDBACK_LABELS = { apply: "Aplicar", reject: "Descartar" };
+  var LEGACY_FEEDBACK_LABELS = { consider: "Considerar (histórico)" };
   var AGE_SOURCE_LABELS = {
     posted: "fecha de publicación", first_seen: "primera vez visto", unknown: "origen desconocido"
   };
@@ -1728,6 +1753,27 @@ _SCRIPT = r"""
 
   function labelFrom(map, value, fallback) {
     return Object.prototype.hasOwnProperty.call(map, value) ? map[value] : fallback;
+  }
+
+  // Active decisions have a normal label; a legacy ``consider`` gets the
+  // historical label so the reader can tell it apart from a current choice.
+  function feedbackLabel(decision) {
+    var active = labelFrom(FEEDBACK_LABELS, decision, null);
+    if (active !== null) { return active; }
+    return labelFrom(LEGACY_FEEDBACK_LABELS, decision, decision);
+  }
+
+  function isLegacyFeedback(decision) {
+    return labelFrom(FEEDBACK_LABELS, decision, null) === null && Boolean(decision);
+  }
+
+  function decisionStateText(decision) {
+    if (!decision) { return "Sin decisión registrada"; }
+    if (isLegacyFeedback(decision)) {
+      return "Decisión histórica (legacy): " + feedbackLabel(decision) +
+        ". Puede reemplazarla con Aplicar o Descartar.";
+    }
+    return "Tu decisión: " + feedbackLabel(decision);
   }
 
   function el(tag, className, text) {
@@ -1904,7 +1950,8 @@ _SCRIPT = r"""
     box.setAttribute("aria-label", "Mi decisión sobre la oferta: " + offerLabel);
     box.appendChild(el("h4", null, "Mi decisión (feedback)"));
     box.appendChild(el("p", "feedback-hint muted",
-      "Se guarda solo en este navegador. No postula ni escribe en la base de datos."));
+      "Elija Aplicar o Descartar. Se guarda solo en este navegador; no postula ni " +
+      "escribe en la base de datos."));
     var entry = feedback[offer.id] || { decision: "", reason: "" };
     var controls = el("div", "feedback-controls");
     controls.setAttribute("role", "group");
@@ -1947,12 +1994,10 @@ _SCRIPT = r"""
     });
     box.appendChild(reason);
     var state = el("p", "decision-state");
+    if (isLegacyFeedback(entry.decision)) { state.classList.add("legacy"); }
     // The text lives in its own node so the transient save confirmation can be
     // appended next to it without being wiped by the next state update.
-    state.appendChild(el("span", "decision-state-text",
-      entry.decision
-        ? "Tu decisión: " + labelFrom(FEEDBACK_LABELS, entry.decision, entry.decision)
-        : "Sin decisión registrada"));
+    state.appendChild(el("span", "decision-state-text", decisionStateText(entry.decision)));
     box.appendChild(state);
     return box;
   }
@@ -1995,10 +2040,10 @@ _SCRIPT = r"""
     });
     var state = card.querySelector(".decision-state-text");
     if (state) {
-      state.textContent = entry.decision
-        ? "Tu decisión: " + labelFrom(FEEDBACK_LABELS, entry.decision, entry.decision)
-        : "Sin decisión registrada";
+      state.textContent = decisionStateText(entry.decision);
     }
+    var stateBox = card.querySelector(".decision-state");
+    if (stateBox) { stateBox.classList.toggle("legacy", isLegacyFeedback(entry.decision)); }
   }
 
   function detailAgeText(detail) {
@@ -2403,7 +2448,7 @@ _SCRIPT = r"""
   renderTopList("top-human", payload.top_human, function (item) {
     return (item.label || item.keyword) + " \u2014 " + pct(item.human_apply_rate) +
       " de aprobación humana (" + item.human_apply + " aplicar, " +
-      item.human_consider + " considerar, " + item.human_reject + " descartar, " +
+      item.human_consider + " considerar (legacy), " + item.human_reject + " descartar, " +
       item.human_reviewed + " revisada(s))";
   });
   bindFilters();
@@ -2674,6 +2719,8 @@ def generate_dashboard(
 
 __all__ = [
     "DASHBOARD_SCHEMA",
+    "DASHBOARD_FEEDBACK_DECISIONS",
+    "DASHBOARD_LEGACY_FEEDBACK_DECISIONS",
     "DEFAULT_OUTPUT",
     "DEFAULT_TOP",
     "DashboardError",

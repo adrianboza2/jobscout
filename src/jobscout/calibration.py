@@ -9,9 +9,11 @@ network: reading is a local SQLite ``SELECT`` through a read-only connection.
 Two vocabularies, one explicit bridge
 -------------------------------------
 The model recommends ``apply`` / ``consider`` / ``skip`` / ``need_more_info``;
-the human decides ``apply`` / ``consider`` / ``reject``. The bridge is a single
-explicit mapping (:data:`MODEL_TO_HUMAN`): ``apply`` maps to ``apply``,
-``consider`` to ``consider`` and ``skip`` to ``reject``.
+the human decides ``apply`` / ``reject`` in the active binary dashboard, with
+``consider`` kept as a legacy value that is still counted
+(:data:`LEGACY_HUMAN_DECISIONS`). The bridge is a single explicit mapping
+(:data:`MODEL_TO_HUMAN`): ``apply`` maps to ``apply``, ``consider`` to
+``consider`` and ``skip`` to ``reject``.
 
 ``need_more_info`` is *not* part of that mapping. It is an unresolved category:
 it is counted and reported separately, never silently folded into ``skip`` and
@@ -36,6 +38,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import Any
 
+from .models import LEGACY_FEEDBACK_DECISIONS
+
 #: Model recommendation -> equivalent human decision. ``skip`` means "reject
 #: this offer" for the human, so those two are the same verdict in two
 #: vocabularies. This is the *only* place the two vocabularies are bridged.
@@ -48,6 +52,11 @@ MODEL_TO_HUMAN: dict[str, str] = {
 #: Three-way labels, in a fixed order so text and JSON stay stable.
 MODEL_LABELS: tuple[str, ...] = ("apply", "consider", "skip")
 HUMAN_LABELS: tuple[str, ...] = ("apply", "consider", "reject")
+
+#: Human decisions kept for historical compatibility. A ``consider`` row predates
+#: the binary dashboard and is still counted here, but it is flagged as legacy so
+#: the report never presents it as a decision the current UI can produce.
+LEGACY_HUMAN_DECISIONS: tuple[str, ...] = LEGACY_FEEDBACK_DECISIONS
 
 #: Fixed ten-point ``overall_score`` buckets used by the distribution report.
 SCORE_BUCKETS: tuple[str, ...] = tuple(
@@ -117,6 +126,7 @@ class CalibrationSample:
             "scorer": self.scorer,
             "recommendation": self.recommendation,
             "human_decision": self.human_decision,
+            "legacy": self.human_decision in LEGACY_HUMAN_DECISIONS,
             "equivalent": equivalent,
             "agrees": (equivalent == self.human_decision) if comparable else None,
             "resolution": self.resolution,
@@ -147,6 +157,7 @@ class CalibrationReport:
 
     scorer: str | None = None
     feedback_total: int = 0
+    legacy_total: int = 0
     matched: int = 0
     comparable: int = 0
     exact: int = 0
@@ -183,6 +194,7 @@ class CalibrationReport:
         return {
             "scorer": self.scorer,
             "feedback_total": self.feedback_total,
+            "legacy_total": self.legacy_total,
             "matched": self.matched,
             "without_evaluation": self.without_evaluation,
             "comparable": self.comparable,
@@ -196,6 +208,7 @@ class CalibrationReport:
             "unknown_human_decisions": dict(sorted(self.unknown_human_decisions.items())),
             "model_labels": list(MODEL_LABELS),
             "human_labels": list(HUMAN_LABELS),
+            "legacy_human_decisions": list(LEGACY_HUMAN_DECISIONS),
             "confusion": {
                 model: dict(self.confusion[model]) for model in MODEL_LABELS
             },
@@ -229,6 +242,11 @@ class CalibrationReport:
             f"{self.comparable} comparable, {self.unresolved_total} unresolved, "
             f"{self.without_evaluation} without a valid evaluation"
         ]
+        if self.legacy_total:
+            lines.append(
+                "legacy human decisions (kept and counted, not offered by the "
+                f"binary dashboard): {self.legacy_total}"
+            )
         if self.comparable:
             rate = (self.agreement_rate or 0.0) * 100.0
             lines.append(
@@ -342,6 +360,8 @@ def build_report(
     for sample in _load_samples(conn, scorer=scorer_value):
         report._samples.append(sample)
         report.feedback_total += 1
+        if sample.human_decision in LEGACY_HUMAN_DECISIONS:
+            report.legacy_total += 1
         if sample.evaluation_id is None:
             report.without_evaluation += 1
             continue
@@ -388,6 +408,7 @@ def build_report(
 
 __all__ = [
     "HUMAN_LABELS",
+    "LEGACY_HUMAN_DECISIONS",
     "MODEL_LABELS",
     "MODEL_TO_HUMAN",
     "SCORE_BUCKETS",

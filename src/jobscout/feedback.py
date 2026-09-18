@@ -6,11 +6,19 @@ into durable rows, so the human verdict stops being trapped in one browser
 profile and can later be compared with the model recommendation.
 
 Two signals, two tables
------------------------
+------------------------
 The human decision lives in ``job_feedback``; the model recommendation stays in
 ``evaluations``. Nothing here touches an evaluation, and nothing here ever
 touches LinkedIn or the network: importing is a local file read plus local
 SQLite writes.
+
+Binary decisions with a legacy value
+------------------------------------
+The active dashboard offers only ``apply`` and ``reject``. ``consider`` is a
+*legacy* value: a pre-binary export that carries it is still accepted and stored
+verbatim, so historical feedback is never rejected or silently converted. The
+importer validates against the full :data:`DECISIONS` vocabulary; the UI and any
+new mark are limited to :data:`ACTIVE_DECISIONS`.
 
 Validation and failure behaviour
 --------------------------------
@@ -52,12 +60,25 @@ from .db import (
     get_job,
     upsert_feedback,
 )
-from .models import FeedbackDecision, JobFeedback
+from .models import (
+    ACTIVE_FEEDBACK_DECISIONS,
+    LEGACY_FEEDBACK_DECISIONS,
+    FeedbackDecision,
+    JobFeedback,
+)
 from .timeutil import parse_datetime, utcnow_iso
 
-#: Decisions the dashboard can store. ``unscored`` and an empty string are not
-#: decisions: the dashboard uses falsey values for "not reviewed yet".
+#: Every decision the importer accepts, including historical values. The active
+#: dashboard is binary (:data:`ACTIVE_DECISIONS`); a legacy ``consider`` export is
+#: still valid and is never rejected or rewritten.
 DECISIONS: tuple[str, ...] = tuple(str(decision) for decision in FeedbackDecision)
+
+#: Decisions the binary dashboard offers for a new mark.
+ACTIVE_DECISIONS: tuple[str, ...] = ACTIVE_FEEDBACK_DECISIONS
+
+#: Decisions kept for historical compatibility: importable and countable, never
+#: offered by the active UI.
+LEGACY_DECISIONS: tuple[str, ...] = LEGACY_FEEDBACK_DECISIONS
 
 _JOB_ID_RE = re.compile(r"[0-9]+")
 
@@ -348,7 +369,9 @@ def import_feedback(
 
 
 __all__ = [
+    "ACTIVE_DECISIONS",
     "DECISIONS",
+    "LEGACY_DECISIONS",
     "FeedbackError",
     "FeedbackImportOutcome",
     "FeedbackRejection",

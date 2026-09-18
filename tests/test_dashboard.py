@@ -23,6 +23,8 @@ from jobscout.collectors.linkedin_details import (
     DEFINITIVE_MISSING_STATUSES as FETCHER_DEFINITIVE_STATUSES,
 )
 from jobscout.dashboard import (
+    DASHBOARD_FEEDBACK_DECISIONS,
+    DASHBOARD_LEGACY_FEEDBACK_DECISIONS,
     DEFAULT_TOP,
     DETAIL_EVIDENCE_WINDOW_DAYS,
     DETAIL_STATES,
@@ -837,11 +839,10 @@ def test_report_exposes_filters_search_feedback_and_summary(db_file: Path) -> No
     assert ">Requiere más información</option>" in html_text
     assert ">Sin puntaje</option>" in html_text
     # Human feedback labels stay separate from the model recommendation labels.
-    assert (
-        'var FEEDBACK_LABELS = { apply: "Aplicar", consider: "Revisar", reject: "Descartar" };'
-        in html_text
-    )
-    assert '["apply", "consider", "reject"]' in html_text
+    # The human surface is binary; the legacy value has a display-only label.
+    assert 'var FEEDBACK_LABELS = { apply: "Aplicar", reject: "Descartar" };' in html_text
+    assert 'var LEGACY_FEEDBACK_LABELS = { consider: "Considerar (histórico)" };' in html_text
+    assert 'var FEEDBACK_DECISIONS = ["apply", "reject"];' in html_text
     assert "localStorage" in html_text
     assert "no se escribe en la base" in html_text
     assert "SQLite" in html_text
@@ -1411,7 +1412,7 @@ def test_feedback_region_accessible_name_identifies_the_offer(db_file: Path) -> 
     # Visible Spanish text and the stored feedback surface stay unchanged.
     assert "Mi decisión (feedback)" in html_text
     assert (
-        'var FEEDBACK_LABELS = { apply: "Aplicar", consider: "Revisar", reject: "Descartar" };'
+        'var FEEDBACK_LABELS = { apply: "Aplicar", reject: "Descartar" };'
         in html_text
     )
     assert 'var STORAGE_KEY = payload.feedback_schema + ":" + payload.project_id;' in html_text
@@ -1423,6 +1424,60 @@ def test_export_button_is_visible_and_disabled_until_reviewed(db_file: Path) -> 
     # The export payload shape is written by the page, not by the DB.
     assert "jobscout-feedback.json" in html_text
     assert "source: \"jobscout-dashboard\"" in html_text
+
+
+def test_dashboard_feedback_is_binary_and_keeps_consider_legacy(db_file: Path) -> None:
+    """The active human decision is Aplicar/Descartar; consider is legacy only."""
+    html_text = generate_and_read(db_file)
+
+    # The canonical Python vocabulary and the rendered UI agree.
+    assert DASHBOARD_FEEDBACK_DECISIONS == ("apply", "reject")
+    assert DASHBOARD_LEGACY_FEEDBACK_DECISIONS == ("consider",)
+    assert 'var FEEDBACK_DECISIONS = ["apply", "reject"];' in html_text
+    assert 'var FEEDBACK_LABELS = { apply: "Aplicar", reject: "Descartar" };' in html_text
+    # The old human label must not come back as a clickable option.
+    assert 'consider: "Revisar"' not in html_text
+    assert 'var FEEDBACK_DECISIONS = ["apply", "consider", "reject"];' not in html_text
+    # The legacy value still has a display-only label.
+    assert 'var LEGACY_FEEDBACK_LABELS = { consider: "Considerar (histórico)" };' in html_text
+    # The model recommendation axis keeps its own three-way labels (a different
+    # signal), including its "Considerar" filter option.
+    assert '>Considerar</option>' in html_text
+    assert 'consider: "Considerar"' in html_text
+
+
+def test_legacy_consider_is_displayed_as_historical_and_replaceable(db_file: Path) -> None:
+    """A stored legacy decision is labelled historical and can be replaced."""
+    html_text = generate_and_read(db_file)
+
+    assert "function decisionStateText(decision)" in html_text
+    assert "Decisión histórica (legacy): " in html_text
+    assert "Puede reemplazarla con Aplicar o Descartar." in html_text
+    # The legacy path is explicit, not an accidental fallback of the active UI.
+    assert "function isLegacyFeedback(decision)" in html_text
+    assert "function feedbackLabel(decision)" in html_text
+    # Replacing is the ordinary active-button assignment; there is no third button.
+    assert 'var FEEDBACK_DECISIONS = ["apply", "reject"];' in html_text
+    # The human-approval ranking names the historical count as legacy, so the
+    # analytics never present ``consider`` as a current human option.
+    assert "considerar (legacy)" in html_text
+    # The legacy state is marked by shape, never by the model accent or the ember.
+    css = _embedded_style(html_text)
+    legacy_rules = [rule for rule in css.split("}") if ".decision-state.legacy" in rule]
+    assert legacy_rules, "the legacy state must have its own marker"
+    for rule in legacy_rules:
+        assert "--signal" not in rule and "--ember" not in rule, rule
+
+
+def test_export_keeps_the_v1_schema_and_ships_legacy_verbatim(db_file: Path) -> None:
+    """The export shape is unchanged and no stored value is rewritten on export."""
+    html_text = generate_and_read(db_file)
+
+    assert "schema: payload.feedback_schema" in html_text
+    assert "feedback: feedback" in html_text
+    assert 'var FEEDBACK_DECISIONS = ["apply", "reject"];' in html_text
+    payload = _extract_payload(html_text)
+    assert payload["feedback_schema"] == "jobscout.feedback.v1"
 
 
 def test_storage_key_is_derived_from_the_payload_schema(db_file: Path) -> None:

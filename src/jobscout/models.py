@@ -59,11 +59,28 @@ class FeedbackDecision(StrEnum):
     Deliberately a separate vocabulary from :class:`Recommendation`: the model
     recommendation is evidence, the human decision is the verdict, and the two
     are stored apart so they can be compared later.
+
+    The active workflow is binary (:data:`ACTIVE_FEEDBACK_DECISIONS`).
+    ``CONSIDER`` is kept as a historical value: rows created before the binary
+    switch stay importable, visible and countable, but the dashboard never offers
+    it for a new mark.
     """
 
     APPLY = "apply"
     CONSIDER = "consider"
     REJECT = "reject"
+
+
+#: Human decisions the active dashboard can produce. Defined once here so the
+#: browser UI, the importer, and the calibration report cannot drift apart.
+ACTIVE_FEEDBACK_DECISIONS: tuple[str, ...] = (
+    FeedbackDecision.APPLY.value,
+    FeedbackDecision.REJECT.value,
+)
+
+#: Historical human decisions kept for compatibility. They are still accepted by
+#: the importer and counted by calibration, but never offered for a new decision.
+LEGACY_FEEDBACK_DECISIONS: tuple[str, ...] = (FeedbackDecision.CONSIDER.value,)
 
 
 class ScorerName(StrEnum):
