@@ -55,22 +55,25 @@ LinkedIn result position is provenance, not quality ground truth.
 
 ## Priority 3 — Improve offer lifecycle handling
 
-Status: open.
+Status: implemented and verified offline.
 
-- Detect expired, removed, redirected, or duplicate LinkedIn postings.
+- Detect expired, removed, redirected, or duplicate postings.
 - Mark stale offers without deleting their historical evaluation.
 - Refresh only active/relevant offers.
 - Show broken-link status in the dashboard.
 
+Implemented in the lifecycle work units: definitive 404/410 deactivation,
+resighting reactivation, safe redirect evidence, bounded refresh selection, and
+neutral dashboard evidence. Future work is limited to provider-specific detail
+health where a public source exposes a compatible detail contract.
+
 ## Priority 4 — Calibrate scoring
 
-Deliberately **not implemented** in the keyword-coverage work: this is the
-model-vs-human comparison/calibration feature, and it was explicitly skipped. The
-keyword dashboard only reports descriptive per-keyword rates of the imported human
-decisions; it never computes agreement, false positives, or false negatives.
+Status: implemented as a read-only report; policy tuning remains human-owned.
 
-- Compare model recommendations with imported human decisions.
-- Identify false positives and false negatives.
+- Compare model recommendations with imported human decisions using
+  `jobscout calibrate --scorer opencode`.
+- Identify false positives and false negatives without changing scores.
 - Adjust role-fit, seniority, freshness, and dealbreaker handling.
 - Preserve evaluation provenance when prompts or profile versions change.
 
@@ -101,7 +104,7 @@ on usability rather than decorative expansion.
 
 ## Priority 6 — Expand sources
 
-Status: partially implemented and verified offline.
+Status: implemented; first bounded public sweep completed.
 
 Add other job platforms through isolated source adapters. Each adapter shares the
 same normalized job contract, deduplication rules, provenance model, rate limits,
@@ -124,13 +127,20 @@ Implemented:
 
 Still open:
 
-- no live run has been performed for either new provider; both are verified only
-  against fixtures and injected transports;
-- Tecnoempleo's `robots.txt` disallows automated/AI crawlers, so its HTML
-  selectors are unverified and must be confirmed manually before a live run;
+- the first sweep added 249 GetManfred offers and 125 Tecnoempleo offers; the
+  new records have partial source content and were scored with that limitation
+  visible in the dashboard;
+- GetManfred required a one-off 1 MiB bounded sitemap ceiling because its public
+  sitemap exceeds the normal raw-document limit;
+- Tecnoempleo completed 12 of 13 queries; the Junior DevSecOps query failed
+  closed on unrecognized live markup and produced no offers;
 - InfoJobs requires an official API authorization and explicit app credentials
   before any adapter work. The private `candidate/my-infojobs.xhtml` page must
   never be fetched.
+
+The next comparable sweep should reuse the same `cycle_id` convention only when
+the search scope and limits are intentionally comparable; do not interpret raw
+offer counts across platforms as quality without human feedback.
 
 ## Later features
 

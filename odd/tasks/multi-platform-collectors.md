@@ -24,8 +24,10 @@ keyword, observed position, and comparable search cycle.
 - [x] Implement GetManfred sitemap adapter and tests.
 - [x] Implement Tecnoempleo public search adapter and tests.
 - [x] Document InfoJobs API-only deferral (blocked adapter, no live path).
-- [x] Run the offline suite and record results; **no commit/push** (per session
-      instruction, which overrides the original "create a local commit" step).
+- [x] Run the offline suite and record results.
+- [x] Run one bounded public sweep of GetManfred and Tecnoempleo; no InfoJobs
+      session or private endpoint was used.
+- [x] Create a local commit; do not push.
 
 ## Status (verified 2026-09-18)
 
@@ -75,10 +77,14 @@ Observed limitations / still open:
   during this work. The parser uses the stable `rf-` offer path marker and
   configuration-driven settings (`JOBSCOUT_TECNOEMPLEO_OFFER_PATH_MARKER`).
   Confirm the marker against a live page before any `--confirm-network` run.
-- **No live network run was performed.** Neither adapter has been exercised
-  against the real endpoints; only fixtures and injected transports.
-- **Live run not done for either provider**, so no live validation or commit
-  exists yet.
+- **Live sweep observed 2026-09-18.** GetManfred discovered 250 sitemap offers
+  (249 new, 1 duplicate) with a one-off bounded 1 MiB raw limit. Tecnoempleo
+  completed 12 of 13 queries, adding 125 offers; the Junior DevSecOps query
+  failed closed on unrecognized markup and added nothing.
+- New-platform offers are partial sitemap/search summaries, not enriched detail
+  pages; they were scored with that limitation visible in the dashboard.
+- The live run is evidence of transport/markup compatibility for this cycle, not
+  a permanent selector guarantee; re-check failures on the next sweep.
 
 ## InfoJobs deferral (authorization blocker)
 
@@ -87,4 +93,3 @@ authenticated candidate page and must never be fetched. InfoJobs can only be
 added after (1) an official InfoJobs API authorization and (2) explicit
 app-scoped credentials, with a reviewed adapter and offline fixtures. This is a
 product/authorization decision, not an implementation detail.
-

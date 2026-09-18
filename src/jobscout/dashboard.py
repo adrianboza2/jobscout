@@ -56,7 +56,7 @@ DEFAULT_TOP = 25
 #: Hard cap on ``--top``. The whole payload is embedded in one HTML file, so an
 #: unbounded value would let a typo build a report large enough to freeze a
 #: browser. Raising it is a deliberate, reviewable change.
-MAX_TOP = 500
+MAX_TOP = 1000
 
 #: Payload schema written into the HTML and used to shape the localStorage key.
 DASHBOARD_SCHEMA = "jobscout.dashboard.v1"
