@@ -127,9 +127,11 @@ Implemented:
 
 Still open:
 
-- the first sweep added 249 GetManfred offers and 125 Tecnoempleo offers; the
-  new records have partial source content and were scored with that limitation
-  visible in the dashboard;
+- the unfiltered GetManfred inventory was deleted and replaced by a keyword-
+  filtered run with 22 matching offers; unrelated backend/frontend entries are
+  no longer present;
+- Tecnoempleo's 125 offers were enriched through their public detail pages and
+  are now `content_status=ok` where the recognized markup was available;
 - GetManfred required a one-off 1 MiB bounded sitemap ceiling because its public
   sitemap exceeds the normal raw-document limit;
 - Tecnoempleo completed 12 of 13 queries; the Junior DevSecOps query failed

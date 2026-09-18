@@ -326,10 +326,11 @@ subcommand), and `--version`.
 | `init-db` | Create or verify the schema. Idempotent. |
 | `ingest-fixture PATH [--source S] [--label L]` | Normalize, deduplicate, and store a JSON fixture (offline). |
 | `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Bounded public search. Disabled without `--confirm-network`. |
-| `search-getmanfred [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Public GetManfred sitemap inventory. No keyword fan-out and no ranking. Disabled without `--confirm-network`. |
+| `search-getmanfred [--keywords K] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Public GetManfred sitemap inventory. `--keywords` applies a **local** title/slug filter (no fan-out, no private endpoint). No ranking. Disabled without `--confirm-network`. |
 | `search-tecnoempleo --keywords K [--location L] [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Bounded Tecnoempleo public server-rendered search. Enforces `robots.txt` at run time. Disabled without `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | List the keyword families and the exact command per query (no network, no database). |
-| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich jobs with the full description. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence. |
+| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich LinkedIn jobs with the full description. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence. |
+| `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enrich Tecnoempleo offers from their public detail page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score. |
 | `rank [--top N] [--min-score S]` | Jobs with a successful score, best first. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evaluate jobs and print the explainable result. |
@@ -352,14 +353,23 @@ Other public sources (opt-in, all disabled by default):
 ```bash
 python -m jobscout search-getmanfred --dry-run                       # plan, offline: reads the public sitemap
 python -m jobscout search-getmanfred --max-items 40 --confirm-network
+python -m jobscout search-getmanfred --keywords "Platform Engineer" --max-items 40 --confirm-network  # local filter
 python -m jobscout search-tecnoempleo --keywords "cloud security" --location madrid --dry-run
 python -m jobscout search-tecnoempleo --keywords "cloud security" --max-pages 2 --confirm-network
 ```
 
-`search-getmanfred` is an **inventory**, not a search: it takes no keywords, does
-no fan-out, and records every observed position as `position_kind = none` with
-rank `0`. The title is derived from the public URL slug and the company is left
-unknown because the sitemap does not expose it. Postings stay `partial`.
+`search-getmanfred` is an **inventory**, not a search: it does no fan-out, and
+records every observed position as `position_kind = none` with rank `0`. The title
+is derived from the public URL slug and the company is left unknown because the
+sitemap does not expose it. Postings stay `partial`.
+
+GetManfred exposes no keyword search endpoint. `--keywords` applies the term
+**locally** to the sitemap in a single download: only offers whose normalized
+title/slug contains every token of the term are kept (accent- and case-insensitive,
+token matching, never substring: `front` does not match `frontend`). There is no
+private endpoint and no per-keyword request. Each kept offer records the approved
+keywords it matched in `extra['matched_keywords']`, so one offer observed under one
+or several keywords never mixes terms or platforms.
 
 `search-tecnoempleo` uses only the public server-rendered search under
 `/ofertas-trabajo/`. It re-reads `robots.txt` before the first request and fails
@@ -407,6 +417,32 @@ writes a row. A real refresh keeps the same network gates as the rest of
 
 `fetch-details` does not re-score on its own: run `score --all --rescore` after
 enriching.
+
+Tecnoempleo detail enrichment:
+
+```bash
+python -m jobscout fetch-tecnoempleo-details --dry-run                        # plan, no network or writes
+python -m jobscout fetch-tecnoempleo-details --max-items 10 --confirm-network # live, bounded
+python -m jobscout fetch-tecnoempleo-details --all --max-items 20 --confirm-network
+```
+
+It defaults to **active Tecnoempleo offers** that still lack a full description
+(`--all` widens to every active offer from that platform). It reuses the same
+safety model as the search: no login, cookies, private RSS, or API; it re-reads
+`robots.txt` and fails closed when the detail path is disallowed; conservative
+limits, pacing, and download ceiling.
+
+It extracts description, company, location, date, and technologies **only from
+recognized markup** (`itemprop`/stable classes; the date prefers
+`<time datetime>`). A recognized detail page leaves the offer at
+`content_status = ok` with a non-empty description. An unrecognized page, a 403,
+or a truncated body stays `partial`/`failed` with an honest error: `ok` is never
+invented. The pipeline applies the rule that a partial or failed attempt never
+replaces a successful full description.
+
+Full flow: **search -> detail enrichment -> scoring**. `fetch-tecnoempleo-details`
+does not re-score on its own; run `score --all --rescore` (or `score --job-id ID`)
+after enriching.
 
 Feedback import:
 

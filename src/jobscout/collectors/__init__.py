@@ -30,6 +30,10 @@ from .tecnoempleo import (
     TecnoempleoSearchConfig,
     search_tecnoempleo,
 )
+from .tecnoempleo_details import (
+    TecnoempleoDetailConfig,
+    fetch_tecnoempleo_details,
+)
 
 __all__ = [
     "AccessDeniedError",
@@ -46,12 +50,14 @@ __all__ = [
     "RequestPacer",
     "RetryDecision",
     "RobotsRules",
+    "TecnoempleoDetailConfig",
     "TecnoempleoSearchConfig",
     "TransientFailureError",
     "TransportError",
     "check_robots",
     "classify_status",
     "decide_retry",
+    "fetch_tecnoempleo_details",
     "load_fixture",
     "postings_from_fixture",
     "search_getmanfred",

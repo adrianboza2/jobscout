@@ -416,6 +416,26 @@ def _merge_detail_description(
     return existing_description, existing_status, ""
 
 
+def _detail_extra_fields(item: Any) -> dict[str, Any]:
+    """Structured fields a provider detail item contributes to the stored job.
+
+    LinkedIn's :class:`DetailItem` exposes none of these, so the returned mapping
+    is empty and the LinkedIn path stays byte-for-byte compatible. The
+    Tecnoempleo adapter exposes ``company``/``location``/``posted_at`` and a
+    ``technologies`` list; only non-empty values are propagated, and a field the
+    existing row already carries is never overwritten with an empty value.
+    """
+    fields: dict[str, Any] = {}
+    for name in ("company", "location", "posted_at"):
+        value = getattr(item, name, None)
+        if value:
+            fields[name] = value
+    technologies = getattr(item, "technologies", None)
+    if technologies:
+        fields["extra"] = {"technologies": list(technologies)}
+    return fields
+
+
 def ingest_detail_results(
     conn: Any,
     result: DetailResult,
@@ -423,14 +443,23 @@ def ingest_detail_results(
     settings: Settings,
     label: str | None = None,
     now: str | None = None,
+    provider: str | None = None,
 ) -> DetailIngestOutcome:
-    """Persist a detail-fetch result: provenance rows plus job enrichment."""
+    """Persist a detail-fetch result: provenance rows plus job enrichment.
+
+    ``provider`` is the platform slug the detail run belongs to. It defaults to
+    ``linkedin`` so every existing caller keeps its exact historical behaviour,
+    while an adapter such as Tecnoempleo can record ``tecnoempleo-details`` and
+    a per-item ``source`` on the provenance row.
+    """
     timestamp = now or utcnow_iso()
+    provider = str(provider or "linkedin")
+    detail_provider = f"{provider}-details"
     run = create_search_run(
         conn,
         SearchRun(
-            provider="linkedin-details",
-            label=label or "linkedin:job-details",
+            provider=detail_provider,
+            label=label or f"{provider}:job-details",
             query="job-details",
             params={
                 "requested": result.requested,
@@ -463,9 +492,11 @@ def ingest_detail_results(
             continue
 
         description, content_status, produced_hash = _merge_detail_description(job, item)
+        extra_fields = _detail_extra_fields(item)
         changed = (
             description != (job.description or "")
             or str(content_status) != str(job.content_status)
+            or bool(extra_fields)
         )
         if changed:
             update_job_content(
@@ -474,6 +505,7 @@ def ingest_detail_results(
                 description=description or None,
                 content_status=content_status,
                 content_hash=produced_hash or job.content_hash,
+                **extra_fields,
             )
             outcome.changed += 1
 
@@ -482,7 +514,7 @@ def ingest_detail_results(
             JobDetailFetch(
                 job_id=int(job.id),
                 run_id=run.id,
-                source="linkedin",
+                source=provider,
                 url=item.url,
                 # Carry the already-sanitized redirect target through to
                 # provenance; ``None`` means no redirect was observed.

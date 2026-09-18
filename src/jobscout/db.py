@@ -900,7 +900,6 @@ def all_active_jobs(conn: sqlite3.Connection, *, limit: int | None = None) -> li
 def _jobs_needing_details_predicate() -> str:
     return "(content_status != 'ok' OR description IS NULL OR TRIM(description) = '')"
 
-
 def count_active_jobs(conn: sqlite3.Connection) -> int:
     """Number of active jobs, used to report ``--max-items`` truncation."""
     return int(
@@ -908,12 +907,23 @@ def count_active_jobs(conn: sqlite3.Connection) -> int:
     )
 
 
-def count_jobs_needing_details(conn: sqlite3.Connection) -> int:
-    """Number of active jobs that still lack a successful full description."""
+def count_jobs_needing_details(
+    conn: sqlite3.Connection, *, source: str | None = None
+) -> int:
+    """Number of active jobs that still lack a successful full description.
+
+    ``source`` optionally narrows the count to one provider, so a
+    provider-specific enrichment command can report its own truncation without
+    counting unrelated platforms.
+    """
+    clauses = ["is_active = 1", _jobs_needing_details_predicate()]
+    params: list[Any] = []
+    if source:
+        clauses.append("source = ?")
+        params.append(str(source))
     return int(
         conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE is_active = 1 AND "
-            + _jobs_needing_details_predicate()
+            "SELECT COUNT(*) FROM jobs WHERE " + " AND ".join(clauses), params
         ).fetchone()[0]
     )
 
@@ -923,17 +933,22 @@ def jobs_needing_details(
     *,
     limit: int | None = None,
     job_ids: Sequence[int] | None = None,
+    source: str | None = None,
 ) -> list[Job]:
     """Active jobs that still lack a successful full description.
 
     A job counts as enriched when it is ``content_status = 'ok'`` *and* has a
     non-empty description, so search cards (``partial``) are always selected.
+    ``source`` optionally restricts the selection to one provider.
     """
     clauses = [
         "is_active = 1",
         _jobs_needing_details_predicate(),
     ]
     params: list[Any] = []
+    if source:
+        clauses.append("source = ?")
+        params.append(str(source))
     if job_ids:
         placeholders = ",".join("?" for _ in job_ids)
         clauses.append(f"id IN ({placeholders})")
@@ -1046,27 +1061,57 @@ def update_job_content(
     content_status: ContentStatus | str,
     content_hash: str,
     raw_document_id: int | None = None,
+    company: str | None = None,
+    location: str | None = None,
+    posted_at: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     """Replace a stored job's description without touching unrelated columns.
 
     ``raw_document_id`` is only written when provided, so enriching a job keeps
-    the provenance of the original search payload intact.
+    the provenance of the original search payload intact. ``company``,
+    ``location``, ``posted_at``, and ``extra`` are optional detail-derived fields:
+    each is only written when non-empty, so a provider fetch can fill a gap in a
+    partial search card without clobbering existing values. ``extra`` is merged
+    into the stored ``extra_json`` (never replaced wholesale), so unrelated keys
+    survive.
     """
+    assignments = [
+        "description = ?",
+        "content_status = ?",
+        "content_hash = ?",
+        "raw_document_id = COALESCE(?, raw_document_id)",
+    ]
+    params: list[Any] = [
+        description,
+        str(content_status),
+        content_hash,
+        raw_document_id,
+    ]
+    for column, value in (
+        ("company", company),
+        ("location", location),
+        ("posted_at", posted_at),
+    ):
+        if value:
+            assignments.append(f"{column} = ?")
+            params.append(value)
+    if extra:
+        merged = dict(extra)
+        existing = conn.execute(
+            "SELECT extra_json FROM jobs WHERE id = ?", (int(job_id),)
+        ).fetchone()
+        if existing is not None:
+            stored = _loads(existing["extra_json"], {})
+            if isinstance(stored, dict):
+                merged = {**stored, **extra}
+        assignments.append("extra_json = ?")
+        params.append(_dumps(merged))
+    params.append(int(job_id))
     with conn:
         conn.execute(
-            """
-            UPDATE jobs
-            SET description = ?, content_status = ?, content_hash = ?,
-                raw_document_id = COALESCE(?, raw_document_id)
-            WHERE id = ?
-            """,
-            (
-                description,
-                str(content_status),
-                content_hash,
-                raw_document_id,
-                int(job_id),
-            ),
+            f"UPDATE jobs SET {', '.join(assignments)} WHERE id = ?",
+            params,
         )
 
 

@@ -111,7 +111,7 @@ Prepara el perfil real antes de cualquier barrido:
 |---|-------|----------------|----------|--------------|
 | 0 | Preparar perfil | `cp profile.example.yaml profile.yaml` (POSIX) o `Copy-Item profile.example.yaml profile.yaml` (PowerShell), y `JOBSCOUT_PROFILE_PATH=profile.yaml` en `.env` | Defines rol objetivo, seniority, skills, dealbreakers y exclusiones. | Decisión humana |
 | 1 | Barrido controlado | `python -m jobscout keyword-plan` y luego `python -m jobscout search-linkedin --keywords "..." --dry-run`; para ejecutarlo, cambia `--dry-run` por `--confirm-network` | Descubre ofertas nuevas. `keyword-plan` es offline; cada búsqueda real es un acto humano explícito. | Semiautomático: autorizas cada consulta |
-| 2 | Enriquecer | `python -m jobscout fetch-details --max-items 10 --confirm-network` (o `--fixture` para trabajar offline) | Trae la descripción completa de cada oferta, acotado en volumen. | Semiautomático: autorizas cada corrida |
+| 2 | Enriquecer | `python -m jobscout fetch-details --max-items 10 --confirm-network` (o `fetch-tecnoempleo-details` para ofertas de Tecnoempleo, o `--fixture` para trabajar offline) | Trae la descripción completa de cada oferta, acotado en volumen. Solo sube a `ok` cuando reconoce el detalle. | Semiautomático: autorizas cada corrida |
 | 3 | Puntuar con MiMo | `python -m jobscout score --all --scorer opencode` | El puntuador predeterminado (OpenCode + MiMo) evalúa solo las ofertas que aún no tienen evaluación. | El puntaje es automático; la decisión de postular no |
 | 4 | Generar dashboard | `python -m jobscout dashboard --top 25` | Escribe un HTML local con ofertas, puntajes, evidencia del enlace y filtros de preferencia. | Automático y de solo lectura |
 | 5 | Revisar ofertas | Abre `reports/jobscout-dashboard.html` | Tú marcas **Aplicar / Revisar / Descartar** en el navegador. | Decisión humana exclusivamente |
@@ -324,10 +324,11 @@ subcomando) y `--version`.
 | `init-db` | Crea o verifica el esquema. Idempotente. |
 | `ingest-fixture PATH [--source S] [--label L]` | Normaliza, deduplica y guarda un fixture JSON (sin red). |
 | `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Búsqueda pública acotada. Deshabilitada sin `--confirm-network`. |
-| `search-getmanfred [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Inventario del sitemap público de GetManfred. Sin fan-out de palabras clave y sin ranking. Deshabilitado sin `--confirm-network`. |
+| `search-getmanfred [--keywords K] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Inventario del sitemap público de GetManfred. `--keywords` aplica un filtro **local** (título/slug), sin fan-out ni endpoint privado. Sin ranking. Deshabilitado sin `--confirm-network`. |
 | `search-tecnoempleo --keywords K [--location L] [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Búsqueda pública server-rendered de Tecnoempleo. Respeta `robots.txt` en tiempo de ejecución. Deshabilitada sin `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | Lista las familias de palabras clave y el comando exacto por consulta (sin red, sin base de datos). |
-| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas con la descripción completa. Por defecto, las que aún no están enriquecidas; `--refresh` vuelve sobre las ya consultadas con evidencia obsoleta o reintentable. |
+| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas de LinkedIn con la descripción completa. Por defecto, las que aún no están enriquecidas; `--refresh` vuelve sobre las ya consultadas con evidencia obsoleta o reintentable. |
+| `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enriquece ofertas de Tecnoempleo desde su página de detalle pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje. |
 | `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. |
@@ -350,15 +351,25 @@ Otras fuentes públicas (opt-in, todas deshabilitadas por defecto):
 ```bash
 python -m jobscout search-getmanfred --dry-run                       # plan, sin red: lee el sitemap público
 python -m jobscout search-getmanfred --max-items 40 --confirm-network
+python -m jobscout search-getmanfred --keywords "Platform Engineer" --max-items 40 --confirm-network  # filtro local
 python -m jobscout search-tecnoempleo --keywords "cloud security" --location madrid --dry-run
 python -m jobscout search-tecnoempleo --keywords "cloud security" --max-pages 2 --confirm-network
 ```
 
-`search-getmanfred` es un **inventario**, no una búsqueda: no acepta keywords, no
-genera fan-out, y cada posición observada se guarda como `position_kind = none`
-con rank `0`. El título se deriva del slug público de la URL y la empresa queda
-desconocida, porque el sitemap no la expone. Los postings quedan en estado
-`partial`.
+`search-getmanfred` es un **inventario**, no una búsqueda: no genera fan-out y
+cada posición observada se guarda como `position_kind = none` con rank `0`. El
+título se deriva del slug público de la URL y la empresa queda desconocida,
+porque el sitemap no la expone. Los postings quedan en estado `partial`.
+
+GetManfred no expone un endpoint de búsqueda por palabra clave. `--keywords`
+aplica el término **localmente** al sitemap en una sola descarga: solo se
+conservan las ofertas cuyo título/slug normalizado contiene todos los tokens del
+término (sensible a acentos y mayúsculas, coincidencia por token, nunca por
+substring: `front` no matchea `frontend`). No hay endpoint privado ni una
+petición por palabra clave. Cada oferta conserva en
+`extra['matched_keywords']` las keywords aprobadas que matcheó, de modo que una
+misma oferta observada bajo una o varias keywords no mezcla términos ni
+plataformas.
 
 `search-tecnoempleo` usa solo la búsqueda pública server-rendered bajo
 `/ofertas-trabajo/`. Antes del primer request vuelve a leer `robots.txt` y falla
@@ -407,6 +418,33 @@ filas. Un refresco real conserva sus mismas barreras de red que el resto de
 
 `fetch-details` no vuelve a puntuar por sí solo: ejecuta
 `score --all --rescore` después de enriquecer.
+
+Enriquecimiento de detalles de Tecnoempleo:
+
+```bash
+python -m jobscout fetch-tecnoempleo-details --dry-run                       # plan, sin red ni escrituras
+python -m jobscout fetch-tecnoempleo-details --max-items 10 --confirm-network # real, acotado
+python -m jobscout fetch-tecnoempleo-details --all --max-items 20 --confirm-network
+```
+
+Selecciona por defecto las ofertas **activas de Tecnoempleo** que todavía no
+tienen descripción completa (`--all` amplía a todas las activas de esa
+plataforma). Reutiliza el mismo modelo de seguridad que la búsqueda: sin login,
+sin cookies, sin RSS privado ni API; vuelve a leer `robots.txt` y falla cerrado si
+la ruta de detalle está deshabilitada; límites, pacing y techo de descarga
+conservadores.
+
+Extrae descripción, empresa, ubicación, fecha y tecnologías **solo de markup
+reconocido** (`itemprop`/clases estables; la fecha prefiere `<time datetime>`).
+Un detalle reconocido deja la oferta en `content_status = ok` con descripción no
+vacía. Un detalle no reconocido, un 403 o un cuerpo truncado quedan en
+`partial`/`failed` con un error honesto: nunca se inventa un `ok`. La decisión de
+no reemplazar una descripción completa previa por un intento parcial o fallido la
+aplica el pipeline al persistir.
+
+Flujo completo: **búsqueda → enriquecimiento de detalle → scoring**.
+`fetch-tecnoempleo-details` no vuelve a puntuar por sí solo; ejecuta
+`score --all --rescore` (o `score --job-id ID`) después de enriquecer.
 
 Importación de feedback:
 

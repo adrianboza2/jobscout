@@ -1,4 +1,4 @@
-"""GetManfred public sitemap inventory collector (opt-in, no keyword fan-out).
+"""GetManfred public sitemap inventory collector (opt-in, local keyword filter).
 
 Scope and ethics (enforced by construction, not by documentation alone):
 
@@ -8,15 +8,25 @@ Scope and ethics (enforced by construction, not by documentation alone):
 * **Public discovery only.** The adapter reads the offers sitemap that
   GetManfred advertises in its public ``robots.txt`` (``Allow: /``). It never
   logs in, never sends cookies, never runs JavaScript, and never fetches a job
-  detail page.
+  detail page. It does **not** use any private/JSON endpoint.
 * **Allow-list.** The configured sitemap URL (and every child sitemap of a
   sitemap index) must be an HTTPS ``getmanfred.com``/``*.getmanfred.com`` host;
   a cross-host child is skipped, never fetched.
-* **Inventory, not search.** There is no keyword fan-out and no search rank:
-  every observed position is recorded as ``position_kind = none`` with rank 0.
+* **Local keyword filter, single fetch.** GetManfred exposes no keyword search
+  endpoint, so an approved keyword is applied *locally* to the sitemap: only
+  offer entries whose normalized title/slug contains every token of the keyword
+  are kept. One bounded sitemap fetch yields the whole catalog; there is no
+  query fan-out and no second request per keyword. A run with no keyword is a
+  plain inventory of the whole sitemap.
+* **Inventory, not search.** Every observed position is recorded as
+  ``position_kind = none`` with rank 0, because a sitemap has no result order.
   The offer title is derived from the public URL slug and the company is left
   unknown, because the sitemap carries no company field. This is a discovery
   inventory (``content_status = partial``), not a full posting.
+* **Keyword provenance is preserved.** Each kept posting records every approved
+  keyword it matched on ``extra['matched_keywords']`` (a list), so one offer
+  observed under several keywords is never collapsed into one term and never
+  mixed across platforms.
 * **Bounded.** Documents, items, request delay, timeout, and the raw download
   ceiling are all conservative.
 * **Fail closed.** 401/403/429 and unexpected statuses abort the run; only
@@ -56,6 +66,7 @@ from ..models import (
 from ..normalize import normalize_job_posting
 from ..timeutil import utcnow_iso
 from ..url_policy import is_getmanfred_host, validate_getmanfred_url
+from .keyword_match import matching_keywords
 from .base import (
     TRUNCATION_HEADER,
     AccessDeniedError,
@@ -80,10 +91,17 @@ _OFFER_ID_RE = re.compile(r"/ofertas-empleo/(\d+)(?:/|$)")
 
 @dataclass
 class GetManfredSitemapConfig:
-    """Bounded inventory parameters for the public offers sitemap."""
+    """Bounded inventory parameters for the public offers sitemap.
+
+    ``keywords`` is optional. When set, the keyword is applied locally to the
+    sitemap (no fan-out, no private endpoint): only offers whose normalized
+    title/slug matches it are kept, and the matched keyword is stored as
+    provenance on each posting.
+    """
 
     sitemap_url: str = DEFAULT_GETMANFRED_SITEMAP_URL
     offer_path_prefix: str = DEFAULT_GETMANFRED_OFFER_PATH_PREFIX
+    keywords: str | None = None
     max_documents: int = 1
     max_items: int = 40
 
@@ -91,6 +109,8 @@ class GetManfredSitemapConfig:
         validate_getmanfred_url(self.sitemap_url, name="getmanfred_sitemap_url")
         if not self.offer_path_prefix.startswith("/"):
             raise ValueError("offer_path_prefix must start with '/'")
+        if self.keywords is not None:
+            self.keywords = str(self.keywords).strip() or None
         validate_bounded_int(
             self.max_documents, name="max_documents", hard_max=HARD_MAX_PAGES
         )
@@ -109,6 +129,7 @@ class GetManfredSitemapConfig:
         return {
             "sitemap_url": self.sitemap_url,
             "offer_path_prefix": self.offer_path_prefix,
+            "keywords": self.keywords,
             "max_documents": self.max_documents,
             "max_items": self.max_items,
             "planned_urls": list(result.planned_urls),
@@ -227,6 +248,7 @@ def postings_from_sitemap(
     xml_text: str,
     *,
     offer_path_prefix: str,
+    keywords: str | None = None,
     fetched_at: str | None = None,
     max_items: int = 40,
 ) -> list[JobPosting]:
@@ -235,6 +257,11 @@ def postings_from_sitemap(
     Non-offer URLs (home pages, static pages) are ignored. Each posting keeps
     the sitemap ``lastmod`` in ``extra`` for provenance, never as ``posted_at``
     because a modification date is not a publication date.
+
+    When ``keywords`` is set, only offers whose normalized title/slug matches the
+    keyword are kept, and ``extra['matched_keywords']`` records the keyword(s)
+    that matched, so an offer observed under a keyword is distinguishable from a
+    plain inventory row. The filter is local: the sitemap is still fetched once.
     """
     resolved_at = fetched_at or utcnow_iso()
     postings: list[JobPosting] = []
@@ -243,17 +270,23 @@ def postings_from_sitemap(
         if not is_offer_url(loc, offer_path_prefix=offer_path_prefix):
             continue
         job_id = extract_getmanfred_job_id(loc)
+        title = title_from_offer_slug(loc)
+        matched = matching_keywords(keywords, f"{title} {loc}") if keywords else []
+        if keywords and not matched:
+            continue
         raw = {
             "source": PROVIDER,
             "source_job_id": job_id,
             "url": loc,
-            "title": title_from_offer_slug(loc),
+            "title": title,
             "company": "",
             "fetched_at": resolved_at,
             "content_status": ContentStatus.PARTIAL.value,
             "sitemap_lastmod": entry.get("lastmod"),
             "inventory": "sitemap",
         }
+        if matched:
+            raw["matched_keywords"] = matched
         posting = normalize_job_posting(raw, source=PROVIDER)
         if posting.content_status is ContentStatus.EMPTY:
             continue
@@ -372,6 +405,7 @@ def search_getmanfred(
             postings = postings_from_sitemap(
                 response.body,
                 offer_path_prefix=config.offer_path_prefix,
+                keywords=config.keywords,
                 fetched_at=response.fetched_at,
                 max_items=config.max_items,
             )
@@ -392,7 +426,12 @@ def search_getmanfred(
 
     result.items_found = len(result.postings)
     if result.notes is None and result.status is SearchRunStatus.COMPLETED:
-        result.notes = f"{result.items_found} offer(s) discovered from the public sitemap"
+        scope = (
+            f" matching {config.keywords!r} in the public sitemap"
+            if config.keywords
+            else " from the public sitemap"
+        )
+        result.notes = f"{result.items_found} offer(s) discovered{scope}"
     return result
 
 

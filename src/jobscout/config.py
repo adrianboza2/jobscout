@@ -387,6 +387,10 @@ class Settings:
     tecnoempleo_offer_path_marker: str = DEFAULT_TECNOEMPLEO_OFFER_PATH_MARKER
     tecnoempleo_max_pages: int = 2
     tecnoempleo_max_items: int = 40
+    #: Bounded item cap for the opt-in Tecnoempleo detail-enrichment run. Kept
+    #: separate from the search cap so a sweep and an enrichment run can be
+    #: budgeted independently.
+    tecnoempleo_detail_max_items: int = 20
 
     # LLM scorer (optional; never required for tests)
     llm_base_url: str | None = None
@@ -434,6 +438,11 @@ class Settings:
         )
         validate_bounded_int(
             self.tecnoempleo_max_pages, name="tecnoempleo_max_pages", hard_max=HARD_MAX_PAGES
+        )
+        validate_bounded_int(
+            self.tecnoempleo_detail_max_items,
+            name="tecnoempleo_detail_max_items",
+            hard_max=HARD_MAX_ITEMS,
         )
         if not self.getmanfred_offer_path_prefix.startswith("/"):
             raise ConfigError("getmanfred_offer_path_prefix must start with '/'")
@@ -555,6 +564,9 @@ class Settings:
             ),
             tecnoempleo_max_pages=_env_int(merged, "TECNOEMPLEO_MAX_PAGES", 2),
             tecnoempleo_max_items=_env_int(merged, "TECNOEMPLEO_MAX_ITEMS", 40),
+            tecnoempleo_detail_max_items=_env_int(
+                merged, "TECNOEMPLEO_DETAIL_MAX_ITEMS", 20
+            ),
             llm_base_url=_env_opt_str(merged, "LLM_BASE_URL"),
             llm_api_key=_env_opt_str(merged, "LLM_API_KEY"),
             llm_model=_env_str(merged, "LLM_MODEL", DEFAULT_LLM_MODEL),

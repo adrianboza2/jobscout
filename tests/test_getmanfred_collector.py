@@ -26,6 +26,7 @@ from jobscout.collectors.getmanfred import (
     search_getmanfred,
     title_from_offer_slug,
 )
+from jobscout.collectors.keyword_match import keyword_matches, matching_keywords
 from jobscout.db import count_jobs, get_search_run, list_search_runs
 from jobscout.models import ContentStatus, PositionKind, SearchRunStatus
 from jobscout.pipeline import ingest_collector_result
@@ -75,6 +76,148 @@ def test_title_from_slug_is_display_only_and_never_invents_company() -> None:
         "https://www.getmanfred.com/ofertas-empleo/8476/datcisions-backend-engineer-php-sept26"
     )
     assert title == "Datcisions backend engineer php sept26"
+
+
+# ---------------------------------------------------------------------------
+# Keyword filtering (local, no fan-out)
+# ---------------------------------------------------------------------------
+
+
+MIXED_FIXTURE = "getmanfred_sitemap_mixed.xml"
+
+
+def test_keyword_match_is_accent_and_case_insensitive_token_subset() -> None:
+    assert keyword_matches("Platform Engineer", "acme platform engineer azure")
+    assert keyword_matches("azure devsecops", "Azure DevSecOps Engineer")
+    assert keyword_matches("Cloud Security", "cloud-security-engineer")
+    assert not keyword_matches("Platform", "frontend developer")
+    # Token matching, never substring: "front" must not match "frontend".
+    assert not keyword_matches("front", "frontend react developer")
+    assert not keyword_matches("", "anything")
+    assert matching_keywords("platform engineer", "platform engineer") == [
+        "platform engineer"
+    ]
+    assert matching_keywords("platform engineer", "backend engineer") == []
+    # A comma-separated catalogue is matched locally without another sitemap request.
+    assert matching_keywords("cloud, security", "cloud engineer") == ["cloud"]
+
+
+def test_postings_from_sitemap_filters_backend_frontend_when_not_approved() -> None:
+    # Approved keywords are platform/cloud/security, so backend and frontend
+    # offers must be dropped — the regression this fix targets.
+    platform = postings_from_sitemap(
+        fixture_text(MIXED_FIXTURE),
+        offer_path_prefix=OFFER_PREFIX,
+        keywords="Platform Engineer",
+    )
+    assert [p.source_job_id for p in platform] == ["9001"]
+    assert platform[0].extra["matched_keywords"] == ["Platform Engineer"]
+
+    frontend = postings_from_sitemap(
+        fixture_text(MIXED_FIXTURE),
+        offer_path_prefix=OFFER_PREFIX,
+        keywords="Frontend Developer",
+    )
+    # The keyword is approved here, and backend still does not leak in.
+    assert [p.source_job_id for p in frontend] == ["9003"]
+
+    backend = postings_from_sitemap(
+        fixture_text(MIXED_FIXTURE),
+        offer_path_prefix=OFFER_PREFIX,
+        keywords="Platform Engineer",
+    )
+    assert all("php" not in (p.url or "") for p in backend)
+
+
+def test_postings_from_sitemap_keeps_offer_under_match_and_records_keyword() -> None:
+    postings = postings_from_sitemap(
+        fixture_text(MIXED_FIXTURE),
+        offer_path_prefix=OFFER_PREFIX,
+        keywords="Azure DevSecOps",
+    )
+    assert len(postings) == 1
+    assert postings[0].source_job_id == "9005"
+    assert postings[0].extra["matched_keywords"] == ["Azure DevSecOps"]
+    # No keyword means a plain inventory keeping every offer entry.
+    unfiltered = postings_from_sitemap(
+        fixture_text(MIXED_FIXTURE), offer_path_prefix=OFFER_PREFIX
+    )
+    assert len(unfiltered) == 5
+    assert "matched_keywords" not in unfiltered[0].extra
+
+
+def test_search_getmanfred_applies_keyword_with_single_request(settings) -> None:
+    client = FakeHttpClient(
+        [response(200, fixture_text(MIXED_FIXTURE), headers={"content-type": "application/xml"})]
+    )
+    config = GetManfredSitemapConfig(keywords="Cloud Engineer", max_items=10)
+    result = search_getmanfred(
+        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    assert result.status is SearchRunStatus.COMPLETED
+    assert client.call_count == 1  # local filter, no fan-out
+    assert [p.source_job_id for p in result.postings] == ["9002"]
+    assert "Cloud Engineer" in (result.notes or "")
+
+
+def test_search_getmanfred_keyword_records_run_params(conn, settings) -> None:
+    client = FakeHttpClient(
+        [response(200, fixture_text(MIXED_FIXTURE), headers={"content-type": "application/xml"})]
+    )
+    config = GetManfredSitemapConfig(keywords="Platform Engineer", max_items=10)
+    result = search_getmanfred(
+        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    outcome = ingest_collector_result(
+        conn, result, config=config, settings=settings, cycle_id="c1"
+    )
+    run = get_search_run(conn, outcome.run_id)
+    assert run.params["keywords"] == "Platform Engineer"
+
+
+def test_keyword_provenance_is_stored_without_mixing_platforms(conn, settings) -> None:
+    """A GetManfred offer keeps its matched keyword and never joins a LinkedIn series."""
+    from jobscout.collectors.linkedin import LinkedInSearchConfig, search_linkedin
+
+    # One GetManfred offer matched by the approved "Platform Engineer" keyword.
+    gm_client = FakeHttpClient(
+        [response(200, fixture_text(MIXED_FIXTURE), headers={"content-type": "application/xml"})]
+    )
+    gm_config = GetManfredSitemapConfig(keywords="Platform Engineer", max_items=10)
+    gm_result = search_getmanfred(
+        gm_config, settings=settings, network_enabled=True, client=gm_client, sleep=lambda _: None
+    )
+    ingest_collector_result(
+        conn, gm_result, config=gm_config, settings=settings, cycle_id="cycle-1"
+    )
+
+    # A LinkedIn run that used the same literal keyword is a separate series.
+    li_client = FakeHttpClient(
+        [response(200, fixture_text("linkedin_search_page_drift.html"), headers={"content-type": "text/html"})]
+    )
+    li_config = LinkedInSearchConfig(keywords="Platform Engineer", max_pages=1, max_items=10)
+    li_result = search_linkedin(
+        li_config, settings=settings, network_enabled=True, client=li_client, sleep=lambda _: None
+    )
+    ingest_collector_result(
+        conn, li_result, config=li_config, settings=settings, cycle_id="cycle-1"
+    )
+
+    from jobscout.dashboard import build_payload
+
+    payload = build_payload(conn, top=10, now=None)
+    series = {(item["provider"], item["keyword"]) for item in payload["keywords"]}
+    assert ("getmanfred", "Platform Engineer") in series
+    assert ("linkedin", "Platform Engineer") in series
+    # Every stored keyword observation is scoped to its provider; none is None.
+    for offer in payload["offers"]:
+        for keyword in offer["keywords"]:
+            assert keyword["provider"] in {"getmanfred", "linkedin"}
+    # The GetManfred offer carries the keyword it matched as provenance.
+    gm_offer = next(
+        offer for offer in payload["offers"] if offer["source"] == "getmanfred"
+    )
+    assert gm_offer["keywords"][0]["keyword"] == "Platform Engineer"
 
 
 def test_postings_from_sitemap_keep_contract() -> None:
