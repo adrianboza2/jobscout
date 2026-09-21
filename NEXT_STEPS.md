@@ -79,15 +79,30 @@ Status: implemented as a read-only report; policy tuning remains human-owned.
 
 ## Priority 5 — Improve daily workflow
 
+Status: the dashboard and notification items are implemented and verified; the
+multi-cycle search cadence remains a manual habit.
+
 - Search cadence: run an exhaustive bounded sweep of all approved keyword families
   every 3–4 days, using `--max-pages 2`; do not search every day by default.
 - After each sweep, enrich only new or incomplete offers and score only new jobs.
 - Review the dashboard and import feedback in the same session.
 - Inspect keyword performance after at least three comparable cycles.
 - Add optional scheduling only with explicit user control.
-- Add local or opt-in notifications for high-value offers.
-- Add a dashboard view for new and unreviewed offers.
+- (done) local or opt-in notifications for high-value offers: `jobscout notify`
+  previews active offers at or above `JOBSCOUT_NOTIFY_SCORE_THRESHOLD` that have no
+  imported human decision. Disabled by default (`JOBSCOUT_NOTIFY_ENABLED=false`);
+  while disabled it never opens or creates the database. Read-only, offline, no
+  model call, no fan-out, no scheduler, no daemon, and no remote delivery.
+- (done) dashboard view for offers without an imported decision: a read-only filter
+  over the `job_feedback` table, deliberately kept separate from the browser
+  `localStorage` review state and never merged with it.
 - Keep all automation read-only with respect to applications.
+
+Honest limitation: there is **no** "new in the latest cycle" view.
+`search_runs.cycle_id` is nullable and free-form, and runs from different platforms
+or cycles are not guaranteed to be comparable, so that metric cannot be computed
+trustworthily and is deliberately not approximated. The only isolation predicate is
+the absence of a `job_feedback` row.
 
 ## Priority 7 — Dashboard UI/UX maintenance
 
