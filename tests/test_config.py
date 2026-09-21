@@ -10,6 +10,8 @@ from __future__ import annotations
 import pytest
 
 from jobscout.config import (
+    DEFAULT_NOTIFY_DELIVERY,
+    DEFAULT_NOTIFY_SCORE_THRESHOLD,
     HARD_MAX_ITEMS,
     HARD_MAX_PAGES,
     ConfigError,
@@ -245,3 +247,77 @@ def test_with_overrides_cannot_bypass_the_hard_caps() -> None:
         settings.with_overrides(max_pages=HARD_MAX_PAGES + 1)
     with pytest.raises(ConfigError):
         settings.with_overrides(max_items=HARD_MAX_ITEMS + 1)
+
+
+# ---------------------------------------------------------------------------
+# Local notifications (opt-in, disabled by default)
+# ---------------------------------------------------------------------------
+
+
+def test_notify_settings_default_to_disabled() -> None:
+    settings = Settings.from_env(env={}, dotenv_path=None)
+    assert settings.notify_enabled is False
+    assert settings.notify_score_threshold == DEFAULT_NOTIFY_SCORE_THRESHOLD
+    assert settings.notify_preference_outcome is None
+    assert settings.notify_delivery == DEFAULT_NOTIFY_DELIVERY
+
+
+def test_notify_settings_parse_environment() -> None:
+    settings = Settings.from_env(
+        env={
+            "JOBSCOUT_NOTIFY_ENABLED": "yes",
+            "JOBSCOUT_NOTIFY_SCORE_THRESHOLD": "55.5",
+            "JOBSCOUT_NOTIFY_PREFERENCE_OUTCOME": "flag",
+            "JOBSCOUT_NOTIFY_DELIVERY": "system",
+        },
+        dotenv_path=None,
+    )
+    assert settings.notify_enabled is True
+    assert settings.notify_score_threshold == 55.5
+    assert settings.notify_preference_outcome == "flag"
+    assert settings.notify_delivery == "system"
+
+
+def test_notify_preference_outcome_empty_means_no_filter() -> None:
+    settings = Settings.from_env(
+        env={"JOBSCOUT_NOTIFY_PREFERENCE_OUTCOME": ""}, dotenv_path=None
+    )
+    assert settings.notify_preference_outcome is None
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"JOBSCOUT_NOTIFY_SCORE_THRESHOLD": "-1"},
+        {"JOBSCOUT_NOTIFY_SCORE_THRESHOLD": "100.1"},
+        {"JOBSCOUT_NOTIFY_SCORE_THRESHOLD": "nan"},
+        {"JOBSCOUT_NOTIFY_SCORE_THRESHOLD": "inf"},
+        {"JOBSCOUT_NOTIFY_SCORE_THRESHOLD": "not-a-number"},
+        {"JOBSCOUT_NOTIFY_PREFERENCE_OUTCOME": "maybe"},
+        {"JOBSCOUT_NOTIFY_DELIVERY": "email"},
+        {"JOBSCOUT_NOTIFY_ENABLED": "sometimes"},
+    ],
+)
+def test_notify_settings_reject_invalid_values(env: dict[str, str]) -> None:
+    with pytest.raises(ConfigError):
+        Settings.from_env(env=env, dotenv_path=None)
+
+
+def test_notify_settings_accept_the_full_threshold_range() -> None:
+    for value in ("0", "0.0", "100", "100.0", "80"):
+        settings = Settings.from_env(
+            env={"JOBSCOUT_NOTIFY_SCORE_THRESHOLD": value}, dotenv_path=None
+        )
+        assert settings.notify_score_threshold == float(value)
+
+
+def test_with_overrides_cannot_bypass_notify_validation() -> None:
+    settings = Settings.from_env(env={}, dotenv_path=None)
+    with pytest.raises(ConfigError):
+        settings.with_overrides(notify_score_threshold=101.0)
+    with pytest.raises(ConfigError):
+        settings.with_overrides(notify_score_threshold=float("nan"))
+    with pytest.raises(ConfigError):
+        settings.with_overrides(notify_preference_outcome="maybe")
+    with pytest.raises(ConfigError):
+        settings.with_overrides(notify_delivery="email")

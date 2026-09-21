@@ -357,3 +357,19 @@ def test_missing_command_is_a_usage_error(db_path: Path) -> None:
 def test_score_requires_a_selection(db_path: Path) -> None:
     with pytest.raises(SystemExit):
         main(["--db", str(db_path), "score"])
+
+
+def test_notify_is_disabled_by_default_and_creates_no_database(
+    db_path: Path, capsys
+) -> None:
+    """The opt-in default reads nothing, sends nothing, and writes no file."""
+    assert main(["--db", str(db_path), "notify"]) == EXIT_OK
+    output = capsys.readouterr().out
+    assert "disabled" in output
+    assert not db_path.exists()
+
+    assert main(["--db", str(db_path), "notify", "--json"]) == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["enabled"] is False
+    assert payload["count"] == 0
+    assert not db_path.exists()

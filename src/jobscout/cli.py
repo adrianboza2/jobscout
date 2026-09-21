@@ -58,7 +58,7 @@ from .collectors.tecnoempleo_details import (
     fetch_tecnoempleo_details,
     plan_detail_targets as plan_tecnoempleo_detail_targets,
 )
-from .config import ConfigError, Settings
+from .config import ConfigError, HARD_MAX_ITEMS, Settings, validate_bounded_int
 from .dashboard import (
     DEFAULT_OUTPUT as DASHBOARD_DEFAULT_OUTPUT,
     DEFAULT_TOP as DASHBOARD_DEFAULT_TOP,
@@ -93,6 +93,12 @@ from .keywords import (
     search_command,
 )
 from .models import EvaluationStatus, ScorerName, SearchRunStatus
+from .notify import (
+    DEFAULT_NOTIFY_LIMIT,
+    build_report as build_notification_report,
+    deliver_report,
+    disabled_report,
+)
 from .pipeline import ingest_collector_result, ingest_detail_results, ingest_fixture
 from .preference import PreferenceAssessment, PreferenceOutcome, assess_preference
 from .scoring import SCORERS, evaluate_job, load_profile
@@ -627,6 +633,34 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     calibrate_parser.set_defaults(handler=cmd_calibrate)
+
+    notify_parser = add_common(
+        subparsers.add_parser(
+            "notify",
+            help=(
+                "preview local notifications for high-value offers "
+                "(offline, opt-in, disabled by default)"
+            ),
+        )
+    )
+    notify_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help=(
+            "maximum notifications to report, bounded by "
+            f"{HARD_MAX_ITEMS} (default: {DEFAULT_NOTIFY_LIMIT})"
+        ),
+    )
+    notify_parser.add_argument(
+        "--deliver",
+        action="store_true",
+        help=(
+            "send via the configured local channel after previewing; without "
+            "it the command only prints"
+        ),
+    )
+    notify_parser.set_defaults(handler=cmd_notify)
 
     return parser
 
@@ -1668,6 +1702,74 @@ def cmd_calibrate(args: argparse.Namespace, settings: Settings) -> int:
         conn.close()
 
     _emit(report.to_dict(), as_json=getattr(args, "as_json", False), text=report.to_text())
+    return EXIT_OK
+
+
+def cmd_notify(args: argparse.Namespace, settings: Settings) -> int:
+    """Preview or deliver local notifications for high-value offers.
+
+    Disabled by default: when ``JOBSCOUT_NOTIFY_ENABLED`` is false this returns
+    success with an honest report and never creates or opens a database. When
+    enabled, it opens an *existing* database read-only and selects active offers
+    at or above the configured score threshold, optionally matching a configured
+    preference outcome, excluding every offer with any imported human feedback.
+    ``--deliver`` is the only path that can reach a system notifier; without it
+    the command only prints. There is no scheduler, daemon, or automatic run.
+    """
+    as_json = getattr(args, "as_json", False)
+    try:
+        limit = validate_bounded_int(
+            args.limit if args.limit is not None else DEFAULT_NOTIFY_LIMIT,
+            name="limit",
+            hard_max=HARD_MAX_ITEMS,
+        )
+    except ConfigError as exc:
+        _write_line(f"invalid notify options: {exc}", stream=sys.stderr)
+        return EXIT_ERROR
+
+    if not settings.notify_enabled:
+        report = disabled_report(settings, limit=limit)
+        _emit(report.to_dict(), as_json=as_json, text=report.to_text())
+        return EXIT_OK
+
+    db_path = Path(settings.db_path)
+    missing_message = (
+        f"no database found at {db_path}; run 'jobscout init-db', ingest a "
+        "fixture or a search, and score a job before notifying"
+    )
+    if str(db_path) != ":memory:" and not db_path.is_file():
+        _write_line(missing_message, stream=sys.stderr)
+        return EXIT_ERROR
+    conn = _open_existing_readonly(db_path)
+    if conn is None:
+        _write_line(missing_message, stream=sys.stderr)
+        return EXIT_ERROR
+    try:
+        report = build_notification_report(conn, settings, limit=limit)
+    except sqlite3.Error as exc:
+        _write_line(
+            f"notify error: database at {db_path} could not be read: {exc}",
+            stream=sys.stderr,
+        )
+        return EXIT_ERROR
+    finally:
+        conn.close()
+
+    payload = report.to_dict()
+    payload["preview_only"] = not args.deliver
+    text = report.to_text()
+    if args.deliver:
+        result = deliver_report(report, delivery=settings.notify_delivery)
+        payload["delivery"] = result.to_dict()
+        text += f"\ndelivery: {result.detail}"
+    else:
+        payload["delivery"] = {
+            "requested": settings.notify_delivery,
+            "channel": None,
+            "delivered": False,
+            "detail": "preview only",
+        }
+    _emit(payload, as_json=as_json, text=text)
     return EXIT_OK
 
 

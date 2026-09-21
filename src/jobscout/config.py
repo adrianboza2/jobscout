@@ -9,6 +9,7 @@ same code runs offline in tests and against a live endpoint in manual runs.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import tempfile
@@ -78,6 +79,14 @@ DEFAULT_OPENCODE_PURE = True
 # They are deliberately conservative for a low-volume, good-citizen collector.
 HARD_MAX_PAGES = 10
 HARD_MAX_ITEMS = 250
+
+# Local notifications (opt-in, disabled by default). Selection is offline and
+# read-only; delivery is stdout unless the operator explicitly opts into a
+# discovered local system notifier.
+DEFAULT_NOTIFY_SCORE_THRESHOLD = 80.0
+DEFAULT_NOTIFY_DELIVERY = "stdout"
+NOTIFY_DELIVERY_CHOICES: tuple[str, ...] = ("stdout", "system")
+NOTIFY_PREFERENCE_OUTCOMES: tuple[str, ...] = ("pass", "flag", "fail")
 
 
 class ConfigError(ValueError):
@@ -392,6 +401,17 @@ class Settings:
     #: budgeted independently.
     tecnoempleo_detail_max_items: int = 20
 
+    # Local notifications (opt-in, disabled by default). ``notify_enabled``
+    # gates the whole ``notify`` command: the disabled default reads nothing.
+    # ``notify_score_threshold`` must be a finite number in ``0..100``;
+    # ``notify_preference_outcome`` is ``None``/empty (no filter) or one of
+    # ``pass``/``flag``/``fail``; ``notify_delivery`` is ``stdout`` or
+    # ``system`` (with a stdout fallback when no local notifier exists).
+    notify_enabled: bool = False
+    notify_score_threshold: float = DEFAULT_NOTIFY_SCORE_THRESHOLD
+    notify_preference_outcome: str | None = None
+    notify_delivery: str = DEFAULT_NOTIFY_DELIVERY
+
     # LLM scorer (optional; never required for tests)
     llm_base_url: str | None = None
     llm_api_key: str | None = None
@@ -481,6 +501,26 @@ class Settings:
             raise ConfigError("opencode_timeout_seconds must be > 0")
         if self.opencode_max_output_bytes < 1:
             raise ConfigError("opencode_max_output_bytes must be >= 1")
+        # Local-notification knobs are validated here as well, so a direct
+        # library caller or ``with_overrides`` cannot bypass the CLI/env checks.
+        if isinstance(self.notify_score_threshold, bool) or not isinstance(
+            self.notify_score_threshold, (int, float)
+        ):
+            raise ConfigError("notify_score_threshold must be a number between 0 and 100")
+        threshold = float(self.notify_score_threshold)
+        if not math.isfinite(threshold) or not 0.0 <= threshold <= 100.0:
+            raise ConfigError("notify_score_threshold must be a finite number between 0 and 100")
+        if self.notify_preference_outcome not in (None, "") and (
+            self.notify_preference_outcome not in NOTIFY_PREFERENCE_OUTCOMES
+        ):
+            raise ConfigError(
+                "notify_preference_outcome must be one of "
+                f"{', '.join(NOTIFY_PREFERENCE_OUTCOMES)} or empty"
+            )
+        if self.notify_delivery not in NOTIFY_DELIVERY_CHOICES:
+            raise ConfigError(
+                "notify_delivery must be one of " f"{', '.join(NOTIFY_DELIVERY_CHOICES)}"
+            )
 
     # -- derived helpers ------------------------------------------------
     @property
@@ -567,6 +607,14 @@ class Settings:
             tecnoempleo_detail_max_items=_env_int(
                 merged, "TECNOEMPLEO_DETAIL_MAX_ITEMS", 20
             ),
+            notify_enabled=_env_bool(merged, "NOTIFY_ENABLED", False),
+            notify_score_threshold=_env_float(
+                merged, "NOTIFY_SCORE_THRESHOLD", DEFAULT_NOTIFY_SCORE_THRESHOLD
+            ),
+            notify_preference_outcome=_env_opt_str(
+                merged, "NOTIFY_PREFERENCE_OUTCOME"
+            ),
+            notify_delivery=_env_str(merged, "NOTIFY_DELIVERY", DEFAULT_NOTIFY_DELIVERY),
             llm_base_url=_env_opt_str(merged, "LLM_BASE_URL"),
             llm_api_key=_env_opt_str(merged, "LLM_API_KEY"),
             llm_model=_env_str(merged, "LLM_MODEL", DEFAULT_LLM_MODEL),
