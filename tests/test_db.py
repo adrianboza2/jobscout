@@ -10,6 +10,7 @@ import pytest
 from jobscout.db import (
     SCHEMA_SQL,
     SCHEMA_VERSION,
+    EvaluationContractError,
     all_active_jobs,
     connect,
     count_jobs,
@@ -231,6 +232,7 @@ def test_migration_v4_adds_final_url_without_losing_history(tmp_path: Path) -> N
                 job_id=job.id,
                 scorer=ScorerName.HEURISTIC,
                 overall_score=88,
+                recommendation=Recommendation.APPLY,
                 rationale="keep me",
             ),
         )
@@ -490,7 +492,15 @@ def test_evaluation_round_trip_and_latest_view(conn, stored_job) -> None:
     assert fetched.dimensions[0].evidence == ["python"]
     assert fetched.unknowns == ["team size"]
 
-    older = insert_evaluation(conn, Evaluation(job_id=stored_job.id, scorer=ScorerName.LLM, overall_score=10))
+    older = insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=stored_job.id,
+            scorer=ScorerName.LLM,
+            overall_score=10,
+            recommendation=Recommendation.SKIP,
+        ),
+    )
     assert latest_evaluation(conn, stored_job.id).id == older.id
     assert latest_evaluation(conn, stored_job.id, scorer=ScorerName.HEURISTIC).id == stored.id
     assert evaluation_count(conn) == 2
@@ -507,8 +517,24 @@ def test_list_jobs_joins_latest_score_and_ranks(conn) -> None:
         ),
         now="2026-09-15T09:00:00Z",
     )
-    insert_evaluation(conn, Evaluation(job_id=high.id, scorer=ScorerName.HEURISTIC, overall_score=90))
-    insert_evaluation(conn, Evaluation(job_id=low.id, scorer=ScorerName.HEURISTIC, overall_score=40))
+    insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=high.id,
+            scorer=ScorerName.HEURISTIC,
+            overall_score=90,
+            recommendation=Recommendation.APPLY,
+        ),
+    )
+    insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=low.id,
+            scorer=ScorerName.HEURISTIC,
+            overall_score=40,
+            recommendation=Recommendation.SKIP,
+        ),
+    )
 
     recent = list_jobs(conn, limit=10)
     assert {item.job.id for item in recent} == {high.id, low.id}
@@ -544,7 +570,13 @@ def test_failed_evaluations_are_excluded_from_latest_view(conn, stored_job) -> N
 def test_jobs_needing_evaluation_respects_scorer(conn, stored_job) -> None:
     assert [job.id for job in jobs_needing_evaluation(conn, scorer="heuristic")] == [stored_job.id]
     insert_evaluation(
-        conn, Evaluation(job_id=stored_job.id, scorer=ScorerName.HEURISTIC, overall_score=50)
+        conn,
+        Evaluation(
+            job_id=stored_job.id,
+            scorer=ScorerName.HEURISTIC,
+            overall_score=50,
+            recommendation=Recommendation.CONSIDER,
+        ),
     )
     assert jobs_needing_evaluation(conn, scorer="heuristic") == []
     assert [job.id for job in jobs_needing_evaluation(conn, scorer="llm")] == [stored_job.id]
@@ -553,7 +585,13 @@ def test_jobs_needing_evaluation_respects_scorer(conn, stored_job) -> None:
 
 def test_foreign_keys_cascade_on_job_delete(conn, stored_job) -> None:
     insert_evaluation(
-        conn, Evaluation(job_id=stored_job.id, scorer=ScorerName.HEURISTIC, overall_score=50)
+        conn,
+        Evaluation(
+            job_id=stored_job.id,
+            scorer=ScorerName.HEURISTIC,
+            overall_score=50,
+            recommendation=Recommendation.CONSIDER,
+        ),
     )
     with conn:
         conn.execute("DELETE FROM jobs WHERE id = ?", (stored_job.id,))
@@ -573,6 +611,7 @@ def test_deactivate_job_hides_without_deleting_history(conn) -> None:
             job_id=job.id,
             scorer=ScorerName.HEURISTIC,
             overall_score=88,
+            recommendation=Recommendation.APPLY,
             rationale="keep me",
         ),
     )
@@ -763,3 +802,72 @@ def test_latest_detail_fetches_for_jobs_handles_empty_and_unfetched(conn) -> Non
     # A job with no attempts is absent, so callers can tell "never checked".
     assert latest_detail_fetches_for_jobs(conn, [job.id]) == {}
     assert latest_detail_fetches_for_jobs(conn, [job.id, job.id]) == {}
+
+
+# ---------------------------------------------------------------------------
+# Canonical successful-evaluation invariant
+# ---------------------------------------------------------------------------
+
+
+def test_insert_evaluation_refuses_ok_without_a_score(conn, stored_job) -> None:
+    with pytest.raises(EvaluationContractError):
+        insert_evaluation(
+            conn,
+            Evaluation(
+                job_id=stored_job.id,
+                scorer=ScorerName.LLM,
+                overall_score=None,
+                recommendation=Recommendation.APPLY,
+            ),
+        )
+    assert evaluation_count(conn) == 0
+
+
+def test_insert_evaluation_refuses_ok_need_more_info(conn, stored_job) -> None:
+    """The ambiguous ``need_more_info`` success can never be persisted."""
+    with pytest.raises(EvaluationContractError):
+        insert_evaluation(
+            conn,
+            Evaluation(
+                job_id=stored_job.id,
+                scorer=ScorerName.LLM,
+                overall_score=55.0,
+                recommendation=Recommendation.NEED_MORE_INFO,
+            ),
+        )
+    assert evaluation_count(conn) == 0
+
+
+def test_insert_evaluation_accepts_a_real_zero_score(conn, stored_job) -> None:
+    """Zero is a valid score for a real incompatibility, not a placeholder."""
+    stored = insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=stored_job.id,
+            scorer=ScorerName.HEURISTIC,
+            overall_score=0.0,
+            recommendation=Recommendation.SKIP,
+        ),
+    )
+    assert stored.overall_score == 0.0
+    assert latest_evaluation(conn, stored_job.id).overall_score == 0.0
+
+
+def test_insert_evaluation_accepts_explicit_needs_more_info_status(conn, stored_job) -> None:
+    """An unresolved evaluation is stored honestly, never as a success."""
+    from jobscout.models import EvaluationStatus
+
+    stored = insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=stored_job.id,
+            scorer=ScorerName.OPENCODE,
+            overall_score=30.0,
+            recommendation=Recommendation.NEED_MORE_INFO,
+            status=EvaluationStatus.NEEDS_MORE_INFO,
+        ),
+    )
+    assert str(stored.status) == EvaluationStatus.NEEDS_MORE_INFO.value
+    # It is not a successful public evaluation and carries no invented score.
+    assert latest_evaluation(conn, stored_job.id) is None
+    assert stored.overall_score == 30.0

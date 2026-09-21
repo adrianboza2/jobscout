@@ -56,6 +56,7 @@ from jobscout.models import (
     DetailFetchStatus,
     DuplicateKind,
     Evaluation,
+    EvaluationStatus,
     FeedbackDecision,
     JobDetailFetch,
     JobFeedback,
@@ -2566,6 +2567,152 @@ def test_cli_smoke_against_bundled_fixtures(tmp_path: Path, capsys) -> None:
     assert data["keywords"][0]["keyword"]
     assert data["keywords"][0]["sightings"] >= 1
     assert data["offers"][0]["keywords"][0]["rank"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# Honest scoreless / failed / fallback rendering
+# ---------------------------------------------------------------------------
+
+
+def _seed_evaluation_states(path: Path) -> dict[str, int]:
+    """Four jobs: a success, an unresolved, a failed and a never-evaluated one."""
+    conn = connect(path)
+    try:
+        init_db(conn)
+        good, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="4111111111",
+                url="https://www.linkedin.com/jobs/view/4111111111/good",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+        unresolved, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="4222222222",
+                url="https://www.linkedin.com/jobs/view/4222222222/unresolved",
+                title="Unresolved Role",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+        failed, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="4333333333",
+                url="https://www.linkedin.com/jobs/view/4333333333/failed",
+                title="Failed Role",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+        never, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="4444444444",
+                url="https://www.linkedin.com/jobs/view/4444444444/never",
+                title="Never Evaluated",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+
+        insert_evaluation(conn, _score(good.id, 80.0, Recommendation.APPLY))
+        insert_evaluation(
+            conn,
+            Evaluation(
+                job_id=unresolved.id,
+                scorer=ScorerName.OPENCODE,
+                overall_score=30.0,
+                recommendation=Recommendation.NEED_MORE_INFO,
+                status=EvaluationStatus.NEEDS_MORE_INFO,
+            ),
+        )
+        insert_evaluation(
+            conn,
+            Evaluation(
+                job_id=failed.id,
+                scorer=ScorerName.LLM,
+                status=EvaluationStatus.PARSE_ERROR,
+                error="SECRET-ERROR-TOKEN-xyz-should-not-be-embedded",
+            ),
+        )
+    finally:
+        conn.close()
+    return {
+        "good": int(good.id),
+        "unresolved": int(unresolved.id),
+        "failed": int(failed.id),
+        "never": int(never.id),
+    }
+
+
+def test_scoreless_offers_expose_their_evaluation_state(tmp_path: Path) -> None:
+    path = tmp_path / "states.sqlite3"
+    ids = _seed_evaluation_states(path)
+
+    payload = _payload(path, top=10)
+    by_id = {offer["id"]: offer for offer in payload["offers"]}
+
+    assert by_id[ids["good"]]["score"] == 80.0
+    assert by_id[ids["good"]]["recommendation"] == "apply"
+    assert by_id[ids["good"]]["evaluation_status"] == "ok"
+
+    # A scoreless offer carries the real reason, never an invented score.
+    assert by_id[ids["unresolved"]]["score"] is None
+    assert by_id[ids["unresolved"]]["evaluation_status"] == "needs_more_info"
+    assert by_id[ids["failed"]]["score"] is None
+    assert by_id[ids["failed"]]["evaluation_status"] == "parse_error"
+    assert by_id[ids["never"]]["evaluation_status"] is None
+
+    states = payload["summary"]["evaluation_states"]
+    assert states["ok"] == 1
+    assert states["needs_more_info"] == 1
+    assert states["parse_error"] == 1
+    assert states["none"] == 1
+
+
+def test_failed_and_unresolved_states_render_without_leaking_the_error(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "states.sqlite3"
+    _seed_evaluation_states(path)
+
+    html_text = generate_and_read(path)
+
+    assert "Requiere más información" in html_text
+    assert "Evaluación fallida" in html_text
+    # The stored error text is never embedded: only the status is serialized.
+    assert "SECRET-ERROR-TOKEN-xyz" not in html_text
+
+
+def test_fallback_provenance_is_visible_and_not_a_placeholder(tmp_path: Path) -> None:
+    path = tmp_path / "fallback.sqlite3"
+    conn = connect(path)
+    try:
+        init_db(conn)
+        job, _ = store_posting(conn, _posting(), now="2026-09-15T10:00:00Z")
+        insert_evaluation(
+            conn,
+            Evaluation(
+                job_id=job.id,
+                scorer=ScorerName.LLM,
+                overall_score=63.0,
+                recommendation=Recommendation.CONSIDER,
+                model="heuristic-v1+fallback",
+                error="LLM response was contract-invalid",
+                rationale="Deterministic fallback. [fallback: heuristic used]",
+            ),
+        )
+    finally:
+        conn.close()
+
+    payload = _payload(path)
+    offer = payload["offers"][0]
+    assert offer["score"] == 63.0
+    assert offer["model"] == "heuristic-v1+fallback"
+    assert "fallback" in offer["rationale"].lower()
+
+    html_text = generate_and_read(path)
+    assert "heuristic-v1+fallback" in html_text
 
 
 # ---------------------------------------------------------------------------

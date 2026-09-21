@@ -22,11 +22,13 @@ verdict the model never expressed.
 
 What is compared
 ----------------
-By default, for every stored human decision the report takes the latest *valid*
-evaluation (``status = 'ok'``) of that job, regardless of scorer. Passing a
-``scorer`` narrows that lookup to evaluations produced by that scorer, which is
-the honest way to compare one backend at a time. A ``failed`` evaluation is
-never used, so a retry that errored cannot masquerade as the model's answer.
+By default, for every stored human decision the report takes the latest *scorable*
+evaluation of that job, regardless of scorer: ``status = 'ok'`` (a decided
+recommendation) or ``status = 'needs_more_info'`` (a scored but unresolved one,
+which is exactly what the unresolved bucket reports). Passing a ``scorer``
+narrows that lookup to evaluations produced by that scorer, which is the honest
+way to compare one backend at a time. A ``failed`` evaluation is never used, so a
+retry that errored cannot masquerade as the model's answer.
 
 A human decision with no valid evaluation is counted as ``without_evaluation``
 and excluded from the agreement math; the model has not spoken yet.
@@ -301,10 +303,16 @@ def _require_schema(conn: sqlite3.Connection) -> None:
 def _load_samples(
     conn: sqlite3.Connection, *, scorer: str | None
 ) -> list[CalibrationSample]:
-    """Read every human decision with its latest valid evaluation (no writes)."""
+    """Read every human decision with its latest scorable evaluation (no writes).
+
+    Both ``ok`` and ``needs_more_info`` count: the latter is a scored,
+    unresolved evaluation, so it belongs in the report's unresolved bucket
+    instead of being dropped as a failure.
+    """
     subquery = (
         "SELECT MAX(x.id) FROM evaluations x "
-        "WHERE x.job_id = f.job_id AND x.status = 'ok'"
+        "WHERE x.job_id = f.job_id "
+        "AND x.status IN ('ok', 'needs_more_info')"
     )
     params: list[Any] = []
     if scorer is not None:

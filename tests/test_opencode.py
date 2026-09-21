@@ -483,6 +483,27 @@ def test_incomplete_json_prefix_is_a_parse_error_without_invented_score(
     assert "unbalanced" in (evaluation.error or "")
 
 
+def test_need_more_info_output_is_contract_invalid(
+    opencode_settings, strong_posting, profile
+) -> None:
+    """A structurally valid ``need_more_info`` answer is not a publishable success."""
+    payload = json.dumps(
+        {
+            "overall_score": 0,
+            "recommendation": "need_more_info",
+            "confidence": 0.2,
+            "dimensions": [{"name": "skills", "score": 0}],
+        }
+    )
+    scorer, _ = make_scorer(
+        opencode_settings, [command_outcome(0, text_event(payload))]
+    )
+    evaluation = scorer.score(strong_posting, profile)
+    assert evaluation.status == EvaluationStatus.PARSE_ERROR.value
+    assert evaluation.overall_score is None
+    assert "apply/consider/skip recommendation" in (evaluation.error or "")
+
+
 def test_timeout_is_reported(opencode_settings, strong_posting, profile) -> None:
     runner = FakeRunner([subprocess.TimeoutExpired(cmd="opencode run", timeout=1)])
     scorer = OpenCodeScorer(opencode_settings, runner=runner)
@@ -643,7 +664,7 @@ def test_configured_secret_in_model_text_is_redacted_before_persisting(
     repaired = json.dumps(
         {
             "overall_score": "74.5 points",
-            "recommendation": CONFIGURED_SECRET,
+            "recommendation": "consider",
             "dimensions": {
                 "skills": {"score": 80, "rationale": f"echoed {CONFIGURED_SECRET}"}
             },

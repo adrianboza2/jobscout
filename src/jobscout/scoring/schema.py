@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..config import redact_secrets
-from ..models import DimensionScore, Recommendation
+from ..models import PUBLIC_RECOMMENDATIONS, DimensionScore, Recommendation
 
 PROMPT_VERSION = "v1"
 
@@ -399,6 +399,33 @@ def validate_payload(data: Any, *, strict: bool = False) -> ParseOutcome:
     )
 
 
+def success_contract_errors(payload: dict[str, Any] | None) -> list[str]:
+    """Reasons a normalized payload cannot be a successful public evaluation.
+
+    This is the payload-shaped half of the canonical invariant enforced by
+    :func:`jobscout.models.evaluation_contract_errors`: a successful evaluation
+    needs a numeric ``overall_score`` and a public recommendation
+    (apply/consider/skip). ``need_more_info`` remains a legitimate diagnostic in
+    the payload, but it is never a successful public recommendation, so a payload
+    that resolves to it is rejected here and the scorer reports a contract-invalid
+    response instead of publishing an unresolved success.
+
+    An empty list means the payload satisfies the invariant.
+    """
+    if payload is None:
+        return ["no normalized payload to validate"]
+    errors: list[str] = []
+    if payload.get("overall_score") is None:
+        errors.append("a successful evaluation requires a numeric overall_score")
+    recommendation = str(payload.get("recommendation") or "")
+    if recommendation not in PUBLIC_RECOMMENDATIONS:
+        errors.append(
+            "a successful evaluation requires an apply/consider/skip recommendation "
+            f"(got '{recommendation or 'missing'}')"
+        )
+    return errors
+
+
 def _redact_strings(value: Any, secrets: tuple[str, ...]) -> Any:
     """Recursively redact configured secrets from every string in ``value``."""
     if isinstance(value, str):
@@ -465,5 +492,6 @@ __all__ = [
     "extract_json_object",
     "parse_llm_evaluation",
     "redact_outcome",
+    "success_contract_errors",
     "validate_payload",
 ]

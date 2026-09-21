@@ -733,7 +733,12 @@ def test_definitive_missing_detail_deactivates_job_and_keeps_history(conn, setti
     job = _store_card(conn, "3911111111")
     insert_evaluation(
         conn,
-        Evaluation(job_id=job.id, scorer=ScorerName.HEURISTIC, overall_score=77),
+        Evaluation(
+            job_id=job.id,
+            scorer=ScorerName.HEURISTIC,
+            overall_score=77,
+            recommendation="apply",
+        ),
     )
 
     result = DetailResult(items=[_missing_detail(job, http_status=404)], requested=1)

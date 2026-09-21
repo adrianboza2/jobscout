@@ -13,7 +13,14 @@ import pytest
 from conftest import FakeHttpClient, fixture_text, llm_envelope, no_network, response
 
 from jobscout.config import Settings, is_safe_to_store, redact_secrets
-from jobscout.models import ContentStatus, EvaluationStatus, Job, Recommendation, ScorerName
+from jobscout.models import (
+    ContentStatus,
+    Evaluation,
+    EvaluationStatus,
+    Job,
+    Recommendation,
+    ScorerName,
+)
 from jobscout.scoring import evaluate_job
 from jobscout.scoring.llm import (
     LLMNotConfiguredError,
@@ -225,7 +232,7 @@ def test_configured_secret_in_model_text_is_redacted_before_persisting(
     repaired = json.dumps(
         {
             "overall_score": "74.5 points",
-            "recommendation": CONFIGURED_SECRET,
+            "recommendation": "consider",
             "dimensions": {
                 "skills": {"score": 80, "rationale": f"echoed {CONFIGURED_SECRET}"}
             },
@@ -299,3 +306,150 @@ def test_scorer_does_not_follow_instructions_from_job_text(llm_settings, profile
     assert "Ignore previous instructions" in sent  # forwarded as data, not obeyed
     assert sent.count(UNTRUSTED_END) == 1  # only the legitimate closing delimiter
     assert "[REDACTED-MARKER]" in sent
+
+
+# ---------------------------------------------------------------------------
+# Contract-invalid output, bounded repair, and heuristic fallback
+# ---------------------------------------------------------------------------
+
+# A structurally valid response whose recommendation is unresolved. It used to
+# be persisted as an ``ok`` evaluation with a 0 placeholder; it must not anymore.
+NEED_MORE_INFO_RESPONSE = json.dumps(
+    {
+        "overall_score": 0,
+        "recommendation": "need_more_info",
+        "confidence": 0.2,
+        "dimensions": [{"name": "skills", "score": 0}],
+    }
+)
+
+
+def test_need_more_info_response_is_contract_invalid(llm_settings, strong_posting, profile) -> None:
+    scorer, _ = make_scorer(llm_settings, content=NEED_MORE_INFO_RESPONSE)
+    evaluation = scorer.score(strong_posting, profile)
+    assert evaluation.status == EvaluationStatus.PARSE_ERROR.value
+    assert evaluation.overall_score is None
+    assert "apply/consider/skip recommendation" in (evaluation.error or "")
+
+
+def test_pipeline_retries_contract_invalid_output_then_succeeds(
+    llm_settings, conn, stored_job, profile
+) -> None:
+    client = FakeHttpClient(
+        [
+            response(200, llm_envelope(NEED_MORE_INFO_RESPONSE), url="https://llm.example.test/v1/chat/completions"),
+            response(200, llm_envelope(fixture_text("llm_response_valid.json")), url="https://llm.example.test/v1/chat/completions"),
+        ]
+    )
+    scorer = OpenAICompatibleScorer(llm_settings, client=client, sleep=lambda _: None)
+
+    evaluation = evaluate_job(
+        conn,
+        stored_job,
+        profile,
+        scorer_name=ScorerName.LLM.value,
+        settings=llm_settings,
+        scorer=scorer,
+    )
+
+    assert client.call_count == 2  # bounded repair: one retry after the invalid answer
+    assert evaluation.status == EvaluationStatus.OK.value
+    assert evaluation.overall_score == 82
+    assert evaluation.scorer == ScorerName.LLM.value
+
+
+def test_pipeline_falls_back_to_heuristic_after_bounded_repairs(
+    llm_settings, conn, stored_job, profile
+) -> None:
+    client = FakeHttpClient(
+        [
+            response(200, llm_envelope(NEED_MORE_INFO_RESPONSE), url="https://llm.example.test/v1/chat/completions"),
+            response(200, llm_envelope(NEED_MORE_INFO_RESPONSE), url="https://llm.example.test/v1/chat/completions"),
+        ]
+    )
+    scorer = OpenAICompatibleScorer(llm_settings, client=client, sleep=lambda _: None)
+
+    evaluation = evaluate_job(
+        conn,
+        stored_job,
+        profile,
+        scorer_name=ScorerName.LLM.value,
+        settings=llm_settings,
+        scorer=scorer,
+    )
+
+    assert client.call_count == 2  # the retry budget is bounded
+    # The deterministic heuristic recovered it with a real, publishable result.
+    assert evaluation.status == EvaluationStatus.OK.value
+    assert evaluation.overall_score is not None
+    assert evaluation.recommendation in {
+        Recommendation.APPLY.value,
+        Recommendation.CONSIDER.value,
+        Recommendation.SKIP.value,
+    }
+    assert evaluation.scorer == ScorerName.LLM.value  # pipeline identity is kept
+    assert evaluation.model and evaluation.model.endswith("+fallback")
+    assert evaluation.error and "recommendation" in evaluation.error
+    assert "fallback" in evaluation.rationale
+
+    # The persisted row is the fallback, with the original failure preserved.
+    row = conn.execute(
+        "SELECT * FROM evaluations WHERE id = ?", (evaluation.id,)
+    ).fetchone()
+    assert row["status"] == "ok"
+    assert row["model"].endswith("+fallback")
+    assert row["error"]
+
+
+def test_pipeline_records_an_unresolved_result_as_needs_more_info(
+    settings, conn, stored_job, profile
+) -> None:
+    """An unresolved scored result is stored honestly, never as ``ok``."""
+
+    class _UnresolvedScorer:
+        name = ScorerName.HEURISTIC.value
+
+        def score(self, job, profile, **kwargs):  # noqa: ANN001 - test double
+            return Evaluation(
+                job_id=kwargs.get("job_id") or 0,
+                scorer=ScorerName.HEURISTIC,
+                overall_score=40.0,
+                recommendation=Recommendation.NEED_MORE_INFO,
+                confidence=0.2,
+                model="heuristic-v1",
+            )
+
+    evaluation = evaluate_job(
+        conn,
+        stored_job,
+        profile,
+        scorer_name=ScorerName.HEURISTIC.value,
+        settings=settings,
+        scorer=_UnresolvedScorer(),
+    )
+
+    assert evaluation.status == EvaluationStatus.NEEDS_MORE_INFO.value
+    assert evaluation.overall_score == 40.0  # the real score is kept, not zeroed
+    # It is not a successful public evaluation.
+    from jobscout.db import latest_evaluation
+
+    assert latest_evaluation(conn, stored_job.id) is None
+
+
+def test_pipeline_does_not_retry_transport_failures(
+    llm_settings, conn, stored_job, profile
+) -> None:
+    scorer, client = make_scorer(llm_settings, content="denied", status=403)
+    evaluation = evaluate_job(
+        conn,
+        stored_job,
+        profile,
+        scorer_name=ScorerName.LLM.value,
+        settings=llm_settings,
+        scorer=scorer,
+    )
+    # Access failures are operator problems, not schema repairs: no retry and no
+    # silent heuristic substitution.
+    assert client.call_count == 1
+    assert evaluation.status == EvaluationStatus.ERROR.value
+    assert evaluation.overall_score is None

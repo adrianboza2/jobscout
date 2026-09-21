@@ -349,9 +349,16 @@ def _fetch_active_jobs(
                e.rationale AS rationale,
                e.scorer AS scorer,
                e.model AS model,
-               e.created_at AS evaluated_at
+               e.created_at AS evaluated_at,
+               latest_e.status AS evaluation_status
         FROM jobs j
         LEFT JOIN latest_evaluations e ON e.job_id = j.id
+        LEFT JOIN evaluations latest_e ON latest_e.id = (
+            SELECT x.id FROM evaluations x
+            WHERE x.job_id = j.id
+            ORDER BY x.id DESC
+            LIMIT 1
+        )
         WHERE j.is_active = 1
         ORDER BY (e.overall_score IS NULL),
                  e.overall_score DESC,
@@ -737,6 +744,13 @@ def _summary(
         outcome = (offer.get("preference") or {}).get("outcome")
         if outcome in preference_counts:
             preference_counts[outcome] += 1
+    # Every scoreless offer is classified by the status of its latest evaluation,
+    # so "never evaluated", "evaluated but unresolved" and "evaluated and failed"
+    # are never collapsed into one ambiguous "sin puntaje" count.
+    evaluation_states: dict[str, int] = {}
+    for offer in offers:
+        state = offer.get("evaluation_status") or "none"
+        evaluation_states[state] = evaluation_states.get(state, 0) + 1
     total = int(conn.execute("SELECT COUNT(*) FROM jobs WHERE is_active = 1").fetchone()[0])
     human_reviewed_jobs = int(conn.execute("SELECT COUNT(*) FROM job_feedback").fetchone()[0])
     return {
@@ -744,6 +758,7 @@ def _summary(
         "jobs_shown": len(offers),
         "scored": len(scored),
         "unscored": len(offers) - len(scored),
+        "evaluation_states": evaluation_states,
         "recommendations": counts,
         # Preference verdicts are recomputed from the stored posting text and are
         # deliberately separate from the model recommendation above.
@@ -857,6 +872,14 @@ def build_payload(
                     str(row["recommendation"])
                     if score is not None and row["recommendation"]
                     else None
+                ),
+                # The status of the single latest evaluation of any kind. It lets
+                # the report tell "never evaluated" apart from "evaluated and
+                # failed" / "evaluated but unresolved", so a scoreless offer is
+                # rendered with the real reason instead of a blank score. Only the
+                # status is serialized: the stored error text is never embedded.
+                "evaluation_status": (
+                    str(row["evaluation_status"]) if row["evaluation_status"] else None
                 ),
                 "confidence": (
                     round(float(row["confidence"]), 3) if row["confidence"] is not None else None
@@ -1566,6 +1589,11 @@ p.filters-summary.active { color:var(--ink); }
 /* Model-axis weight only: apply reads loudest, skip and need_more_info recede. */
 .card.rec-apply .score { color:var(--signal); }
 .card.rec-skip .score, .card.rec-need_more_info .score { color:var(--muted); }
+/* A missing, incomplete or failed evaluation is stated in words, never shown as
+   a numeric score: the display type is deliberately smaller than a real score. */
+.score-state { font-family:var(--font-sans); font-size:var(--fs-small); font-weight:600;
+  letter-spacing:0; }
+.card.rec-failed .score, .card.rec-unscored .score { color:var(--muted); }
 
 /* The badge belongs to the model axis. The accent marks "apply" and nothing else;
    human feedback never uses it (see .decision-btn below). */
@@ -1582,6 +1610,8 @@ p.filters-summary.active { color:var(--ink); }
 .badge-need_more_info { background:transparent; border-style:dashed;
   border-color:var(--rule-strong); color:var(--muted); }
 .badge-unscored { background:transparent; border-style:dashed;
+  border-color:var(--rule-strong); color:var(--muted); }
+.badge-failed { background:transparent; border-style:dashed;
   border-color:var(--rule-strong); color:var(--muted); }
 
 /* Exactly six facts per offer, so three fixed columns fill two tidy rows and the
@@ -1761,7 +1791,9 @@ _SCRIPT = r"""
   var FEEDBACK_DECISIONS = ["apply", "reject"];
   var RECOMMENDATION_LABELS = {
     apply: "Aplicar", consider: "Considerar", skip: "Descartar",
-    need_more_info: "Requiere más información"
+    need_more_info: "Requiere más información",
+    // Display-only buckets for an offer without a successful public evaluation.
+    failed: "Evaluación fallida", unscored: "Sin evaluar"
   };
   // Labels for the active decision buttons, plus a display-only label for the
   // legacy value. The legacy value is never a button.
@@ -1942,10 +1974,24 @@ _SCRIPT = r"""
     if (kpi) { kpi.textContent = String(count); }
   }
 
+  // The effective model-axis value for one offer. A stored successful
+  // recommendation wins; otherwise the latest evaluation's status explains why
+  // there is no score, so an incomplete or failed offer is not shown as merely
+  // "unscored". Display-only buckets never reach the database.
+  function effectiveRecommendation(offer) {
+    if (offer.recommendation) { return offer.recommendation; }
+    if (offer.evaluation_status === "needs_more_info") { return "need_more_info"; }
+    if (offer.evaluation_status === "parse_error" || offer.evaluation_status === "error" ||
+        offer.evaluation_status === "not_configured") { return "failed"; }
+    return "unscored";
+  }
+
   function matches(offer) {
     if (filters.recommendation === "unscored") {
+      // "Sin puntaje" is every offer without a successful score, whatever the
+      // reason; the more specific buckets narrow it from the card itself.
       if (offer.score !== null) { return false; }
-    } else if (filters.recommendation && offer.recommendation !== filters.recommendation) {
+    } else if (filters.recommendation && effectiveRecommendation(offer) !== filters.recommendation) {
       return false;
     }
     if (filters.minScore !== null && (offer.score === null || offer.score < filters.minScore)) {
@@ -2216,17 +2262,26 @@ _SCRIPT = r"""
     var scoreBox = el("div", "card-score");
     var scoreNode;
     if (offer.score === null) {
-      scoreNode = el("span", "score", "Sin puntaje");
+      // A scoreless offer states its real evaluation state instead of showing a
+      // blank or placeholder number: a failed or unresolved evaluation is a fact
+      // about the scoring pipeline, not a hidden detail.
+      if (offer.evaluation_status === "needs_more_info") {
+        scoreNode = el("span", "score score-state", "Requiere más información");
+      } else if (offer.evaluation_status === "parse_error" || offer.evaluation_status === "error") {
+        scoreNode = el("span", "score score-state", "Evaluación fallida");
+      } else if (offer.evaluation_status === "not_configured") {
+        scoreNode = el("span", "score score-state", "Evaluador sin configurar");
+      } else {
+        scoreNode = el("span", "score", "Sin puntaje");
+      }
     } else {
       scoreNode = el("span", "score", offer.score.toFixed(1));
       scoreNode.appendChild(el("span", "score-max", " / 100"));
       scoreNode.setAttribute("aria-label", "Puntaje " + offer.score.toFixed(1) + " sobre 100");
     }
     scoreBox.appendChild(scoreNode);
-    var recommendation = offer.recommendation || "unscored";
-    var recommendationText = offer.recommendation
-      ? labelFrom(RECOMMENDATION_LABELS, offer.recommendation, offer.recommendation)
-      : "Sin evaluar";
+    var recommendation = effectiveRecommendation(offer);
+    var recommendationText = labelFrom(RECOMMENDATION_LABELS, recommendation, recommendation);
     var badge = el("span", "badge badge-" + recommendation, recommendationText);
     badge.title = "Recomendación del modelo: " + recommendationText;
     scoreBox.appendChild(badge);
@@ -2444,10 +2499,16 @@ _SCRIPT = r"""
       card.appendChild(el("span", "kpi-label", item[0]));
       host.appendChild(card);
     });
+    var states = summary.evaluation_states || {};
+    var failedStates = (states.parse_error || 0) + (states.error || 0) +
+      (states.not_configured || 0);
     document.getElementById("summary-note").textContent =
       "Ofertas activas en la base: " + summary.active_jobs +
+      " \u00b7 Con puntaje: " + summary.scored +
       " \u00b7 Sin puntaje entre las mostradas: " + summary.unscored +
-      " \u00b7 Requieren más información: " + (recommendations.need_more_info || 0) +
+      " (incompletas: " + (states.needs_more_info || 0) +
+      ", fallidas: " + failedStates +
+      ", sin evaluar: " + (states.none || 0) + ")" +
       " \u00b7 Preferencia: " + (preferences.fail || 0) + " excluida(s), " +
       (preferences.flag || 0) + " por revisar" +
       " \u00b7 Palabras clave analizadas: " + summary.keywords +

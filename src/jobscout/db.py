@@ -43,6 +43,7 @@ from .models import (
     SearchRunStatus,
     _dumps,
     _loads,
+    evaluation_contract_errors,
 )
 from .timeutil import utcnow_iso
 
@@ -1318,7 +1319,23 @@ def get_profile(conn: sqlite3.Connection, profile_id: int) -> ProfileSnapshot | 
 # ---------------------------------------------------------------------------
 
 
+class EvaluationContractError(ValueError):
+    """Raised when an evaluation violates the canonical successful-evaluation invariant.
+
+    ``status=ok`` means a decided, actionable result, so it must carry a numeric
+    ``overall_score`` and an ``apply``/``consider``/``skip`` recommendation. A
+    caller that produced an unresolved or scoreless success must record it as
+    ``needs_more_info`` instead: this guard makes the misleading state impossible
+    to persist rather than silently storing it.
+    """
+
+
 def insert_evaluation(conn: sqlite3.Connection, evaluation: Evaluation) -> Evaluation:
+    errors = evaluation_contract_errors(evaluation)
+    if errors:
+        raise EvaluationContractError(
+            "refusing to persist an invalid successful evaluation: " + "; ".join(errors)
+        )
     created_at = evaluation.created_at or utcnow_iso()
     with conn:
         cursor = conn.execute(

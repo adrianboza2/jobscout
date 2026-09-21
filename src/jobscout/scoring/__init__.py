@@ -6,7 +6,13 @@ from typing import Any
 
 from ..config import Settings
 from ..db import insert_evaluation, upsert_profile
-from ..models import Evaluation, ProfileSnapshot, ScorerName
+from ..models import (
+    Evaluation,
+    EvaluationStatus,
+    ProfileSnapshot,
+    ScorerName,
+    evaluation_contract_errors,
+)
 from .heuristic import SCORER_NAME as HEURISTIC_NAME
 from .heuristic import score_job as score_job_heuristic
 from .llm import LLMError, LLMNotConfiguredError, LLMRequestError, OpenAICompatibleScorer
@@ -64,6 +70,80 @@ def get_scorer(name: str, settings: Settings, **kwargs: Any) -> Any:
     raise ScorerError(f"unknown scorer '{name}'; expected one of: {', '.join(SCORERS)}")
 
 
+#: Total attempts allowed while a scorer response is contract-invalid (malformed
+#: output, a missing score, or an unresolved recommendation). Transport, access,
+#: authentication, and rate-limit failures are never retried as repairs: those
+#: include :class:`EvaluationStatus.ERROR` and are reported as technical failures.
+MAX_CONTRACT_ATTEMPTS = 2
+
+
+def _is_contract_repairable(evaluation: Evaluation) -> bool:
+    """Whether a scorer response is invalid output worth a bounded repair attempt.
+
+    Two shapes qualify: a reported ``parse_error``, and an ``ok`` evaluation that
+    still violates the invariant (defensive: an injected or future scorer might).
+    A transport/access failure (``error``) is an operator problem, not a schema
+    mishap, and is deliberately not retried.
+    """
+    if str(evaluation.status) == EvaluationStatus.PARSE_ERROR.value:
+        return True
+    return bool(evaluation_contract_errors(evaluation))
+
+
+def _ensure_contract(evaluation: Evaluation) -> Evaluation:
+    """Record an unresolved success honestly instead of as an ``ok`` evaluation.
+
+    The persistence layer refuses an ``ok`` evaluation that violates the canonical
+    invariant, so a scorer that produced a score but no public recommendation (for
+    example the deterministic heuristic on a thin posting) is downgraded to
+    ``needs_more_info`` here, preserving the score and the reason.
+    """
+    errors = evaluation_contract_errors(evaluation)
+    if not errors:
+        return evaluation
+    evaluation.status = EvaluationStatus.NEEDS_MORE_INFO
+    detail = "; ".join(errors)
+    evaluation.error = f"{evaluation.error}; {detail}" if evaluation.error else detail
+    if "incomplete" not in evaluation.rationale.lower():
+        evaluation.rationale = (
+            evaluation.rationale
+            + " [incomplete: the evaluator could not settle on a public recommendation]"
+        ).strip()
+    return evaluation
+
+
+def _heuristic_fallback(
+    job: Any,
+    profile: Profile,
+    *,
+    primary: Evaluation,
+    job_id: int | None,
+    profile_id: int | None,
+    now: Any,
+) -> Evaluation:
+    """Recover an invalid scorer response with the deterministic heuristic.
+
+    The fallback keeps the requested scorer as the pipeline identity (so the job
+    counts as evaluated for that backend and is not re-run forever), but names the
+    heuristic explicitly in ``model`` and in the rationale, and preserves the
+    original failure in ``error``. It never invents facts: it only re-scores the
+    same stored posting with the offline scorer.
+    """
+    fallback = score_job_heuristic(
+        job, profile, now=now, job_id=job_id, profile_id=profile_id
+    )
+    reason = primary.error or f"scorer '{primary.scorer}' produced an invalid evaluation"
+    fallback.scorer = primary.scorer
+    fallback.model = f"{fallback.model}+fallback"
+    fallback.raw_document_id = primary.raw_document_id
+    fallback.error = reason
+    fallback.rationale = (
+        f"{fallback.rationale} [fallback: deterministic heuristic used because "
+        f"{primary.scorer} could not produce a valid evaluation: {reason}]"
+    ).strip()
+    return fallback
+
+
 def evaluate_job(
     conn: Any,
     job: Any,
@@ -78,20 +158,52 @@ def evaluate_job(
     """Evaluate one job and persist the evaluation with full provenance.
 
     The profile snapshot is upserted first so evaluations always reference the
-    exact profile version that produced them.
+    exact profile version that produced them. A contract-invalid response is
+    retried a bounded number of times and then recovered with the offline
+    heuristic; a transport/access failure is reported as a technical failure. The
+    persisted row therefore never carries an ``ok`` status without a numeric score
+    and a decided recommendation.
     """
     snapshot = profile_snapshot or build_snapshot(profile)
     stored_snapshot = upsert_profile(conn, snapshot)
 
     active_scorer = scorer or get_scorer(scorer_name, settings)
-    evaluation = active_scorer.score(
-        job,
-        profile,
-        job_id=getattr(job, "id", None),
-        profile_id=stored_snapshot.id,
-        conn=conn,
-        now=now,
-    )
+    normalized_name = (scorer_name or "").strip().lower()
+
+    def _score() -> Evaluation:
+        return active_scorer.score(
+            job,
+            profile,
+            job_id=getattr(job, "id", None),
+            profile_id=stored_snapshot.id,
+            conn=conn,
+            now=now,
+        )
+
+    evaluation = _score()
+    attempts = 1
+    while (
+        _is_contract_repairable(evaluation)
+        and normalized_name != ScorerName.HEURISTIC.value
+        and attempts < MAX_CONTRACT_ATTEMPTS
+    ):
+        evaluation = _score()
+        attempts += 1
+
+    if (
+        _is_contract_repairable(evaluation)
+        and normalized_name != ScorerName.HEURISTIC.value
+    ):
+        evaluation = _heuristic_fallback(
+            job,
+            profile,
+            primary=evaluation,
+            job_id=getattr(job, "id", None),
+            profile_id=stored_snapshot.id,
+            now=now,
+        )
+
+    evaluation = _ensure_contract(evaluation)
     if evaluation.profile_id is None:
         evaluation.profile_id = stored_snapshot.id
     return insert_evaluation(conn, evaluation)
@@ -100,6 +212,7 @@ def evaluate_job(
 __all__ = [
     "HEURISTIC_NAME",
     "HeuristicScorer",
+    "MAX_CONTRACT_ATTEMPTS",
     "LLMError",
     "LLMNotConfiguredError",
     "LLMRequestError",

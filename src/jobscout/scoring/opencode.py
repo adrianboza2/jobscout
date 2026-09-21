@@ -77,7 +77,7 @@ from ..models import (
 from ..timeutil import utcnow_iso
 from .llm import build_messages, input_fingerprint, sha256_text
 from .profile import Profile
-from .schema import parse_llm_evaluation
+from .schema import parse_llm_evaluation, success_contract_errors
 
 SCORER_NAME = ScorerName.OPENCODE
 OPENCODE_PROMPT_VERSION = "opencode-v5-seniority-aware"
@@ -157,7 +157,9 @@ OPENCODE_OUTPUT_CONTRACT = (
     "  and rationale. Do not return dimensions, blockers, strengths, gaps,\n"
     "  unknowns, evidence, or any other keys.\n"
     "- Use one numeric overall_score from 0 to 100, one recommendation from\n"
-    "  apply, consider, skip, or need_more_info, and confidence from 0 to 1.\n"
+    "  apply, consider, or skip, and confidence from 0 to 1. Never answer\n"
+    "  need_more_info, and never return an empty or placeholder score: a 0 is\n"
+    "  a real incompatibility, not \"unknown\".\n"
     "- Calibrate recommendations for a junior candidate and separate hard\n"
     "  requirements from preferences. A stated preference, or a reasonable\n"
     "  junior or stretch role, should tend to consider or apply even when it\n"
@@ -674,6 +676,22 @@ class OpenCodeScorer:
             )
 
         payload = outcome.payload
+        contract_errors = success_contract_errors(payload)
+        if contract_errors:
+            return Evaluation(
+                job_id=int(job_id or 0),
+                scorer=SCORER_NAME,
+                status=EvaluationStatus.PARSE_ERROR,
+                error="; ".join(contract_errors),
+                recommendation=Recommendation.NEED_MORE_INFO,
+                confidence=0.0,
+                model=response.model,
+                prompt_version=OPENCODE_PROMPT_VERSION,
+                profile_id=profile_id,
+                raw_document_id=raw_document_id,
+                input_fingerprint=input_fingerprint(job, profile),
+                rationale="OpenCode output was structurally valid but not a publishable evaluation.",
+            )
         from ..models import DimensionScore
 
         dimensions = [

@@ -40,7 +40,18 @@ class SearchRunStatus(StrEnum):
 
 
 class EvaluationStatus(StrEnum):
+    """How complete an evaluation is.
+
+    ``needs_more_info`` is a deliberate, non-success state: the scorer ran and
+    produced a score, but could not settle on a public recommendation. It exists
+    so an unresolved result is stored honestly instead of being forced into
+    ``ok`` (which requires a decided recommendation) or hidden behind a zero
+    placeholder. It is never treated as a successful evaluation by
+    ``latest_evaluations`` or ``jobs_needing_evaluation``.
+    """
+
     OK = "ok"
+    NEEDS_MORE_INFO = "needs_more_info"
     PARSE_ERROR = "parse_error"
     ERROR = "error"
     NOT_CONFIGURED = "not_configured"
@@ -51,6 +62,16 @@ class Recommendation(StrEnum):
     CONSIDER = "consider"
     SKIP = "skip"
     NEED_MORE_INFO = "need_more_info"
+
+
+#: Recommendations that may accompany a successful (``status=ok``) evaluation.
+#: ``need_more_info`` is deliberately absent: it is an unresolved diagnostic, not
+#: a public recommendation, so it must be stored with a non-ok status.
+PUBLIC_RECOMMENDATIONS: tuple[str, ...] = (
+    Recommendation.APPLY.value,
+    Recommendation.CONSIDER.value,
+    Recommendation.SKIP.value,
+)
 
 
 class FeedbackDecision(StrEnum):
@@ -419,6 +440,33 @@ class Evaluation:
         }
 
 
+def is_public_recommendation(value: Any) -> bool:
+    """Whether ``value`` is a recommendation a successful evaluation may carry."""
+    return str(value) in PUBLIC_RECOMMENDATIONS
+
+
+def evaluation_contract_errors(evaluation: "Evaluation") -> list[str]:
+    """Canonical invariant for a persisted successful evaluation.
+
+    This is the single source of truth that the schema adapters, the scoring
+    pipeline, and the persistence layer all enforce: a ``status=ok`` evaluation
+    must carry a real numeric ``overall_score`` and a decided public
+    recommendation (apply/consider/skip). Zero is a legitimate score for a real
+    incompatibility, never an "unknown" placeholder, and ``need_more_info`` is
+    never a successful public recommendation.
+
+    Non-ok evaluations are always allowed; the check only constrains success.
+    """
+    if str(evaluation.status) != EvaluationStatus.OK.value:
+        return []
+    errors: list[str] = []
+    if evaluation.overall_score is None:
+        errors.append("status=ok requires a numeric overall_score")
+    if not is_public_recommendation(evaluation.recommendation):
+        errors.append("status=ok requires an apply/consider/skip recommendation")
+    return errors
+
+
 @dataclass
 class JobFeedback:
     """A human decision about one job, imported from the dashboard export.
@@ -512,12 +560,15 @@ __all__ = [
     "JobFeedback",
     "JobPosting",
     "PositionKind",
+    "PUBLIC_RECOMMENDATIONS",
     "ProfileEvidence",
     "ProfileSnapshot",
     "RawDocument",
     "RawDocumentKind",
     "Recommendation",
     "ScorerName",
+    "evaluation_contract_errors",
+    "is_public_recommendation",
     "SearchRun",
     "SearchRunItem",
     "SearchRunStatus",

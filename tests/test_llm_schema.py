@@ -12,6 +12,7 @@ from jobscout.models import Recommendation
 from jobscout.scoring.schema import (
     extract_json_object,
     parse_llm_evaluation,
+    success_contract_errors,
     validate_payload,
 )
 
@@ -187,6 +188,63 @@ def test_unknown_recommendation_falls_back_safely() -> None:
     )
     assert outcome.payload["recommendation"] == Recommendation.NEED_MORE_INFO.value
     assert pytest.approx(outcome.payload["confidence"]) == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Canonical successful-evaluation contract
+# ---------------------------------------------------------------------------
+
+
+def test_success_contract_rejects_need_more_info_even_with_a_score() -> None:
+    """A scored ``need_more_info`` payload is never a successful evaluation.
+
+    This is the exact ambiguous state the reliability work removes: a numeric
+    score (even 0) must not make an unresolved recommendation publishable.
+    """
+    outcome = validate_payload(
+        {
+            "overall_score": 0,
+            "recommendation": "need_more_info",
+            "dimensions": [{"name": "skills", "score": 0}],
+        }
+    )
+    assert outcome.ok  # normalization still succeeds; the payload is diagnosable
+    errors = success_contract_errors(outcome.payload)
+    assert errors
+    assert any("apply/consider/skip recommendation" in error for error in errors)
+
+
+def test_success_contract_rejects_a_missing_score() -> None:
+    assert success_contract_errors(
+        {"overall_score": None, "recommendation": "consider"}
+    ) == ["a successful evaluation requires a numeric overall_score"]
+    # A score derived from dimensions is a real score and satisfies the contract.
+    derived = validate_payload(
+        {
+            "recommendation": "consider",
+            "dimensions": [{"name": "skills", "score": 50}],
+        }
+    ).payload
+    assert derived["overall_score"] == 50.0
+    assert success_contract_errors(derived) == []
+
+
+def test_success_contract_accepts_a_real_zero_score() -> None:
+    """Zero is a legitimate score for a real incompatibility, not a placeholder."""
+    errors = success_contract_errors(
+        {"overall_score": 0.0, "recommendation": Recommendation.SKIP.value}
+    )
+    assert errors == []
+
+
+def test_success_contract_accepts_every_public_recommendation() -> None:
+    for recommendation in ("apply", "consider", "skip"):
+        assert (
+            success_contract_errors(
+                {"overall_score": 42.0, "recommendation": recommendation}
+            )
+            == []
+        )
 
 
 # A configured credential that matches none of the generic patterns in

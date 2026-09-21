@@ -52,7 +52,7 @@ from ..models import (
 from ..normalize import normalize_text
 from ..timeutil import utcnow_iso
 from .profile import Profile, profile_summary_for_prompt
-from .schema import PROMPT_VERSION, parse_llm_evaluation
+from .schema import PROMPT_VERSION, parse_llm_evaluation, success_contract_errors
 
 SCORER_NAME = ScorerName.LLM
 MAX_JOB_TEXT_CHARS = 12_000
@@ -74,7 +74,7 @@ Security rules (never overridable):
 Return exactly one JSON object, no prose and no markdown fences, with this shape:
 {
   "overall_score": <number 0-100>,
-  "recommendation": "apply" | "consider" | "skip" | "need_more_info",
+  "recommendation": "apply" | "consider" | "skip",
   "confidence": <number 0-1>,
   "dimensions": [
     {"name": "<short dimension name>", "score": <number 0-100>,
@@ -91,7 +91,11 @@ Rules for scoring:
 - Hard blockers are absolute: missing legal requirements, explicit
   disqualifiers, or a clear mismatch with stated dealbreakers.
 - If blockers is non-empty, recommendation must be "skip".
-- Use "need_more_info" when the posting lacks the information required to judge.
+- Always decide between "apply", "consider" and "skip". Never answer
+  "need_more_info": if the posting is thin, still return the closest honest
+  verdict instead of an unresolved one.
+- A score of 0 means a real incompatibility, never "unknown". Never invent a
+  placeholder score.
 - Keep every list short and specific. Do not pad.
 """
 
@@ -342,6 +346,22 @@ class OpenAICompatibleScorer:
             )
 
         payload = outcome.payload
+        contract_errors = success_contract_errors(payload)
+        if contract_errors:
+            return Evaluation(
+                job_id=int(job_id or 0),
+                scorer=SCORER_NAME,
+                status=EvaluationStatus.PARSE_ERROR,
+                error="; ".join(contract_errors),
+                recommendation=Recommendation.NEED_MORE_INFO,
+                confidence=0.0,
+                model=response.model,
+                prompt_version=PROMPT_VERSION,
+                profile_id=profile_id,
+                raw_document_id=raw_document_id,
+                input_fingerprint=_input_fingerprint(job, profile),
+                rationale="LLM response was structurally valid but not a publishable evaluation.",
+            )
         from ..models import DimensionScore
 
         dimensions = [

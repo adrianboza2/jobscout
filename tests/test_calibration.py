@@ -78,6 +78,13 @@ def _evaluate(
     score: float | None = 70.0,
     status: EvaluationStatus | str = EvaluationStatus.OK,
 ) -> int:
+    # A scored ``need_more_info`` result is an unresolved evaluation, not a
+    # successful one: the persistence invariant stores it with its own status.
+    if (
+        str(recommendation) == Recommendation.NEED_MORE_INFO.value
+        and str(status) == EvaluationStatus.OK.value
+    ):
+        status = EvaluationStatus.NEEDS_MORE_INFO
     evaluation = insert_evaluation(
         conn,
         Evaluation(
@@ -388,7 +395,9 @@ def test_score_distribution_by_human_decision(conn) -> None:
         _decide(conn, job_id, "apply")
 
     missing_id = _seed_job(conn, 10)
-    _evaluate(conn, missing_id, recommendation=Recommendation.SKIP, score=None)
+    # A scorable evaluation with no overall_score is unresolved, never a
+    # scoreless success: the persistence invariant forbids the latter.
+    _evaluate(conn, missing_id, recommendation=Recommendation.NEED_MORE_INFO, score=None)
     _decide(conn, missing_id, "reject")
 
     report = build_report(conn)
