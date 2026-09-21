@@ -434,6 +434,49 @@ def _fetch_job_keywords(
     return grouped
 
 
+def _fetch_imported_feedback(
+    conn: sqlite3.Connection, job_ids: Sequence[int]
+) -> dict[int, str]:
+    """Batched read-only read of the imported human decision per shown job id.
+
+    Returns only the ids that actually have a ``job_feedback`` row, so an offer
+    with no imported decision is *absent* from the mapping rather than defaulted
+    to a value. Only the stored ``decision`` is read: the free-text reason stays
+    in SQLite and is never serialized into the report.
+
+    ``search_runs.cycle_id`` is deliberately not consulted. It is a nullable,
+    human-set convention and runs from different platforms or cycles are not
+    guaranteed comparable, so no "new in the latest cycle" metric can be derived
+    from it; the only isolation predicate here is the absence of a
+    ``job_feedback`` row.
+    """
+    if not job_ids:
+        return {}
+    placeholders = ",".join("?" for _ in job_ids)
+    rows = conn.execute(
+        f"SELECT job_id, decision FROM job_feedback WHERE job_id IN ({placeholders})",
+        [int(job_id) for job_id in job_ids],
+    ).fetchall()
+    decisions: dict[int, str] = {}
+    for row in rows:
+        decision = row["decision"]
+        if decision:
+            decisions[int(row["job_id"])] = str(decision)
+    return decisions
+
+
+def _imported_review(decisions: dict[int, str], job_id: int) -> dict[str, Any]:
+    """Serializable imported-decision state for one offer (never the reason).
+
+    ``reviewed`` is true only when a ``job_feedback`` row exists, so "not
+    imported" is never confused with a stored value. ``decision`` carries the
+    stored value (including a legacy ``consider``) and stays ``None`` when no row
+    exists; the reason is intentionally omitted.
+    """
+    decision = decisions.get(job_id)
+    return {"reviewed": bool(decision), "decision": decision or None}
+
+
 def _rate(numerator: int, denominator: int) -> float | None:
     """A 0..1 ratio rounded for display, or ``None`` when it is undefined.
 
@@ -764,6 +807,10 @@ def build_payload(
     keywords_by_job = _fetch_job_keywords(conn, job_ids)
     # One batched SELECT for every shown offer instead of one query per offer.
     detail_by_job = latest_detail_fetches_for_jobs(conn, job_ids)
+    # One batched SELECT for the imported human decision of every shown offer.
+    # ``cycle_id`` is intentionally not consulted: it cannot support a
+    # trustworthy "latest cycle" claim (see :func:`_fetch_imported_feedback`).
+    imported_decisions = _fetch_imported_feedback(conn, job_ids)
 
     offers: list[dict[str, Any]] = []
     for row in rows:
@@ -824,6 +871,10 @@ def build_payload(
                 "unknowns": _string_list(row["unknowns_json"]),
                 "keywords": keywords_by_job.get(job_id, []),
                 "preference": preference.to_dict(),
+                # Durable imported human decision: the absence of a row is the
+                # only source of the unreviewed view, kept separate from the
+                # browser-local ``reviewed``/``unreviewed`` filter.
+                "imported_review": _imported_review(imported_decisions, job_id),
                 "detail": _detail_evidence(
                     detail_by_job.get(job_id),
                     now=reference,
@@ -1158,6 +1209,14 @@ __STYLE__
         </select>
       </div>
       <div class="filter-field">
+        <button type="button" id="filter-imported-review" class="btn btn-ghost filter-toggle"
+          aria-pressed="false"
+          title="Muestra solo las ofertas sin una decisión humana importada en SQLite">
+          Solo sin decisión importada
+        </button>
+        <p class="muted" id="imported-review-note"></p>
+      </div>
+      <div class="filter-field">
         <label for="filter-sort">Ordenar por</label>
         <select id="filter-sort">
           <option value="score">puntaje (mejor primero)</option>
@@ -1377,6 +1436,14 @@ p.filters-summary.active { color:var(--ink); }
 .btn-primary:hover:not(:disabled) { background:var(--soft-ink); border-color:var(--soft-ink); }
 .btn-ghost { background:transparent; border-color:var(--hairline); }
 .btn-ghost:hover:not(:disabled) { background:var(--surface); border-color:var(--rule-strong); }
+/* Imported-decision toggle: it always states its state in aria-pressed, and the
+   pressed fill reuses the ink marker of the human axis. No hue, no separate
+   media query; its colour transition is inherited from .btn and covered by the
+   single reduced-motion guard. */
+.filter-toggle { width:100%; text-align:left; }
+.filter-toggle[aria-pressed="true"],
+.filter-toggle[aria-pressed="true"]:hover {
+  background:var(--ink); border-color:var(--ink); color:var(--paper); }
 #export-feedback { width:100%; }
 .rail-actions { display:flex; flex-direction:column; gap:8px; }
 .control-row { display:flex; gap:8px; }
@@ -1749,7 +1816,7 @@ _SCRIPT = r"""
   var STORAGE_KEY = payload.feedback_schema + ":" + payload.project_id;
 
   var feedback = loadFeedback();
-  var filters = { text: "", recommendation: "", minScore: null, keyword: "", review: "", sort: "score" };
+  var filters = { text: "", recommendation: "", minScore: null, keyword: "", review: "", importedReview: false, sort: "score" };
 
   function labelFrom(map, value, fallback) {
     return Object.prototype.hasOwnProperty.call(map, value) ? map[value] : fallback;
@@ -1895,6 +1962,12 @@ _SCRIPT = r"""
     var reviewed = Boolean(feedback[offer.id] && feedback[offer.id].decision);
     if (filters.review === "reviewed" && !reviewed) { return false; }
     if (filters.review === "unreviewed" && reviewed) { return false; }
+    // A different axis from the browser-local marks above: the imported decision
+    // is read from SQLite (offer.imported_review). The toggle only isolates the
+    // offers with no stored decision; it never counts them.
+    if (filters.importedReview && offer.imported_review && offer.imported_review.reviewed) {
+      return false;
+    }
     if (filters.text) {
       var needle = filters.text.toLowerCase();
       var pref = offer.preference || {};
@@ -2223,7 +2296,7 @@ _SCRIPT = r"""
       "Mostrando " + matchesList.length + " de " + payload.offers.length + " ofertas";
   }
 
-  // Only the five inputs that narrow the list; ordering is already reported by the
+  // Only the inputs that narrow the list; ordering is already reported by the
   // order control itself.
   function activeFilterCount() {
     var count = 0;
@@ -2232,7 +2305,27 @@ _SCRIPT = r"""
     if (filters.minScore !== null) { count += 1; }
     if (filters.keyword) { count += 1; }
     if (filters.review) { count += 1; }
+    if (filters.importedReview) { count += 1; }
     return count;
+  }
+
+  // Honest empty state for the imported-decision axis. With no imported decision
+  // the view says so and points at the import command; it never presents every
+  // active offer as a measured backlog, and it never derives a count from
+  // cycle_id.
+  function refreshImportedReviewNote() {
+    var note = document.getElementById("imported-review-note");
+    if (!note) { return; }
+    var imported = (payload.summary && payload.summary.human_reviewed_jobs) || 0;
+    if (imported > 0) {
+      note.textContent = "La decisión importada proviene de job_feedback en SQLite y es " +
+        "independiente de sus marcas guardadas en este navegador.";
+      return;
+    }
+    note.textContent = "Todavía no hay ninguna decisión humana importada. Las ofertas " +
+      "sin fila en job_feedback no son una medida de backlog: ejecute " +
+      "'jobscout import-feedback' para importar sus decisiones y vuelva a generar " +
+      "este informe.";
   }
 
   // The rail says how much is narrowing the list, and Restablecer is only offered
@@ -2246,6 +2339,8 @@ _SCRIPT = r"""
     summary.classList.toggle("active", count > 0);
     document.getElementById("reset-filters").disabled =
       (count === 0 && filters.sort === "score");
+    document.getElementById("filter-imported-review").setAttribute(
+      "aria-pressed", filters.importedReview ? "true" : "false");
   }
 
   // Every control that changes the visible set goes through here, so the list and
@@ -2414,12 +2509,16 @@ _SCRIPT = r"""
       filters.review = event.target.value;
       applyFilters();
     });
+    document.getElementById("filter-imported-review").addEventListener("click", function () {
+      filters.importedReview = !filters.importedReview;
+      applyFilters();
+    });
     document.getElementById("filter-sort").addEventListener("change", function (event) {
       filters.sort = event.target.value;
       applyFilters();
     });
     document.getElementById("reset-filters").addEventListener("click", function () {
-      filters = { text: "", recommendation: "", minScore: null, keyword: "", review: "", sort: "score" };
+      filters = { text: "", recommendation: "", minScore: null, keyword: "", review: "", importedReview: false, sort: "score" };
       document.getElementById("filter-text").value = "";
       document.getElementById("filter-recommendation").value = "";
       document.getElementById("filter-min-score").value = "";
@@ -2453,6 +2552,7 @@ _SCRIPT = r"""
   });
   bindFilters();
   refreshFeedbackCount();
+  refreshImportedReviewNote();
   applyFilters();
 })();
 

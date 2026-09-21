@@ -1848,6 +1848,230 @@ def test_detail_state_labels_cover_every_state_in_neutral_spanish(db_file: Path)
 
 
 # ---------------------------------------------------------------------------
+# Imported-decision view (offers without an imported human decision)
+# ---------------------------------------------------------------------------
+
+
+def _import_decision(
+    conn: sqlite3.Connection,
+    job_id: int,
+    decision: str,
+    *,
+    updated_at: str = "2026-09-15T11:00:00.000000Z",
+    reason: str | None = None,
+) -> None:
+    """Store one imported human decision, exactly as ``import-feedback`` would."""
+    upsert_feedback(
+        conn,
+        JobFeedback(
+            job_id=int(job_id),
+            decision=decision,
+            reason=reason,
+            decision_updated_at=updated_at,
+            project_id="test-project",
+            source="test",
+        ),
+    )
+
+
+def test_unreviewed_view_isolates_offers_without_imported_decision(db_file: Path) -> None:
+    """Only the absence of a ``job_feedback`` row isolates an offer."""
+    jobs = _seed_dashboard_db(db_file)
+    conn = connect(db_file)
+    try:
+        _import_decision(conn, jobs["job1"], FeedbackDecision.APPLY)
+    finally:
+        conn.close()
+
+    payload = _payload(db_file)
+    by_id = {offer["id"]: offer for offer in payload["offers"]}
+
+    assert by_id[jobs["job1"]]["imported_review"] == {"reviewed": True, "decision": "apply"}
+    assert by_id[jobs["job2"]]["imported_review"] == {"reviewed": False, "decision": None}
+    assert by_id[jobs["job3"]]["imported_review"] == {"reviewed": False, "decision": None}
+
+    isolated = [
+        offer["id"]
+        for offer in payload["offers"]
+        if not offer["imported_review"]["reviewed"]
+    ]
+    assert isolated == [offer["id"] for offer in payload["offers"] if offer["id"] != jobs["job1"]]
+
+
+def test_imported_review_is_a_single_readonly_select(db_file: Path) -> None:
+    """The per-offer read is one batched ``SELECT`` and never writes."""
+    from jobscout.dashboard import _fetch_imported_feedback
+
+    jobs = _seed_dashboard_db(db_file)
+    conn = connect(db_file)
+    try:
+        _import_decision(conn, jobs["job1"], FeedbackDecision.APPLY)
+    finally:
+        conn.close()
+
+    conn = open_readonly_database(db_file)
+    statements: list[str] = []
+    try:
+        conn.set_trace_callback(statements.append)
+        decisions = _fetch_imported_feedback(conn, list(jobs.values()))
+        conn.set_trace_callback(None)
+    finally:
+        conn.close()
+
+    assert decisions == {jobs["job1"]: "apply"}
+    assert len(statements) == 1, statements
+    statement = statements[0]
+    assert statement.lstrip().upper().startswith("SELECT")
+    assert "job_feedback" in statement
+    for verb in ("INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "PRAGMA"):
+        assert verb not in statement.upper(), statement
+
+
+def test_unreviewed_view_is_honest_when_no_feedback_is_imported(db_file: Path) -> None:
+    """An empty import never becomes an imaginary backlog metric."""
+    payload = _payload(db_file)
+
+    assert payload["summary"]["human_reviewed_jobs"] == 0
+    assert all(
+        offer["imported_review"] == {"reviewed": False, "decision": None}
+        for offer in payload["offers"]
+    )
+    # No fabricated backlog, and no metric derived from the free-form cycle_id.
+    assert "unreviewed_backlog" not in payload
+    assert "new_in_latest_cycle" not in payload
+    assert "latest_cycle" not in json.dumps(payload)
+
+    html_text = render_dashboard_html(payload)
+    assert "Todavía no hay ninguna decisión humana importada" in html_text
+    assert "jobscout import-feedback" in html_text
+    assert "no son una medida de backlog" in html_text
+
+
+def test_imported_review_does_not_change_keyword_analytics_or_summary(
+    db_file: Path,
+) -> None:
+    """The new per-offer axis leaves the existing imported-decision metrics intact."""
+    jobs = _seed_dashboard_db(db_file)
+    conn = connect(db_file)
+    try:
+        _import_decision(conn, jobs["job1"], FeedbackDecision.APPLY)
+        _import_decision(conn, jobs["job2"], FeedbackDecision.REJECT)
+    finally:
+        conn.close()
+
+    payload = _payload(db_file)
+    stats = {item["keyword"]: item for item in payload["keywords"]}
+
+    assert payload["summary"]["human_reviewed_jobs"] == 2
+    keyword_a = stats["senior backend engineer"]
+    assert keyword_a["human_reviewed"] == 2
+    assert keyword_a["human_apply"] == 1
+    assert keyword_a["human_reject"] == 1
+    assert keyword_a["human_apply_rate"] == 0.5
+    assert keyword_a["human_positive_yield"] == 0.5
+
+    reviewed = [offer for offer in payload["offers"] if offer["imported_review"]["reviewed"]]
+    assert sorted(offer["id"] for offer in reviewed) == sorted([jobs["job1"], jobs["job2"]])
+
+
+def test_reviewed_view_keeps_consider_legacy_and_binary_buttons(db_file: Path) -> None:
+    """A legacy imported ``consider`` is shown as stored, with no third button."""
+    jobs = _seed_dashboard_db(db_file)
+    conn = connect(db_file)
+    try:
+        _import_decision(conn, jobs["job1"], FeedbackDecision.CONSIDER)
+    finally:
+        conn.close()
+
+    payload = _payload(db_file)
+    legacy = next(offer for offer in payload["offers"] if offer["id"] == jobs["job1"])
+    assert legacy["imported_review"] == {"reviewed": True, "decision": "consider"}
+
+    html_text = render_dashboard_html(payload)
+    assert 'var FEEDBACK_DECISIONS = ["apply", "reject"];' in html_text
+    assert 'var FEEDBACK_LABELS = { apply: "Aplicar", reject: "Descartar" };' in html_text
+    assert 'var LEGACY_FEEDBACK_LABELS = { consider: "Considerar (histórico)" };' in html_text
+    # The imported-decision view adds a filter control, not a decision choice.
+    assert 'id="filter-imported-review" class="btn btn-ghost filter-toggle"' in html_text
+    assert 'var FEEDBACK_DECISIONS = ["apply", "consider", "reject"];' not in html_text
+
+
+def test_unreviewed_view_adds_no_media_query_and_keeps_one_reduced_motion_guard(
+    db_file: Path,
+) -> None:
+    """The new control adds no media query and stays hue-free."""
+    css = _embedded_style(generate_and_read(db_file))
+
+    assert css.count("@media") == 1
+    assert re.findall(r"@media\s*\(([^)]*)\)", css) == ["prefers-reduced-motion:reduce"]
+    assert "* { transition:none !important; animation:none !important; }" in css
+
+    toggle_rules = [rule for rule in css.split("}") if ".filter-toggle" in rule]
+    assert toggle_rules, "the imported-decision toggle must be styled"
+    for rule in toggle_rules:
+        assert "--signal" not in rule, rule
+        assert "--ember" not in rule, rule
+        assert "@media" not in rule, rule
+
+
+def test_imported_review_never_serializes_the_imported_reason(db_file: Path) -> None:
+    """Only the stored decision reaches the payload and the HTML."""
+    jobs = _seed_dashboard_db(db_file)
+    reason = "REASON-TOKEN-77aa-should-never-appear"
+    conn = connect(db_file)
+    try:
+        _import_decision(conn, jobs["job1"], FeedbackDecision.APPLY, reason=reason)
+    finally:
+        conn.close()
+
+    html_text = generate_and_read(db_file)
+    payload = _extract_payload(html_text)
+    offer = next(item for item in payload["offers"] if item["id"] == jobs["job1"])
+
+    assert offer["imported_review"] == {"reviewed": True, "decision": "apply"}
+    assert "reason" not in offer["imported_review"]
+    assert reason not in html_text
+    assert reason not in json.dumps(payload)
+
+
+def test_imported_review_read_leaves_the_database_unchanged(db_file: Path) -> None:
+    """Generating the report with imported decisions writes nothing."""
+    jobs = _seed_dashboard_db(db_file)
+    conn = connect(db_file)
+    try:
+        _import_decision(conn, jobs["job1"], FeedbackDecision.APPLY, reason="kept in sqlite")
+    finally:
+        conn.close()
+
+    before = _database_fingerprint(db_file)
+    before_bytes = db_file.read_bytes()
+
+    html_text = generate_and_read(db_file)
+
+    assert _database_fingerprint(db_file) == before
+    assert db_file.read_bytes() == before_bytes
+    assert "job_feedback" in html_text
+
+
+def test_unreviewed_view_renders_when_localstorage_is_unavailable(db_file: Path) -> None:
+    """The imported axis is payload/SQLite data, so it survives a blocked localStorage.
+
+    Some browsers restrict ``localStorage`` on ``file://`` pages. The report still
+    renders and filters in that case: the imported-decision control reads
+    ``offer.imported_review`` from the embedded payload, and the browser-local
+    ``reviewed``/``unreviewed`` filter stays a separate, guarded path.
+    """
+    html_text = generate_and_read(db_file)
+
+    assert "offer.imported_review" in html_text
+    assert "function refreshImportedReviewNote()" in html_text
+    # Browser storage is still read defensively and is never required to render.
+    assert "window.localStorage.getItem(STORAGE_KEY)" in html_text
+    assert "catch (err) {" in html_text
+    assert "filters.review" in html_text  # the browser-local axis stays separate
+
+
+# ---------------------------------------------------------------------------
 # Keyword analytics
 # ---------------------------------------------------------------------------
 
