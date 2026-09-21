@@ -18,7 +18,7 @@ Nothing leaves your machine except the requests you explicitly authorize.
 | Collect public search cards (opt-in, bounded) | Log in, use cookies, solve CAPTCHAs, or evade anti-bot systems |
 | Enrich jobs with the full description (opt-in, bounded) | Apply, contact anyone, or automate applications |
 | Deduplicate and store everything in local SQLite | Upload data to any project-owned server |
-| Score with heuristic, OpenAI-compatible, or OpenCode CLI | Schedule runs or send notifications |
+| Score with heuristic, OpenAI-compatible, or OpenCode CLI | Schedule runs or send remote notifications (only manual, opt-in local notices) |
 | Generate a local Spanish HTML dashboard | Write human feedback into the database on its own |
 
 ## Quick start (fixtures only, no network)
@@ -120,11 +120,13 @@ Prepare the real profile before any sweep:
 | 6 | Export/import feedback | Export the JSON from the dashboard, then run `python -m jobscout import-feedback jobscout-feedback.json` | Your decisions move from `localStorage` to the SQLite `job_feedback` table. | Import runs automatically once you invoke it |
 | 7 | Calibrate | `python -m jobscout calibrate --scorer opencode` | Compares the model recommendation with your imported human decision. Read-only; it adjusts nothing. | Automatic and read-only |
 | 8 | Analyze keywords | `python -m jobscout dashboard` → the *rendimiento de palabras clave* section | After several cycles, you decide which search families perform and which to drop. | Human decision |
+| 9 | Notify high-value offers (opt-in) | `python -m jobscout notify` (preview) or `python -m jobscout notify --deliver` | Lists active offers at or above the threshold, with no imported human feedback and, if configured, the chosen preference outcome. It only reads SQLite; it never writes, and uses no network or model. | Manual and disabled by default |
 
 Cycle notes:
 
-- **It never applies automatically.** There is also no scheduler and no
-  notifications: every run is one you invoke.
+- **It never applies automatically.** There is also no scheduler; local
+  notifications are opt-in and manual (`jobscout notify`), and every run is one
+  you invoke.
 - `--rescore` **is not a daily step**: it re-evaluates offers that already have a
   score and is only needed when you change the profile or the prompt. For new
   offers, the normal cycle is `score --all --scorer opencode`, which evaluates
@@ -236,6 +238,31 @@ python -m jobscout import-feedback jobscout-feedback.json
   decision.
 
 There is still no automatic scheduling: importing is a command you run yourself.
+
+### Offers without an imported decision
+
+The filter rail includes **Solo sin decisión importada** ("only without an
+imported decision"), which narrows the shown offers to those with **no
+`job_feedback` row**. That is the real review backlog that exists in SQLite, read
+with a single read-only `SELECT` over the `mode=ro` connection. It invents no
+figure: it never shows a "pending" counter the database cannot support.
+
+- It is a **separate axis** from *Estado de revisión* (`revisadas` / `sin
+  revisar`): that filter reads your marks in `localStorage`, while this one reads
+  the imported human decision in SQLite. The **Revisadas (tu decisión)** KPI
+  remains the browser signal and is never merged with the imported feedback.
+- When no decision has been imported yet, the panel says so and points to
+  `jobscout import-feedback`; it does not present every active offer as a
+  measured backlog.
+- An imported decision's free-text reason **never** enters the HTML.
+- The control is hue-free and exposes its state through `aria-pressed`, so it
+  never relies on colour; it adds no animation and no new `@media` query.
+
+**Explicit limitation:** `search_runs.cycle_id` is nullable and free-form (a
+human convention), and runs from different platforms or cycles are not guaranteed
+to be comparable. Today there is therefore **no** "new in the latest cycle" view:
+it cannot be computed trustworthily and is not approximated. The only isolation
+predicate is the absence of a `job_feedback` row.
 
 Once feedback is imported, `calibrate` produces the evidence of how well the
 model agrees with you:
@@ -479,6 +506,38 @@ python -m jobscout calibrate --scorer heuristic       # only one scorer's evalua
 python -m jobscout calibrate --json                   # machine-readable report
 ```
 
+### Local notifications (opt-in, no scheduling)
+
+`notify` is a manual, read-only preview of high-value offers. It is **disabled
+by default** (`JOBSCOUT_NOTIFY_ENABLED=false`) and, while disabled, it neither
+creates nor opens the database.
+
+```bash
+# Preview (prints only; never sends anything)
+python -m jobscout notify
+python -m jobscout notify --limit 10 --json
+
+# Explicit local delivery (opt-in); stdout by default
+python -m jobscout notify --deliver
+
+# Only the offers the preference filter marks for review
+JOBSCOUT_NOTIFY_PREFERENCE_OUTCOME=flag python -m jobscout notify
+```
+
+It selects **active** offers that have a stored successful evaluation with a
+score ≥ `JOBSCOUT_NOTIFY_SCORE_THRESHOLD` (0–100, default 80), that optionally
+match `JOBSCOUT_NOTIFY_PREFERENCE_OUTCOME` (`pass`/`flag`/`fail`, empty = no
+filter), and that have **no imported human feedback row at all**. It reuses the
+stored evaluation and preference assessment: it never re-scores, never calls a
+model, and makes no network request. `--limit` reuses the existing 250 cap.
+
+Delivery is a separate action: without `--deliver` it only prints. With
+`--deliver` it uses `JOBSCOUT_NOTIFY_DELIVERY` (`stdout` by default, or
+`system`). `system` uses only an already-installed local notifier (`notify-send`
+on Linux or `terminal-notifier` on macOS) discovered with `shutil.which`; when
+none exists it falls back to stdout. **There is no scheduler, daemon, cron,
+background service, automatic run, remote delivery, or application.**
+
 ## Scoring
 
 All three scorers return the same explainable shape: `overall_score` (0-100),
@@ -576,7 +635,7 @@ stored in SQLite, and the dashboard aggregates it:
    apply/consider, and the best human approval rate; drop the ones that only add
    duplicate sightings or no longer surface active postings.
 6. Adjust the keywords and repeat. **Every run is manual**: there is no automatic
-   scheduling and no notifications.
+   scheduling. Local notifications are opt-in and manual (`jobscout notify`).
 
 How to read the metrics:
 
@@ -660,6 +719,7 @@ export button is the only way to keep your decisions.
 │   ├── dedupe.py             # Fingerprints and exact/probable deduplication
 │   ├── pipeline.py           # Fixture, search, and detail ingestion
 │   ├── preference.py         # Preference exclusions (offline, score untouched)
+│   ├── notify.py             # Local notification selection and delivery (opt-in, read-only)
 │   ├── dashboard.py          # Self-contained HTML report generator
 │   ├── url_policy.py         # URL and redirect validation
 │   ├── collectors/           # LinkedIn guest, fixtures, rate limit, HTTP transport
@@ -726,5 +786,7 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
   export; until then they read *sin dato*. The comparison between the model
   recommendation and the human decision is available through `calibrate`
   (read-only, without adjusting prompts or scores).
-- **There is no scheduler, notification, or automatic application** — by design.
-  Feedback import exists, but it only runs when you invoke `import-feedback`.
+- **There is no scheduler or automatic application** — by design. Local
+  notifications are opt-in, manual, and read-only (`jobscout notify`, disabled
+  by default). Feedback import exists, but it only runs when you invoke
+  `import-feedback`.
