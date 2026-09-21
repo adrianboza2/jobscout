@@ -53,6 +53,8 @@ credentials.*
 /reports/
 /*.report.json
 *.local.json
+# Personal feedback export; must never be published.
+jobscout-feedback.json
 
 # --- Editor / IDE -----------------------------------------------------------
 .idea/
