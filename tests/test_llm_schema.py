@@ -36,6 +36,21 @@ def test_ignores_braces_inside_strings() -> None:
     assert value["overall_score"] == 42
 
 
+def test_skips_an_unrelated_malformed_block_before_the_evaluation() -> None:
+    text = 'Model note: {not valid JSON} final answer: {"overall_score": 67, "recommendation": "consider"}'
+    value, errors = extract_json_object(text)
+    assert value == {"overall_score": 67, "recommendation": "consider"}
+    assert errors == []
+
+
+def test_truncated_model_object_remains_a_parse_error() -> None:
+    outcome = parse_llm_evaluation(
+        'Here is the result: {"overall_score": 67, "recommendation": "consider"'
+    )
+    assert outcome.ok is False
+    assert any("unbalanced JSON object" in error for error in outcome.errors)
+
+
 def test_reports_unbalanced_and_missing_json() -> None:
     value, errors = extract_json_object("no json here")
     assert value is None

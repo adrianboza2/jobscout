@@ -11,6 +11,7 @@ import pytest
 from conftest import FakeHttpClient, FIXTURES, fixture_text, no_network, response
 
 from jobscout.collectors.base import CollectorDisabledError
+from jobscout.collectors.base import TRUNCATION_HEADER
 from jobscout.collectors.getmanfred import (
     SITEMAP_KIND_INDEX,
     SITEMAP_KIND_UNKNOWN,
@@ -287,6 +288,46 @@ def test_live_inventory_parses_and_records_raw_document(settings) -> None:
     assert result.items_found == 3
     assert result.raw_documents[0].body is not None
     assert "offer(s) discovered" in (result.notes or "")
+
+
+def test_getmanfred_body_just_below_provider_limit_is_parsed(settings) -> None:
+    base = fixture_text("getmanfred_sitemap_offers.xml")
+    limit = len(base.encode("utf-8")) + 100
+    settings = settings.with_overrides(getmanfred_max_bytes=limit)
+    padding = "x" * (limit - len(base.encode("utf-8")) - 30)
+    body = base.replace("</urlset>", f"<!-- {padding} --></urlset>")
+    assert len(body.encode("utf-8")) < settings.getmanfred_max_bytes
+    result = search_getmanfred(
+        GetManfredSitemapConfig(max_items=10),
+        settings=settings,
+        network_enabled=True,
+        client=FakeHttpClient([response(200, body, headers={"content-type": "application/xml"})]),
+        sleep=lambda _: None,
+    )
+    assert result.status is SearchRunStatus.COMPLETED
+    assert len(result.postings) == 3
+
+
+def test_getmanfred_body_over_provider_limit_is_rejected_with_note(settings) -> None:
+    settings = settings.with_overrides(getmanfred_max_bytes=1024)
+    body = fixture_text("getmanfred_sitemap_offers.xml") + (" " * 1024)
+    result = search_getmanfred(
+        GetManfredSitemapConfig(max_items=10),
+        settings=settings,
+        network_enabled=True,
+        client=FakeHttpClient(
+            [response(200, body, headers={TRUNCATION_HEADER: "1"})]
+        ),
+        sleep=lambda _: None,
+    )
+    assert result.status is SearchRunStatus.FAILED_CLOSED
+    assert result.postings == []
+    assert result.notes == (
+        "https://www.getmanfred.com/sitemap-offers.xml exceeded the "
+        "1024-byte download limit; content not parsed"
+    )
+    assert result.raw_documents[0].body is None
+    assert result.raw_documents[0].truncated is True
 
 
 def test_sitemap_index_follows_only_allow_listed_children(settings) -> None:

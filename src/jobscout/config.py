@@ -39,6 +39,11 @@ DEFAULT_LINKEDIN_DETAIL_URL = (
 #: mode reads it without any keyword fan-out.
 DEFAULT_GETMANFRED_SITEMAP_URL = "https://www.getmanfred.com/sitemap-offers.xml"
 DEFAULT_GETMANFRED_OFFER_PATH_PREFIX = "/ofertas-empleo/"
+# The public offers sitemap is larger than the generic raw-document ceiling.
+# Keep this provider-specific allowance bounded instead of raising the global
+# limit used by every other collector.
+DEFAULT_GETMANFRED_MAX_BYTES = 1_048_576
+HARD_MAX_GETMANFRED_BYTES = 1_048_576
 #: Tecnoempleo's public, server-rendered keyword search lives under this path.
 #: Its ``robots.txt`` allows it (it only disallows private/API/feed paths such
 #: as ``/alertas-empleo-rss.php`` and ``/profesionales/``), which the collector
@@ -54,9 +59,10 @@ DEFAULT_LLM_MODEL = "deepseek-v4.1-flash"
 # OpenCode CLI scorer. The model id matches the locally configured OpenCode
 # provider; authentication is handled entirely by the CLI's own credential
 # store, so no API key ever flows through jobscout.
-# Free OpenCode model selected for job scoring. Keep scoring outside the paid
-# OpenCode Go subscription unless the user explicitly changes this setting.
-DEFAULT_OPENCODE_MODEL = "opencode/mimo-v2.5-free"
+# Default to the model documented in .env.example. The ``opencode-go/`` prefix
+# keeps scoring inside the owner's included OpenCode Go subscription; the
+# ``opencode/`` prefix would be pay-per-use.
+DEFAULT_OPENCODE_MODEL = "opencode-go/deepseek-v4.1-flash"
 DEFAULT_OPENCODE_COMMAND = "opencode"
 # Low-reasoning variant passed to ``opencode run --variant``. A smaller reasoning
 # budget makes the CLI more likely to close the JSON object instead of stopping
@@ -385,6 +391,7 @@ class Settings:
     # GetManfred public sitemap inventory (opt-in, disabled by default).
     getmanfred_sitemap_url: str = DEFAULT_GETMANFRED_SITEMAP_URL
     getmanfred_offer_path_prefix: str = DEFAULT_GETMANFRED_OFFER_PATH_PREFIX
+    getmanfred_max_bytes: int = DEFAULT_GETMANFRED_MAX_BYTES
     #: Bounded number of child sitemaps to follow when the configured URL is a
     #: sitemap index rather than a urlset.
     getmanfred_max_documents: int = 1
@@ -452,6 +459,11 @@ class Settings:
         )
         validate_bounded_int(
             self.getmanfred_max_documents, name="getmanfred_max_documents", hard_max=HARD_MAX_PAGES
+        )
+        validate_bounded_int(
+            self.getmanfred_max_bytes,
+            name="getmanfred_max_bytes",
+            hard_max=HARD_MAX_GETMANFRED_BYTES,
         )
         validate_bounded_int(
             self.tecnoempleo_max_items, name="tecnoempleo_max_items", hard_max=HARD_MAX_ITEMS
@@ -590,6 +602,9 @@ class Settings:
             ),
             getmanfred_offer_path_prefix=_env_str(
                 merged, "GETMANFRED_OFFER_PATH_PREFIX", DEFAULT_GETMANFRED_OFFER_PATH_PREFIX
+            ),
+            getmanfred_max_bytes=_env_int(
+                merged, "GETMANFRED_MAX_BYTES", DEFAULT_GETMANFRED_MAX_BYTES
             ),
             getmanfred_max_documents=_env_int(merged, "GETMANFRED_MAX_DOCUMENTS", 1),
             getmanfred_max_items=_env_int(merged, "GETMANFRED_MAX_ITEMS", 40),

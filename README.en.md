@@ -581,7 +581,7 @@ instead of aborting the batch.
 # One-time: authenticate OpenCode with the provider that serves the model
 opencode auth login
 
-# Default free model: opencode/mimo-v2.5-free
+# Default included model: opencode-go/deepseek-v4.1-flash
 python -m jobscout score --all --scorer opencode --profile profile.yaml
 ```
 

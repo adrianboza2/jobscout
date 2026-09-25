@@ -104,36 +104,49 @@ def extract_json_object(text: str) -> tuple[Any | None, list[str]]:
     if len(candidate) > _MAX_RAW_CHARS:
         candidate = candidate[:_MAX_RAW_CHARS]
         errors.append("response truncated before parsing (size limit)")
-    start = candidate.find("{")
-    if start == -1:
+    if "{" not in candidate:
         return None, errors + ["no JSON object found in response"]
 
-    depth = 0
-    in_string = False
-    escaped = False
-    for index in range(start, len(candidate)):
-        char = candidate[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
+    # Scan every possible object boundary. Model output may contain an
+    # unrelated brace pair in prose or an event wrapper before the evaluation;
+    # one bad candidate must not hide a later, complete JSON block.
+    invalid: list[str] = []
+    saw_unbalanced = False
+    for start, opening in enumerate(candidate):
+        if opening != "{":
             continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                fragment = candidate[start : index + 1]
-                try:
-                    return json.loads(fragment), errors
-                except json.JSONDecodeError as exc:
-                    return None, errors + [f"invalid JSON: {exc.msg} (line {exc.lineno})"]
-    return None, errors + ["unbalanced JSON object in response"]
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(candidate)):
+            char = candidate[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    fragment = candidate[start : index + 1]
+                    try:
+                        return json.loads(fragment), errors
+                    except json.JSONDecodeError as exc:
+                        invalid.append(f"invalid JSON: {exc.msg} (line {exc.lineno})")
+                    break
+        else:
+            saw_unbalanced = True
+
+    if saw_unbalanced:
+        return None, errors + ["unbalanced JSON object in response"]
+    return None, errors + (invalid or ["could not parse JSON object in response"])
 
 
 def _coerce_number(value: Any) -> float | None:

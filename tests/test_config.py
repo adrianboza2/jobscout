@@ -241,6 +241,16 @@ def test_settings_accepts_the_hard_caps() -> None:
     assert settings.max_items == HARD_MAX_ITEMS
 
 
+def test_getmanfred_byte_limit_is_provider_specific_and_configurable() -> None:
+    settings = Settings.from_env(
+        env={"JOBSCOUT_GETMANFRED_MAX_BYTES": "524288"}, dotenv_path=None
+    )
+    assert settings.raw_max_bytes == 262_144
+    assert settings.getmanfred_max_bytes == 524_288
+    with pytest.raises(ConfigError):
+        Settings.from_env(env={"JOBSCOUT_GETMANFRED_MAX_BYTES": "1048577"}, dotenv_path=None)
+
+
 def test_with_overrides_cannot_bypass_the_hard_caps() -> None:
     settings = Settings.from_env(env={}, dotenv_path=None)
     with pytest.raises(ConfigError):

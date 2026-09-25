@@ -73,10 +73,10 @@ def make_scorer(settings: Settings, outcomes):
 # ---------------------------------------------------------------------------
 
 
-def test_default_model_is_free_mimo() -> None:
+def test_default_model_is_included_opencode_go() -> None:
     defaults = Settings.from_env(env={}, dotenv_path=None)
-    assert DEFAULT_OPENCODE_MODEL == "opencode/mimo-v2.5-free"
-    assert defaults.opencode_model == "opencode/mimo-v2.5-free"
+    assert DEFAULT_OPENCODE_MODEL == "opencode-go/deepseek-v4.1-flash"
+    assert defaults.opencode_model == "opencode-go/deepseek-v4.1-flash"
     assert defaults.opencode_command == "opencode"
     assert defaults.opencode_timeout_seconds == 180.0
     assert DEFAULT_OPENCODE_VARIANT == "minimal"

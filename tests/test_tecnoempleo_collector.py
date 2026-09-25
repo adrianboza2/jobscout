@@ -219,6 +219,42 @@ def test_live_search_stops_completed_when_a_later_page_has_no_offers(settings) -
     assert client.call_count == 2
 
 
+def test_live_search_completes_for_the_site_no_results_marker(settings) -> None:
+    client = FakeHttpClient(
+        [response(200, fixture_text("tecnoempleo_search_no_results.html"), headers={"content-type": "text/html"})]
+    )
+    result = search_tecnoempleo(
+        TecnoempleoSearchConfig(
+            keywords="Junior DevSecOps Engineer", location="madrid", max_pages=1
+        ),
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_ALLOW,
+    )
+    assert result.status is SearchRunStatus.COMPLETED
+    assert result.postings == []
+    assert result.items_found == 0
+    assert result.notes == "no offers for this query"
+
+
+def test_live_search_without_results_marker_still_fails_closed(settings) -> None:
+    client = FakeHttpClient([response(200, "<html><body><p>changed layout</p></body></html>")])
+    result = search_tecnoempleo(
+        TecnoempleoSearchConfig(keywords="backend", max_pages=1),
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_ALLOW,
+    )
+    assert result.status is SearchRunStatus.FAILED_CLOSED
+    assert result.postings == []
+    assert result.items_found == 0
+    assert "unsupported search response" in (result.error or "")
+
+
 def test_live_search_completes_when_a_later_page_is_404(settings) -> None:
     # A 404 on page 2 means the result set ended. The offers already collected
     # must be kept and the run must complete, not fail.

@@ -585,7 +585,7 @@ respuestas se analizan de forma defensiva; una salida ilegible se registra como
 # Una sola vez: autentica OpenCode con el proveedor del modelo
 opencode auth login
 
-# Modelo predeterminado gratuito: opencode/mimo-v2.5-free
+# Modelo predeterminado incluido: opencode-go/deepseek-v4.1-flash
 python -m jobscout score --all --scorer opencode --profile profile.yaml
 ```
 

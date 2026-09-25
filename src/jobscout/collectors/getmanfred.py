@@ -342,7 +342,7 @@ def search_getmanfred(
         timeout=settings.http_timeout_seconds,
         user_agent=settings.user_agent,
         accept="application/xml,text/xml,*/*",
-        max_download_bytes=settings.raw_max_bytes,
+        max_download_bytes=settings.getmanfred_max_bytes,
     )
     policy = BackoffPolicy(
         base_delay_seconds=max(1.0, settings.request_delay_seconds / 4),
@@ -381,23 +381,25 @@ def search_getmanfred(
             result.status = SearchRunStatus.FAILED_CLOSED
             result.error = str(exc)
             result.notes = "remote endpoint refused access; run aborted"
-            _record_response(result, exc.response, url, max_bytes=settings.raw_max_bytes)
+            _record_response(result, exc.response, url, max_bytes=settings.getmanfred_max_bytes)
             return result
         except CollectorError as exc:
             result.status = SearchRunStatus.FAILED
             result.error = str(exc)
-            _record_response(result, exc.response, url, max_bytes=settings.raw_max_bytes)
+            _record_response(result, exc.response, url, max_bytes=settings.getmanfred_max_bytes)
             return result
 
-        _record_response(result, response, url, max_bytes=settings.raw_max_bytes)
+        _record_response(result, response, url, max_bytes=settings.getmanfred_max_bytes)
         result.pages_fetched += 1
         documents_fetched += 1
 
         if response.headers.get(TRUNCATION_HEADER) == "1":
             result.notes = (
-                f"{url} exceeded the {settings.raw_max_bytes}-byte download limit; "
+                f"{url} exceeded the {settings.getmanfred_max_bytes}-byte download limit; "
                 "content not parsed"
             )
+            result.status = SearchRunStatus.FAILED_CLOSED
+            result.error = result.notes
             break
 
         kind = classify_sitemap(response.body)

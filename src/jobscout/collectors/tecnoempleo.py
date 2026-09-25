@@ -736,6 +736,9 @@ def search_tecnoempleo(
             max_items=config.max_items,
         )
         if not page_postings:
+            if "no hemos encontrado ofertas de empleo para" in (response.body or "").lower():
+                result.notes = "no offers for this query"
+                break
             if page_index == 0 or not result.postings:
                 # Unknown markup must not masquerade as an empty result set.
                 result.status = SearchRunStatus.FAILED_CLOSED
