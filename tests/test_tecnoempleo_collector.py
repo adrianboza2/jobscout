@@ -13,9 +13,11 @@ from conftest import FakeHttpClient, FIXTURES, fixture_text, no_network, respons
 
 from jobscout.collectors.base import CollectorDisabledError
 from jobscout.collectors.tecnoempleo import (
+    CARD_DESCRIPTION_MAX_CHARS,
     TecnoempleoSearchConfig,
     build_search_url,
     extract_tecnoempleo_job_id,
+    parse_offer_cards,
     parse_offer_links,
     plan_search_urls,
     postings_from_html,
@@ -26,6 +28,7 @@ from jobscout.models import ContentStatus, SearchRunStatus
 from jobscout.pipeline import ingest_collector_result
 
 PAGE_FIXTURE = FIXTURES / "tecnoempleo_search_page.html"
+CARDS_FIXTURE = FIXTURES / "tecnoempleo_search_cards.html"
 ROBOTS_ALLOW = "User-agent: *\nDisallow: /alertas-empleo-rss.php\nDisallow: /profesionales/\n"
 ROBOTS_DENY = "User-agent: *\nDisallow: /ofertas-trabajo/\n"
 
@@ -57,12 +60,11 @@ def test_parse_offer_links_filters_non_offers_and_cross_host() -> None:
     assert [link["source_job_id"] for link in links] == [
         "rf-7a491a37220693ec4248",
         "rf-1111aaaa2222bbbb3333",
-        "rf-9999cccc8888dddd7777",
     ]
     assert links[0]["title"] == "Desarrollador/a Backend Python"
     assert all("evil.test" not in link["url"] for link in links)
     # The duplicate anchor collapses to one canonical entry.
-    assert len({link["url"] for link in links}) == 3
+    assert len({link["url"] for link in links}) == 2
 
 
 def test_parse_offer_links_is_resilient_to_noise() -> None:
@@ -76,12 +78,71 @@ def test_extract_id_and_postings_contract() -> None:
     postings = postings_from_html(
         fixture_text("tecnoempleo_search_page.html"), fetched_at="2026-09-18T10:00:00Z"
     )
-    assert len(postings) == 3
+    assert len(postings) == 2
     first = postings[0]
     assert first.source == "tecnoempleo"
     assert first.content_status is ContentStatus.PARTIAL
     assert first.source_job_id == "rf-7a491a37220693ec4248"
     assert first.fingerprint.startswith("v1:id:tecnoempleo:rf-7a491a37220693ec4248")
+
+
+def test_parse_offer_cards_extracts_real_card_fields() -> None:
+    cards = parse_offer_cards(fixture_text("tecnoempleo_search_cards.html"))
+    assert len(cards) == 2
+    first = cards[0]
+    assert first["url"] == (
+        "https://www.tecnoempleo.com/backend-python-engineer/acme-corp/"
+        "rf-aaaa1111bbbb2222cccc"
+    )
+    assert first["source_job_id"] == "rf-aaaa1111bbbb2222cccc"
+    assert first["title"] == "Backend Python Engineer"
+    assert first["company"] == "Acme Corp"
+    assert first["location"] == "100% remoto"
+    assert first["posted_at"] == "2026-09-25T00:00:00Z"
+    assert first["description"]
+    assert len(first["description"]) <= CARD_DESCRIPTION_MAX_CHARS
+
+    second = cards[1]
+    assert second["title"] == "Data Engineer"
+    assert second["company"] == "Globex"
+    assert second["location"] == "Madrid"
+    assert second["posted_at"] == "2026-09-23T00:00:00Z"
+    assert all("evil.test" not in card["url"] for card in cards)
+
+
+def test_parse_offer_cards_unknown_fields_stay_empty() -> None:
+    card = (
+        '<div class="p-3 border rounded mb-3" '
+        "onclick=\"location.href='https://www.tecnoempleo.com/plain/co/rf-abc123'\">"
+        "<h3><a href=\"https://www.tecnoempleo.com/plain/co/rf-abc123\" "
+        'title="Plain Offer">Plain Offer</a></h3></div>'
+    )
+    cards = parse_offer_cards(card)
+    assert len(cards) == 1
+    assert cards[0]["company"] is None
+    assert cards[0]["location"] is None
+    assert cards[0]["posted_at"] is None
+    assert cards[0]["description"] is None
+    assert parse_offer_cards("<html>no cards</html>") == []
+    assert parse_offer_cards("") == []
+
+
+def test_postings_from_html_populates_real_card_fields() -> None:
+    postings = postings_from_html(
+        fixture_text("tecnoempleo_search_cards.html"),
+        fetched_at="2026-09-25T10:00:00Z",
+    )
+    assert len(postings) == 2
+    first = postings[0]
+    assert first.title == "Backend Python Engineer"
+    assert first.company == "Acme Corp"
+    assert first.location == "100% remoto"
+    assert first.posted_at == "2026-09-25T00:00:00Z"
+    assert first.description
+    assert first.content_status is ContentStatus.PARTIAL
+    # The breadcrumb/title must never be stored as the company.
+    assert first.company != first.title
+    assert all(posting.company != posting.title for posting in postings)
 
 
 def test_dry_run_makes_no_request(settings, monkeypatch) -> None:
@@ -117,7 +178,7 @@ def test_live_search_parses_page_and_records_raw_document(settings) -> None:
         robots_text=ROBOTS_ALLOW,
     )
     assert result.status is SearchRunStatus.COMPLETED
-    assert len(result.postings) == 3
+    assert len(result.postings) == 2
     assert result.pages_fetched == 1
     assert result.raw_documents[0].body is not None
     assert client.call_count == 1
@@ -150,13 +211,56 @@ def test_live_search_stops_completed_when_a_later_page_has_no_offers(settings) -
     )
     assert result.status is SearchRunStatus.COMPLETED
     assert result.pages_fetched == 2
-    assert len(result.postings) == 3
+    assert len(result.postings) == 2
     assert [posting.source_job_id for posting in result.postings] == [
         "rf-7a491a37220693ec4248",
         "rf-1111aaaa2222bbbb3333",
-        "rf-9999cccc8888dddd7777",
     ]
     assert client.call_count == 2
+
+
+def test_live_search_completes_when_a_later_page_is_404(settings) -> None:
+    # A 404 on page 2 means the result set ended. The offers already collected
+    # must be kept and the run must complete, not fail.
+    client = FakeHttpClient(
+        [
+            response(
+                200,
+                fixture_text("tecnoempleo_search_page_three_cards.html"),
+                headers={"content-type": "text/html"},
+            ),
+            response(404, "not found"),
+        ]
+    )
+    result = search_tecnoempleo(
+        TecnoempleoSearchConfig(keywords="backend", max_pages=2, max_items=10),
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_ALLOW,
+    )
+    assert result.status is SearchRunStatus.COMPLETED
+    assert result.pages_fetched == 1
+    assert len(result.postings) == 3
+    assert result.notes is not None and "pagination ended at page 2: 404" in result.notes
+    assert client.call_count == 2
+
+
+def test_first_page_404_fails_with_no_postings(settings) -> None:
+    client = FakeHttpClient([response(404, "not found")])
+    result = search_tecnoempleo(
+        TecnoempleoSearchConfig(keywords="backend", max_pages=1, max_items=10),
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_ALLOW,
+    )
+    assert result.status is SearchRunStatus.FAILED
+    assert result.postings == []
+    assert result.pages_fetched == 0
+    assert client.call_count == 1
 
 
 def test_robots_disallow_fails_closed_before_search(settings) -> None:
@@ -190,7 +294,7 @@ def test_missing_robots_is_treated_as_allow(settings) -> None:
         robots_text=None,
     )
     assert result.status is SearchRunStatus.COMPLETED
-    assert len(result.postings) == 3
+    assert len(result.postings) == 2
     assert client.call_count == 2
 
 
@@ -262,6 +366,6 @@ def test_ingestion_records_provider_cycle_and_search_rank(conn, settings) -> Non
     rows = conn.execute(
         "SELECT position_kind, rank_in_run FROM search_run_items ORDER BY id"
     ).fetchall()
-    assert [row["position_kind"] for row in rows] == ["search_rank"] * 3
-    assert [row["rank_in_run"] for row in rows] == [1, 2, 3]
-    assert count_jobs(conn) == 3
+    assert [row["position_kind"] for row in rows] == ["search_rank"] * 2
+    assert [row["rank_in_run"] for row in rows] == [1, 2]
+    assert count_jobs(conn) == 2

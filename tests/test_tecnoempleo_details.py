@@ -35,11 +35,12 @@ from jobscout.pipeline import ingest_collector_result, ingest_detail_results
 
 PAGE_FIXTURE = FIXTURES / "tecnoempleo_search_page.html"
 DETAIL_FIXTURE = FIXTURES / "tecnoempleo_detail_page.html"
+REAL_DETAIL_FIXTURE = FIXTURES / "tecnoempleo_detail_page_real.html"
 DRIFT_FIXTURE = FIXTURES / "tecnoempleo_detail_page_drift.html"
 ROBOTS_ALLOW = "User-agent: *\nDisallow: /alertas-empleo-rss.php\nDisallow: /profesionales/\n"
 # Denies the offer detail path itself (not only the search path), so the detail
 # adapter must refuse before sending any request.
-ROBOTS_DENY = "User-agent: *\nDisallow: /desarrollador-backend-python/\n"
+ROBOTS_DENY = "User-agent: *\nDisallow: /backend-python-engineer/\n"
 BACKEND_URL = (
     "https://www.tecnoempleo.com/desarrollador-backend-python/"
     "grupo-digital/rf-7a491a37220693ec4248"
@@ -86,6 +87,73 @@ def test_parse_detail_fields_extracts_company_location_date_and_technologies() -
     assert "Python" in fields.technologies
     assert "Kubernetes" in fields.technologies
     assert "Azure" in fields.technologies
+
+
+def test_parse_detail_real_markup_extracts_company_location_and_date() -> None:
+    fields = parse_detail_fields(fixture_text("tecnoempleo_detail_page_real.html"))
+    assert fields.recognized is True
+    # The company comes from the /<slug>/re-<id> link, not the breadcrumb name.
+    assert fields.company == "Aceptacorp"
+    assert fields.company != "Backend Engineer"
+    # The city comes from the real <title> pattern...
+    assert fields.location == "Madrid"
+    # ...and the date from the strict dd/mm/yyyy in og:description.
+    assert fields.posted_at == "2026-07-03T00:00:00Z"
+
+
+def test_parse_detail_company_prefers_real_anchor_over_breadcrumb() -> None:
+    html = (
+        "<title>Oferta de Empleo Backend Engineer en Madrid, Aceptacorp - "
+        "Tecnoempleo.com</title>"
+        "<ol itemscope itemtype='https://schema.org/BreadcrumbList'>"
+        "<li itemprop='itemListElement'>"
+        "<span itemprop='name'>Backend Engineer</span></li></ol>"
+        "<a href='https://www.tecnoempleo.com/aceptacorp/re-205650' "
+        "title='Ofertas de empleo de Aceptacorp'>"
+        "<span itemprop='name'>Aceptacorp</span></a>"
+    )
+    assert parse_detail_company(html) == "Aceptacorp"
+
+
+def test_parse_detail_company_breadcrumb_name_is_not_a_company() -> None:
+    # Only the breadcrumb carries a company-shaped itemprop; it must be refused.
+    html = (
+        "<title>Oferta de Empleo Backend Engineer en Madrid, Aceptacorp - "
+        "Tecnoempleo.com</title>"
+        "<ol itemscope itemtype='https://schema.org/BreadcrumbList'>"
+        "<li itemprop='itemListElement'>"
+        "<span itemprop='name'>Backend Engineer</span></li></ol>"
+    )
+    assert parse_detail_company(html) is None
+
+
+def test_parse_detail_company_falls_back_to_twitter_data1() -> None:
+    html = (
+        "<title>Oferta de Empleo Backend Engineer en Madrid, Aceptacorp - "
+        "Tecnoempleo.com</title>"
+        "<meta name='twitter:data1' content='Aceptacorp '>"
+    )
+    assert parse_detail_company(html) == "Aceptacorp"
+
+
+def test_parse_detail_company_guardrail_refuses_offer_title() -> None:
+    # A company equal to the offer title is a markup regression, not a company.
+    html = (
+        "<title>Oferta de Empleo Backend Engineer en Madrid, Aceptacorp - "
+        "Tecnoempleo.com</title>"
+        "<a href='https://www.tecnoempleo.com/backend-engineer/re-1' "
+        "title='Ofertas de empleo de Backend Engineer'>Backend Engineer</a>"
+    )
+    assert parse_detail_company(html) is None
+
+
+def test_parse_detail_location_and_date_require_real_title_and_og() -> None:
+    assert parse_detail_location("<title>Oferta</title>") is None
+    assert parse_detail_posted_at("<meta property='og:description' content='no date here'>") is None
+    # An impossible calendar date must not be turned into a timestamp.
+    assert parse_detail_posted_at(
+        "<meta property='og:description' content='31/02/2026 - Oferta'>"
+    ) is None
 
 
 def test_parse_detail_ignores_unknown_markup_never_invents_content() -> None:
@@ -208,6 +276,30 @@ def test_detail_recognized_page_is_ok_with_non_empty_description(conn, settings)
     assert item.description
     assert item.company == "Grupo Digital"
     assert "Python" in item.technologies
+
+
+def test_detail_real_page_is_ok_and_populates_fields(conn, settings) -> None:
+    from jobscout.models import DetailFetchStatus
+
+    jobs = _store_search_offers(conn, settings)
+    client = FakeHttpClient(
+        [response(200, fixture_text("tecnoempleo_detail_page_real.html"), headers={"content-type": "text/html"})]
+    )
+    result = fetch_tecnoempleo_details(
+        jobs[:1],
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_ALLOW,
+    )
+    item = result.items[0]
+    assert item.status is DetailFetchStatus.OK
+    assert item.content_status is ContentStatus.OK
+    assert item.company == "Aceptacorp"
+    assert item.location == "Madrid"
+    assert item.posted_at == "2026-07-03T00:00:00Z"
+    assert item.company != "Backend Engineer"
 
 
 def test_detail_unknown_markup_stays_partial_honestly(conn, settings) -> None:

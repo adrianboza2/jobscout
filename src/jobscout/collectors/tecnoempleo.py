@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Any, Callable
 from urllib.parse import quote, urlencode, urljoin, urlsplit
@@ -56,8 +57,8 @@ from ..models import (
     RawDocumentKind,
     SearchRunStatus,
 )
-from ..normalize import canonicalize_url, normalize_job_posting, normalize_text
-from ..timeutil import utcnow_iso
+from ..normalize import canonicalize_url, html_to_text, normalize_job_posting, normalize_text
+from ..timeutil import to_iso, utcnow_iso
 from ..url_policy import is_tecnoempleo_host, validate_tecnoempleo_url
 from .base import (
     TRUNCATION_HEADER,
@@ -265,6 +266,256 @@ def parse_offer_links(
     return results
 
 
+#: Exact class tokens that identify a real offer card container. Matching is
+#: token-based (never substring), so an unrelated class cannot be mistaken for
+#: a card. Kept as provenance, not as a mutable, soft selector heuristic.
+CARD_CLASS_TOKENS = ("p-3", "border", "rounded")
+
+#: Bound for the optional card snippet, so a card never carries an unbounded
+#: description into storage. Only a positively recognized snippet is used.
+CARD_DESCRIPTION_MAX_CHARS = 500
+
+_CARD_URL_RE = re.compile(r"location\.href\s*=\s*'([^']+)'", re.IGNORECASE)
+_CARD_H3_RE = re.compile(r"<h3\b[^>]*>(.*?)</h3>", re.IGNORECASE | re.DOTALL)
+_CARD_ANCHOR_TITLE_RE = re.compile(r"<a\b[^>]*\btitle=[\"']([^\"']+)[\"']", re.IGNORECASE)
+_CARD_ANCHOR_TEXT_RE = re.compile(r"<a\b[^>]*>(.*?)</a>", re.IGNORECASE | re.DOTALL)
+_CARD_COMPANY_TITLE_RE = re.compile(
+    r"<a\b[^>]*\btitle=[\"']Ofertas de Empleo ([^\"']+)[\"'][^>]*>(.*?)</a>",
+    re.IGNORECASE | re.DOTALL,
+)
+_CARD_COMPANY_HREF_RE = re.compile(
+    r"<a\b[^>]*\bhref=[\"']([^\"']*-trabajo)[\"'][^>]*>(.*?)</a>",
+    re.IGNORECASE | re.DOTALL,
+)
+_CARD_MODALITY_DATE_RE = re.compile(
+    r"<b>([^<]+)</b>\s*[-\u2013\u2014]?\s*(\d{2}/\d{2}/\d{4})", re.IGNORECASE
+)
+_DDMMYYYY_RE = re.compile(r"\b(\d{2})/(\d{2})/(\d{4})\b")
+
+_VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+}
+
+
+class _BlockCaptureParser(HTMLParser):
+    """Capture the full inner HTML of every container matching ``predicate``.
+
+    Nesting is tracked so a container with children (for example a description
+    span wrapping technology badges) is captured whole, and a container left
+    open by truncated HTML is still finalized.
+    """
+
+    def __init__(self, predicate: Callable[[str, dict[str, str]], bool]) -> None:
+        super().__init__(convert_charrefs=True)
+        self._predicate = predicate
+        self.captures: list[str] = []
+        self._capturing = False
+        self._depth = 0
+        self._parts: list[str] = []
+
+    def _finish(self) -> None:
+        if self._capturing:
+            self.captures.append("".join(self._parts))
+        self._capturing = False
+        self._depth = 0
+        self._parts = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {key: (value or "") for key, value in attrs}
+        if not self._capturing:
+            if self._predicate(tag, attributes):
+                self._capturing = True
+                self._depth = 1
+                # Keep the container's own tag: a card's offer URL lives in its
+                # ``onclick`` attribute.
+                self._parts = [self.get_starttag_text() or f"<{tag}>"]
+            return
+        raw_tag = self.get_starttag_text() or f"<{tag}>"
+        if tag in _VOID_TAGS:
+            self._parts.append(raw_tag)
+            return
+        self._depth += 1
+        self._parts.append(raw_tag)
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if self._capturing:
+            self._parts.append(self.get_starttag_text() or f"<{tag}/>")
+
+    def handle_data(self, data: str) -> None:
+        if self._capturing:
+            self._parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._capturing:
+            return
+        self._depth -= 1
+        if self._depth <= 0:
+            self._finish()
+            return
+        self._parts.append(f"</{tag}>")
+
+    def finalize(self) -> None:
+        if self._capturing:
+            self._finish()
+
+
+def _block_captures(
+    html_text: str, predicate: Callable[[str, dict[str, str]], bool]
+) -> list[str]:
+    if not html_text:
+        return []
+    parser = _BlockCaptureParser(predicate)
+    try:
+        parser.feed(html_text)
+        parser.close()
+    except Exception:  # pragma: no cover - html.parser is resilient, guard anyway
+        return []
+    parser.finalize()
+    return parser.captures
+
+
+def _is_offer_card(tag: str, attributes: dict[str, str]) -> bool:
+    return tag == "div" and set(CARD_CLASS_TOKENS) <= set(
+        attributes.get("class", "").split()
+    )
+
+
+def _capture_offer_cards(html_text: str) -> list[str]:
+    return _block_captures(html_text, _is_offer_card)
+
+
+def _iso_from_ddmmyyyy(value: str | None) -> str | None:
+    """Return an ISO-8601 UTC timestamp for a strict ``dd/mm/yyyy`` date."""
+    match = _DDMMYYYY_RE.search(value or "")
+    if not match:
+        return None
+    try:
+        moment = datetime(
+            int(match.group(3)), int(match.group(2)), int(match.group(1)),
+            tzinfo=timezone.utc,
+        )
+    except ValueError:
+        return None
+    return to_iso(moment)
+
+
+def _card_offer_url(card_html: str) -> str:
+    match = _CARD_URL_RE.search(card_html)
+    if match:
+        return normalize_text(match.group(1))
+    h3 = _CARD_H3_RE.search(card_html)
+    if h3:
+        anchor = re.search(
+            r"<a\b[^>]*\bhref=[\"']([^\"']+)[\"']", h3.group(1), re.IGNORECASE
+        )
+        if anchor:
+            return normalize_text(anchor.group(1))
+    return ""
+
+
+def _card_title(card_html: str) -> str:
+    h3 = _CARD_H3_RE.search(card_html)
+    if not h3:
+        return ""
+    inner = h3.group(1)
+    titled = _CARD_ANCHOR_TITLE_RE.search(inner)
+    if titled:
+        value = normalize_text(html_to_text(titled.group(1)))
+        if value:
+            return value
+    text = _CARD_ANCHOR_TEXT_RE.search(inner)
+    if text:
+        value = normalize_text(html_to_text(text.group(1)))
+        if value:
+            return value
+    return ""
+
+
+def _card_company(card_html: str) -> str | None:
+    match = _CARD_COMPANY_TITLE_RE.search(card_html) or _CARD_COMPANY_HREF_RE.search(
+        card_html
+    )
+    if not match:
+        return None
+    value = normalize_text(html_to_text(match.group(2)))
+    return value or None
+
+
+def _card_modality_and_date(card_html: str) -> tuple[str | None, str | None]:
+    match = _CARD_MODALITY_DATE_RE.search(card_html)
+    if not match:
+        return None, None
+    modality = normalize_text(match.group(1)) or None
+    return modality, _iso_from_ddmmyyyy(match.group(2))
+
+
+def _card_description(card_html: str) -> str | None:
+    captures = _block_captures(
+        card_html,
+        lambda tag, attributes: tag == "span"
+        and "hidden-md-down" in attributes.get("class", "").split(),
+    )
+    if not captures:
+        return None
+    value = normalize_text(html_to_text(captures[0]))
+    if not value:
+        return None
+    return value[:CARD_DESCRIPTION_MAX_CHARS]
+
+
+def parse_offer_cards(
+    html_text: str,
+    *,
+    base_url: str = DEFAULT_TECNOEMPLEO_SEARCH_URL,
+    offer_path_marker: str = DEFAULT_TECNOEMPLEO_OFFER_PATH_MARKER,
+) -> list[dict[str, str | None]]:
+    """Parse real offer cards from a server-rendered search page.
+
+    Each recognized card yields the offer URL (from ``onclick``), the ``h3``
+    anchor title, the company anchor text, the modality/location before the
+    ``dd/mm/yyyy`` date, the ISO ``posted_at``, and an optional bounded
+    description snippet. Fields the markup does not positively carry stay
+    ``None``; unrecognized markup yields an empty list. The returned entries use
+    the same ``url``/``source_job_id``/``title`` contract as
+    :func:`parse_offer_links`.
+    """
+    if not html_text:
+        return []
+    if offer_path_marker.lower() not in html_text.lower():
+        return []
+    origin = f"{urlsplit(base_url).scheme}://{urlsplit(base_url).netloc}"
+    results: list[dict[str, str | None]] = []
+    seen: set[str] = set()
+    for card_html in _capture_offer_cards(html_text):
+        href = _card_offer_url(card_html)
+        if not href:
+            continue
+        absolute = canonicalize_url(urljoin(origin, href))
+        if not absolute or absolute in seen:
+            continue
+        parts = urlsplit(absolute)
+        if not is_tecnoempleo_host(parts.hostname or ""):
+            continue
+        job_id = extract_tecnoempleo_job_id(absolute)
+        if not job_id:
+            continue
+        seen.add(absolute)
+        location, posted_at = _card_modality_and_date(card_html)
+        results.append(
+            {
+                "url": absolute,
+                "source_job_id": job_id,
+                "title": _card_title(card_html) or title_from_offer_url(absolute),
+                "company": _card_company(card_html),
+                "location": location,
+                "posted_at": posted_at,
+                "description": _card_description(card_html),
+            }
+        )
+    return results
+
+
 def postings_from_html(
     html_text: str,
     *,
@@ -273,18 +524,43 @@ def postings_from_html(
     fetched_at: str | None = None,
     max_items: int = 40,
 ) -> list[JobPosting]:
-    """Normalize offer links from one search page into partial postings."""
+    """Normalize offer links from one search page into partial postings.
+
+    Real offer cards, when positively recognized, also contribute company,
+    location, ``posted_at``, and an optional bounded description advance. A page
+    with the legacy link-only shape still works through
+    :func:`parse_offer_links`, so the URL/title contract is unchanged.
+    """
     resolved_at = fetched_at or utcnow_iso()
+    entries: list[dict[str, Any]] = [
+        dict(card)
+        for card in parse_offer_cards(
+            html_text, base_url=base_url, offer_path_marker=offer_path_marker
+        )
+    ]
+    if not entries:
+        entries = [
+            {
+                "url": link["url"],
+                "source_job_id": link["source_job_id"],
+                "title": link["title"],
+            }
+            for link in parse_offer_links(
+                html_text, base_url=base_url, offer_path_marker=offer_path_marker
+            )
+        ]
+
     postings: list[JobPosting] = []
-    for link in parse_offer_links(
-        html_text, base_url=base_url, offer_path_marker=offer_path_marker
-    ):
+    for entry in entries:
         raw = {
             "source": PROVIDER,
-            "source_job_id": link["source_job_id"],
-            "url": link["url"],
-            "title": link["title"],
-            "company": "",
+            "source_job_id": entry["source_job_id"],
+            "url": entry["url"],
+            "title": entry["title"],
+            "company": entry.get("company") or "",
+            "location": entry.get("location"),
+            "posted_at": entry.get("posted_at"),
+            "description": entry.get("description"),
             "fetched_at": resolved_at,
             "content_status": ContentStatus.PARTIAL.value,
         }
@@ -424,6 +700,18 @@ def search_tecnoempleo(
             result.notes = "remote endpoint refused access; run aborted"
             _record_response(result, exc.response, url, max_bytes=settings.raw_max_bytes)
             return result
+        except NotFoundError as exc:
+            # A 404 on a later page means the result set ended: keep the offers
+            # already collected and finish honestly. A first-page 404 is a real
+            # failure, not an empty search.
+            _record_response(result, exc.response, url, max_bytes=settings.raw_max_bytes)
+            if page_index > 0 and result.postings:
+                result.notes = f"pagination ended at page {page_index + 1}: 404"
+                break
+            result.status = SearchRunStatus.FAILED
+            result.error = str(exc)
+            result.notes = "search page not found; run failed"
+            return result
         except CollectorError as exc:
             result.status = SearchRunStatus.FAILED
             result.error = str(exc)
@@ -523,11 +811,14 @@ def _record_response(
 
 
 __all__ = [
+    "CARD_CLASS_TOKENS",
+    "CARD_DESCRIPTION_MAX_CHARS",
     "DEFAULT_PAGE_PARAM",
     "PROVIDER",
     "TecnoempleoSearchConfig",
     "build_search_url",
     "extract_tecnoempleo_job_id",
+    "parse_offer_cards",
     "parse_offer_links",
     "plan_search_urls",
     "postings_from_html",

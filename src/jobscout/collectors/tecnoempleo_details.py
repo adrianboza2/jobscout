@@ -39,6 +39,7 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
@@ -95,8 +96,11 @@ DESCRIPTION_CLASS_MARKERS = (
 #: Schema.org ``itemprop`` values used as a second, structural signal.
 DESCRIPTION_ITEMPROPS = ("description",)
 
-#: ``itemprop`` values that identify company, location, and date fields.
-COMPANY_ITEMPROPS = ("hiringOrganization", "name")
+#: ``itemprop`` values that identify company, location, and date fields. A bare
+#: ``name`` is deliberately not accepted as a company signal: the real offer
+#: page carries an ``itemprop="name"`` inside its ``BreadcrumbList`` whose text
+#: is the offer title, which must never be mistaken for the company.
+COMPANY_ITEMPROPS = ("hiringOrganization",)
 LOCATION_ITEMPROPS = ("jobLocation", "addressLocality")
 DATE_ITEMPROPS = ("datePosted",)
 
@@ -105,6 +109,40 @@ DATE_ITEMPROPS = ("datePosted",)
 _TIME_DATETIME_RE = re.compile(
     r"<time\b[^>]*\bdatetime\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE
 )
+
+#: The real offer page's company link: an ``<a>`` whose ``href`` is
+#: ``/<slug>/re-<id>`` and whose ``title`` is ``Ofertas de empleo de X``. The
+#: breadcrumb never has this shape, so the company survives even though the
+#: page has no ``hiringOrganization`` markup.
+_COMPANY_ANCHOR_RE = re.compile(
+    r"<a\b"
+    r"(?=[^>]*\bhref=[\"'][^\"']*/[^/?#\"']+/re-[0-9A-Za-z]+[\"'])"
+    r"(?=[^>]*\btitle=[\"']Ofertas de [Ee]mpleo(?: de)? )"
+    r"[^>]*>(.*?)</a>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: The page's own title and the real title's location pattern
+#: (``Oferta de Empleo <title> en <city>, <company> - Tecnoempleo.com``).
+_TITLE_TAG_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_TITLE_LOCATION_RE = re.compile(
+    r"Oferta de Empleo\b.+?\ben\s+(.+?),\s*.+?\s*-\s*Tecnoempleo\.com",
+    re.IGNORECASE | re.DOTALL,
+)
+_TITLE_OFFER_RE = re.compile(r"Oferta de Empleo\s+(.+?)\s+en\s+", re.IGNORECASE)
+_H1_TITLE_RE = re.compile(
+    r"<h1\b[^>]*\bitemprop=[\"']title[\"'][^>]*>(.*?)</h1>", re.IGNORECASE | re.DOTALL
+)
+
+#: Meta tags read for the company fallback and the real publication date.
+_TWITTER_DATA1_META_RE = re.compile(
+    r"<meta\b[^>]*\bname=[\"']twitter:data1[\"'][^>]*>", re.IGNORECASE
+)
+_OG_DESCRIPTION_META_RE = re.compile(
+    r"<meta\b[^>]*\bproperty=[\"']og:description[\"'][^>]*>", re.IGNORECASE
+)
+_META_CONTENT_RE = re.compile(r"\bcontent=[\"']([^\"']*)[\"']", re.IGNORECASE)
+_DDMMYYYY_RE = re.compile(r"\b(\d{2})/(\d{2})/(\d{4})\b")
 
 #: Class markers for the company and location blocks, used when no ``itemprop``
 #: is present. Every match is exact-token, never substring.
@@ -442,34 +480,134 @@ def _extract_field(
     return None
 
 
-def parse_detail_company(html_text: str) -> str | None:
-    raw = _extract_field(
-        html_text,
-        itemprops=COMPANY_ITEMPROPS,
-        class_markers=COMPANY_CLASS_MARKERS,
+def _parse_meta_content(html_text: str, meta_re: re.Pattern[str]) -> str | None:
+    """Return the first non-empty ``content`` attribute of a matched meta tag."""
+    for match in meta_re.finditer(html_text or ""):
+        content = _META_CONTENT_RE.search(match.group(0))
+        if content:
+            value = normalize_text(content.group(1))
+            if value:
+                return value
+    return None
+
+
+def _parse_company_from_anchor(html_text: str) -> str | None:
+    """Read the company from the real ``/<slug>/re-<id>`` company link.
+
+    The logo link and the name link share the same ``href``/``title``; the logo
+    link has only an image, so the first anchor with readable text wins.
+    """
+    for match in _COMPANY_ANCHOR_RE.finditer(html_text or ""):
+        value = normalize_text(html_to_text(match.group(1)))
+        if value:
+            return value[:120]
+    return None
+
+
+def _offer_title_candidates(html_text: str) -> list[str]:
+    """Offer-title strings the company must never be equal to."""
+    candidates: list[str] = []
+    title_match = _TITLE_TAG_RE.search(html_text or "")
+    if title_match:
+        page_title = normalize_text(html_to_text(title_match.group(1)))
+        offer_match = _TITLE_OFFER_RE.search(page_title)
+        if offer_match:
+            candidates.append(normalize_text(offer_match.group(1)))
+    h1_match = _H1_TITLE_RE.search(html_text or "")
+    if h1_match:
+        candidates.append(normalize_text(html_to_text(h1_match.group(1))))
+    return [candidate for candidate in candidates if candidate]
+
+
+def _company_equals_offer_title(company: str, html_text: str) -> bool:
+    target = normalize_text(company).casefold()
+    return any(
+        candidate.casefold() == target
+        for candidate in _offer_title_candidates(html_text)
     )
-    # ``hiringOrganization`` may wrap a nested ``name``; prefer the shortest
-    # non-empty capture, which is the organization name rather than its address.
-    if raw and len(raw) > 120:
+
+
+def parse_detail_company(html_text: str) -> str | None:
+    """Extract the company, ignoring the breadcrumb's ``itemprop="name"``.
+
+    Preference order: the real ``/<slug>/re-<id>`` company link, then the
+    ``twitter:data1`` meta tag, then positively recognized markup
+    (``hiringOrganization`` or a company class). The breadcrumb name is never a
+    company signal, and a value equal to the offer title is refused so the
+    guardrail catches a markup regression.
+    """
+    if not html_text:
         return None
-    return raw
+    company = _parse_company_from_anchor(html_text)
+    if not company:
+        company = _parse_meta_content(html_text, _TWITTER_DATA1_META_RE)
+    if not company:
+        company = _extract_field(
+            html_text,
+            itemprops=COMPANY_ITEMPROPS,
+            class_markers=COMPANY_CLASS_MARKERS,
+        )
+    if not company:
+        return None
+    company = normalize_text(company)
+    if not company or len(company) > 120:
+        return None
+    if _company_equals_offer_title(company, html_text):
+        return None
+    return company
 
 
 def parse_detail_location(html_text: str) -> str | None:
-    return _extract_field(
+    """Extract the location from recognized markup, else the real page title.
+
+    Real offer pages carry no ``jobLocation``; the city is only in the title
+    (``Oferta de Empleo <title> en <city>, <company> - Tecnoempleo.com``). When
+    recognized structural markup is present it still wins, so old fixtures keep
+    working. No soft heuristics are added.
+    """
+    recognized = _extract_field(
         html_text,
         itemprops=LOCATION_ITEMPROPS,
         class_markers=LOCATION_CLASS_MARKERS,
     )
+    if recognized:
+        return recognized
+    title_match = _TITLE_TAG_RE.search(html_text or "")
+    if not title_match:
+        return None
+    page_title = normalize_text(html_to_text(title_match.group(1)))
+    match = _TITLE_LOCATION_RE.search(page_title)
+    if not match:
+        return None
+    city = normalize_text(match.group(1))
+    return city[:160] if city else None
+
+
+def _parse_posted_from_og_description(html_text: str) -> str | None:
+    """Real publication date: the strict ``dd/mm/yyyy`` in ``og:description``."""
+    content = _parse_meta_content(html_text, _OG_DESCRIPTION_META_RE)
+    if not content:
+        return None
+    match = _DDMMYYYY_RE.search(content)
+    if not match:
+        return None
+    try:
+        moment = datetime(
+            int(match.group(3)), int(match.group(2)), int(match.group(1)),
+            tzinfo=timezone.utc,
+        )
+    except ValueError:
+        return None
+    return to_iso(moment)
 
 
 def parse_detail_posted_at(html_text: str) -> str | None:
     """Extract and normalize a publication date, or ``None`` when unrecognized.
 
     A machine-readable ``<time datetime="...">`` attribute is the preferred
-    source: it is locale-independent, so it can never be misread as a relative
-    date. Only when it is absent does the adapter fall back to recognized date
-    markup text and parse it strictly as an absolute ISO-ish timestamp.
+    source, followed by recognized date markup. Real offer pages carry neither,
+    so the strict ``dd/mm/yyyy`` in ``og:description`` is the fallback. Relative
+    or locale text is never guessed.
     """
     if html_text:
         match = _TIME_DATETIME_RE.search(html_text)
@@ -480,13 +618,14 @@ def parse_detail_posted_at(html_text: str) -> str | None:
     raw = _extract_field(
         html_text, itemprops=DATE_ITEMPROPS, class_markers=DATE_CLASS_MARKERS
     )
-    if not raw:
-        return None
-    # The text fallback must be a real absolute date. ``parse_flexible_date`` is
-    # deliberately not used here: a locale date such as "10 de septiembre" would
-    # match its relative-date ``d`` unit and produce a wrong timestamp.
-    parsed = parse_datetime(raw)
-    return to_iso(parsed) if parsed else None
+    if raw:
+        # The text fallback must be a real absolute date. ``parse_flexible_date``
+        # is deliberately not used here: a locale date such as "10 de septiembre"
+        # would match its relative-date ``d`` unit and produce a wrong timestamp.
+        parsed = parse_datetime(raw)
+        if parsed:
+            return to_iso(parsed)
+    return _parse_posted_from_og_description(html_text)
 
 
 def parse_detail_technologies(html_text: str, *, limit: int = 30) -> list[str]:
