@@ -33,9 +33,9 @@ ROBOTS_DENY = "User-agent: *\nDisallow: /ofertas-trabajo/\n"
 def test_build_search_url_encodes_keyword_location_and_page() -> None:
     config = TecnoempleoSearchConfig(keywords="cloud security", location="madrid", max_pages=3)
     assert build_search_url(config) == (
-        "https://www.tecnoempleo.com/ofertas-trabajo/madrid/cloud%20security"
+        "https://www.tecnoempleo.com/ofertas-trabajo/madrid/?te=cloud+security"
     )
-    assert build_search_url(config, page=2).endswith("?pagina=2")
+    assert build_search_url(config, page=2).endswith("&pagina=2")
     assert plan_search_urls(config) == [
         build_search_url(config, page=1),
         build_search_url(config, page=2),

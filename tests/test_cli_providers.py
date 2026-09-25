@@ -74,8 +74,8 @@ def test_search_tecnoempleo_dry_run_needs_no_network(db_path: Path, capsys, monk
     payload = json.loads(capsys.readouterr().out)
     assert payload["dry_run"] is True
     assert payload["planned_urls"] == [
-        "https://www.tecnoempleo.com/ofertas-trabajo/madrid/cloud%20security",
-        "https://www.tecnoempleo.com/ofertas-trabajo/madrid/cloud%20security?pagina=2",
+        "https://www.tecnoempleo.com/ofertas-trabajo/madrid/?te=cloud+security",
+        "https://www.tecnoempleo.com/ofertas-trabajo/madrid/?te=cloud+security&pagina=2",
     ]
 
 

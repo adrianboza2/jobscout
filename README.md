@@ -420,11 +420,12 @@ aparte** (revisión humana del catálogo), no un comportamiento automático de e
 adaptador.
 
 `search-tecnoempleo` usa solo la búsqueda pública server-rendered bajo
-`/ofertas-trabajo/`. Antes del primer request vuelve a leer `robots.txt` y falla
+`/ofertas-trabajo/`. Construye la URL con la keyword como query param `te`, la
+ubicación como segmento de path y `pagina` solo desde la segunda página. Antes
+del primer request vuelve a leer `robots.txt` y falla
 cerrado si la ruta está deshabilitada. No usa login, cookies, RSS privado ni API
-no autorizada. **Limitación declarada:** sus selectores no están verificados
-contra una página en vivo (su `robots.txt` deshabilita crawlers automatizados), así
-que confirmá `JOBSCOUT_TECNOEMPLEO_OFFER_PATH_MARKER` antes de una corrida real.
+no autorizada. La forma de la URL fue verificada contra páginas reales del sitio;
+el parser sigue siendo conservador y falla cerrado ante HTML no reconocible.
 
 Convención de procedencia: `provider` (plataforma), `query` (palabra clave),
 `cycle_id` (ciclo de búsqueda comparable) y `position_kind`

@@ -19,10 +19,9 @@ Scope and ethics (enforced by construction, not by documentation alone):
   raw download ceiling are conservative. 401/403/429 abort the run; a 200 body
   with no recognizable offer link is refused rather than recorded as "no jobs",
   because the parser is deliberately conservative about unknown markup.
-* **Unverified selectors (documented limitation).** Tecnoempleo's ``robots.txt``
-  explicitly disallows automated/AI crawlers, so this adapter was built from the
-  public URL structure and is not validated against a live page. Field selectors
-  are configuration-driven; confirm them manually before any live run.
+* **Live URL validation.** The search URL shape was verified against Tecnoempleo's
+  live server-rendered pages: keywords use the ``te`` query parameter and
+  pagination uses ``pagina``.
 
 Operators are responsible for complying with the target site's terms of service
 and local law.
@@ -35,7 +34,7 @@ import re
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Callable
-from urllib.parse import quote, urljoin, urlsplit
+from urllib.parse import quote, urlencode, urljoin, urlsplit
 
 from ..config import (
     DEFAULT_TECNOEMPLEO_OFFER_PATH_MARKER,
@@ -126,19 +125,22 @@ class TecnoempleoSearchConfig:
 def build_search_url(config: TecnoempleoSearchConfig, *, page: int = 1) -> str:
     """Build one bounded server-rendered search URL.
 
-    ``https://www.tecnoempleo.com/ofertas-trabajo/<province>/<keyword>`` with
-    ``?<page_param>=N`` for pages after the first. The province segment is only
-    added when a location is configured.
+    ``https://www.tecnoempleo.com/ofertas-trabajo/<location>/?te=<keyword>``, or
+    ``https://www.tecnoempleo.com/ofertas-trabajo/?te=<keyword>`` when no
+    location is configured, with ``&<page_param>=N`` appended for pages after
+    the first. The location is kept as a path segment (the base keeps its
+    trailing slash so ``robots.txt`` prefixes stay meaningful); the keyword is
+    URL encoded as the ``te`` query parameter via :func:`urllib.parse.urlencode`.
     """
     base = config.search_url.rstrip("/")
-    segments = [base]
     if config.location and config.location.strip():
-        segments.append(quote(config.location.strip(), safe=""))
-    segments.append(quote(config.keywords.strip(), safe=""))
-    url = "/".join(segments)
+        path = f"{base}/{quote(config.location.strip(), safe='')}/"
+    else:
+        path = f"{base}/"
+    params: list[tuple[str, Any]] = [("te", config.keywords.strip())]
     if page > 1:
-        url = f"{url}?{config.page_param}={int(page)}"
-    return url
+        params.append((config.page_param, int(page)))
+    return f"{path}?{urlencode(params)}"
 
 
 def plan_search_urls(config: TecnoempleoSearchConfig) -> list[str]:

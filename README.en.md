@@ -418,11 +418,12 @@ approved catalog is a **separate decision** (a human catalog review), not
 automatic behavior of this adapter.
 
 `search-tecnoempleo` uses only the public server-rendered search under
-`/ofertas-trabajo/`. It re-reads `robots.txt` before the first request and fails
+`/ofertas-trabajo/`. It builds the URL with the keyword as the `te` query
+parameter, the location as a path segment, and `pagina` only from the second
+page onward. It re-reads `robots.txt` before the first request and fails
 closed when the path is disallowed. It uses no login, cookies, private RSS, or
-unauthorized API. **Declared limitation:** its selectors are not verified against
-a live page (its `robots.txt` disallows automated crawlers), so confirm
-`JOBSCOUT_TECNOEMPLEO_OFFER_PATH_MARKER` before a live run.
+unauthorized API. The URL shape was verified against live site pages; the parser
+remains conservative and fails closed when the HTML is not recognizable.
 
 Provenance convention: `provider` (platform), `query` (keyword), `cycle_id`
 (comparable search cycle), and `position_kind` (`search_rank` = real search

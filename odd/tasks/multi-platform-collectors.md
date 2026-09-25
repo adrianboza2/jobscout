@@ -85,7 +85,9 @@ Implemented and verified:
   rank `0`. Unsupported XML fails closed.
 - **Tecnoempleo search adapter.** Public server-rendered search under
   `/ofertas-trabajo/`; fetches `robots.txt` and fails closed if the path is
-  disallowed or robots is unreadable. `position_kind = search_rank`. A 200 body
+  disallowed or robots is unreadable. The URL keeps the location as a path
+  segment, sends the keyword as the `te` query parameter, and adds `pagina`
+  only from page 2. `position_kind = search_rank`. A 200 body
   with no recognizable offer link fails closed instead of reporting zero.
 - **Tecnoempleo detail adapter.** `collectors/tecnoempleo_details.py` +
   `fetch-tecnoempleo-details`. Re-fetches `robots.txt` and checks every planned
