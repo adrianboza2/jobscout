@@ -123,6 +123,42 @@ def test_live_search_parses_page_and_records_raw_document(settings) -> None:
     assert client.call_count == 1
 
 
+def test_live_search_stops_completed_when_a_later_page_has_no_offers(settings) -> None:
+    # Regression: a later, offer-less page is a normal end of pagination, not
+    # unknown markup. Earlier behaviour aborted the whole query as FAILED_CLOSED.
+    client = FakeHttpClient(
+        [
+            response(
+                200,
+                fixture_text("tecnoempleo_search_page.html"),
+                headers={"content-type": "text/html"},
+            ),
+            response(
+                200,
+                "<html><body><p>No hay ofertas que coincidan</p></body></html>",
+                headers={"content-type": "text/html"},
+            ),
+        ]
+    )
+    result = search_tecnoempleo(
+        TecnoempleoSearchConfig(keywords="backend", max_pages=2, max_items=10),
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_ALLOW,
+    )
+    assert result.status is SearchRunStatus.COMPLETED
+    assert result.pages_fetched == 2
+    assert len(result.postings) == 3
+    assert [posting.source_job_id for posting in result.postings] == [
+        "rf-7a491a37220693ec4248",
+        "rf-1111aaaa2222bbbb3333",
+        "rf-9999cccc8888dddd7777",
+    ]
+    assert client.call_count == 2
+
+
 def test_robots_disallow_fails_closed_before_search(settings) -> None:
     client = FakeHttpClient([])  # no search request is expected
     result = search_tecnoempleo(

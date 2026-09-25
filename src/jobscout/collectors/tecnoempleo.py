@@ -16,9 +16,11 @@ Scope and ethics (enforced by construction, not by documentation alone):
   ``position_kind = search_rank``; the rank is where the offer appeared, never a
   quality signal.
 * **Bounded and fail-closed.** Page/item caps, request delay, timeout, and the
-  raw download ceiling are conservative. 401/403/429 abort the run; a 200 body
-  with no recognizable offer link is refused rather than recorded as "no jobs",
-  because the parser is deliberately conservative about unknown markup.
+  raw download ceiling are conservative. 401/403/429 abort the run; a first-page
+  200 body with no recognizable offer link is refused rather than recorded as
+  "no jobs", because the parser is deliberately conservative about unknown
+  markup. Once offers have been collected, a later page with no recognizable
+  offer link is a normal end of pagination and stops the run as completed.
 * **Live URL validation.** The search URL shape was verified against Tecnoempleo's
   live server-rendered pages: keywords use the ``te`` query parameter and
   pagination uses ``pagina``.
@@ -446,14 +448,21 @@ def search_tecnoempleo(
             max_items=config.max_items,
         )
         if not page_postings:
-            # Unknown markup must not masquerade as an empty result set.
-            result.status = SearchRunStatus.FAILED_CLOSED
-            result.error = (
-                f"unsupported search response from {url}: no recognizable offer link "
-                f"(marker {config.offer_path_marker!r}); live selectors are unverified"
+            if page_index == 0 or not result.postings:
+                # Unknown markup must not masquerade as an empty result set.
+                result.status = SearchRunStatus.FAILED_CLOSED
+                result.error = (
+                    f"unsupported search response from {url}: no recognizable offer link "
+                    f"(marker {config.offer_path_marker!r}); live selectors are unverified"
+                )
+                result.notes = "unrecognized search markup; run aborted"
+                return result
+            # A later page with no offers is a normal end of pagination, not a
+            # parser failure: keep what we already collected and stop.
+            result.notes = (
+                f"pagination ended at page {page_index + 1}: no more offers"
             )
-            result.notes = "unrecognized search markup; run aborted"
-            return result
+            break
 
         _extend_unique(result.postings, page_postings, limit=config.max_items)
         if len(result.postings) >= config.max_items:
