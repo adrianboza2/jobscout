@@ -889,9 +889,16 @@ def jobs_needing_evaluation(
     return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
 
 
-def all_active_jobs(conn: sqlite3.Connection, *, limit: int | None = None) -> list[Job]:
-    sql = "SELECT * FROM jobs WHERE is_active = 1 ORDER BY id"
+def all_active_jobs(
+    conn: sqlite3.Connection, *, limit: int | None = None, source: str | None = None
+) -> list[Job]:
+    """Active jobs in ``id`` order, optionally narrowed to one provider."""
+    clauses = ["is_active = 1"]
     params: list[Any] = []
+    if source:
+        clauses.append("source = ?")
+        params.append(str(source))
+    sql = "SELECT * FROM jobs WHERE " + " AND ".join(clauses) + " ORDER BY id"
     if limit is not None:
         sql += " LIMIT ?"
         params.append(int(limit))
@@ -901,11 +908,19 @@ def all_active_jobs(conn: sqlite3.Connection, *, limit: int | None = None) -> li
 def _jobs_needing_details_predicate() -> str:
     return "(content_status != 'ok' OR description IS NULL OR TRIM(description) = '')"
 
-def count_active_jobs(conn: sqlite3.Connection) -> int:
-    """Number of active jobs, used to report ``--max-items`` truncation."""
-    return int(
-        conn.execute("SELECT COUNT(*) FROM jobs WHERE is_active = 1").fetchone()[0]
-    )
+def count_active_jobs(conn: sqlite3.Connection, *, source: str | None = None) -> int:
+    """Number of active jobs, used to report ``--max-items`` truncation.
+
+    ``source`` optionally narrows the count to one provider, mirroring
+    :func:`all_active_jobs` so a provider-scoped selection reports its own
+    truncation.
+    """
+    sql = "SELECT COUNT(*) FROM jobs WHERE is_active = 1"
+    params: list[Any] = []
+    if source:
+        sql += " AND source = ?"
+        params.append(str(source))
+    return int(conn.execute(sql, params).fetchone()[0])
 
 
 def count_jobs_needing_details(
@@ -1007,15 +1022,27 @@ def _jobs_needing_refresh_predicate() -> str:
     )
 
 
-def count_jobs_needing_refresh(conn: sqlite3.Connection, *, cutoff: str) -> int:
-    """Number of active jobs whose latest fetch evidence warrants a refresh."""
+def count_jobs_needing_refresh(
+    conn: sqlite3.Connection, *, cutoff: str, source: str | None = None
+) -> int:
+    """Number of active jobs whose latest fetch evidence warrants a refresh.
+
+    ``source`` optionally narrows the count to one provider, so a
+    provider-specific refresh command reports its own truncation without
+    counting unrelated platforms.
+    """
+    clauses = ["j.is_active = 1", _jobs_needing_refresh_predicate()]
+    params: list[Any] = [cutoff]
+    if source:
+        clauses.append("j.source = ?")
+        params.append(str(source))
     return int(
         conn.execute(
             "SELECT COUNT(*) FROM jobs j "
             + _LATEST_DETAIL_FETCH_JOIN
-            + " WHERE j.is_active = 1 AND "
-            + _jobs_needing_refresh_predicate(),
-            (cutoff,),
+            + " WHERE "
+            + " AND ".join(clauses),
+            params,
         ).fetchone()[0]
     )
 
@@ -1026,6 +1053,7 @@ def jobs_needing_refresh(
     cutoff: str,
     limit: int | None = None,
     job_ids: Sequence[int] | None = None,
+    source: str | None = None,
 ) -> list[Job]:
     """Active jobs whose latest detail-fetch evidence warrants a refresh.
 
@@ -1033,10 +1061,14 @@ def jobs_needing_refresh(
     fetched are the default ``fetch-details`` selection, not this one. Ordering
     is deterministic and prioritizes the oldest evidence first
     (``COALESCE(fetched_at, stored_at) ASC``), with ``id ASC`` breaking ties, so
-    a bounded refresh spends its budget on the stalest offers.
+    a bounded refresh spends its budget on the stalest offers. ``source``
+    optionally restricts the selection to one provider.
     """
     clauses = ["j.is_active = 1", _jobs_needing_refresh_predicate()]
     params: list[Any] = [cutoff]
+    if source:
+        clauses.append("j.source = ?")
+        params.append(str(source))
     if job_ids:
         placeholders = ",".join("?" for _ in job_ids)
         clauses.append(f"j.id IN ({placeholders})")
@@ -1065,17 +1097,19 @@ def update_job_content(
     company: str | None = None,
     location: str | None = None,
     posted_at: str | None = None,
+    employment_type: str | None = None,
+    salary: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
     """Replace a stored job's description without touching unrelated columns.
 
     ``raw_document_id`` is only written when provided, so enriching a job keeps
     the provenance of the original search payload intact. ``company``,
-    ``location``, ``posted_at``, and ``extra`` are optional detail-derived fields:
-    each is only written when non-empty, so a provider fetch can fill a gap in a
-    partial search card without clobbering existing values. ``extra`` is merged
-    into the stored ``extra_json`` (never replaced wholesale), so unrelated keys
-    survive.
+    ``location``, ``posted_at``, ``employment_type``, ``salary``, and ``extra``
+    are optional detail-derived fields: each is only written when non-empty, so a
+    provider fetch can fill a gap in a partial search card without clobbering
+    existing values. ``extra`` is merged into the stored ``extra_json`` (never
+    replaced wholesale), so unrelated keys survive.
     """
     assignments = [
         "description = ?",
@@ -1093,6 +1127,8 @@ def update_job_content(
         ("company", company),
         ("location", location),
         ("posted_at", posted_at),
+        ("employment_type", employment_type),
+        ("salary", salary),
     ):
         if value:
             assignments.append(f"{column} = ?")
@@ -1195,6 +1231,29 @@ def latest_detail_fetch(
         (int(job_id),),
     ).fetchone()
     return _row_to_detail_fetch(row) if row else None
+
+
+def latest_successful_detail_fetch_source(
+    conn: sqlite3.Connection, job_id: int
+) -> str | None:
+    """The ``source`` of a job's most recent *successful* detail fetch, or ``None``.
+
+    "Latest" is the highest ``id`` (insertion order), matching
+    :func:`latest_detail_fetch`. Only ``status = 'ok'`` rows qualify, so a later
+    failed, partial, or skipped attempt never hides the provider that actually
+    produced the stored description. A successful row with a NULL ``source`` and
+    a job with no successful fetch both return ``None``, so callers can tell
+    "provenance unknown" apart from "known to be another provider".
+    """
+    row = conn.execute(
+        "SELECT source FROM job_detail_fetches "
+        "WHERE job_id = ? AND status = 'ok' ORDER BY id DESC LIMIT 1",
+        (int(job_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    source = row["source"]
+    return str(source) if source else None
 
 
 def latest_detail_fetches_for_jobs(

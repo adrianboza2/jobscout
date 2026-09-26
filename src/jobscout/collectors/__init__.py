@@ -15,6 +15,10 @@ from .getmanfred import (
     GetManfredSitemapConfig,
     search_getmanfred,
 )
+from .getmanfred_details import (
+    GetManfredDetailConfig,
+    fetch_getmanfred_details,
+)
 from .infojobs import BLOCKED_REASON as INFOJOBS_BLOCKED_REASON
 from .infojobs import search_infojobs
 from .ratelimit import (
@@ -43,6 +47,7 @@ __all__ = [
     "CollectorResult",
     "FailureClass",
     "FixturePayload",
+    "GetManfredDetailConfig",
     "GetManfredSitemapConfig",
     "INFOJOBS_BLOCKED_REASON",
     "NotFoundError",
@@ -57,6 +62,7 @@ __all__ = [
     "check_robots",
     "classify_status",
     "decide_retry",
+    "fetch_getmanfred_details",
     "fetch_tecnoempleo_details",
     "load_fixture",
     "postings_from_fixture",

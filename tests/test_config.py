@@ -213,6 +213,58 @@ def test_prose_labels_are_not_treated_as_credentials(text: str) -> None:
     assert safe, f"{text!r} was treated as a secret: {reason}"
 
 
+# ---------------------------------------------------------------------------
+# Cloudflare beacon exception (public site token, not a credential)
+# ---------------------------------------------------------------------------
+
+#: 32 hex characters: the exact shape of the public Cloudflare beacon token.
+CF_BEACON_PLACEHOLDER = "deadbeefdeadbeefdeadbeefdeadbeef"
+
+
+def _cloudflare_beacon_html(token: str) -> str:
+    return (
+        "<script defer "
+        'src="https://static.cloudflareinsights.com/beacon.min.js/'
+        'v8c78df7c7c0f484497ecbca7046644da1771523124516" '
+        'integrity="sha512-0000000000000000000000000000000000000000000000000000000000000000==" '
+        "data-cf-beacon='"
+        '{"rayId":"0000000000000000","version":"2024.8.0",'
+        f'"token":"{token}","t":1}}\' '
+        'crossorigin="anonymous"></script>'
+    )
+
+
+def test_cloudflare_beacon_token_is_not_treated_as_a_credential() -> None:
+    """The public beacon token must not suppress the whole Tecnoempleo body."""
+    html = _cloudflare_beacon_html(CF_BEACON_PLACEHOLDER)
+    safe, reason = is_safe_to_store(html)
+    assert safe, f"the public Cloudflare beacon token was treated as a secret: {reason}"
+    # The exemption is consistent in display redaction: no redaction marker.
+    assert "***REDACTED***" not in redact_secrets(html)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        # A real password form field inside a data-cf-beacon attribute.
+        "data-cf-beacon='{\"password\": \"correct-horse-battery-staple\"}'",
+        # The same JSON-quoted label outside the beacon attribute.
+        '{"token": "deadbeefdeadbeefdeadbeefdeadbeef"}',
+        # A JWT-like value (base64url header.payload.signature).
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0."
+        "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+        # A beacon token that is not exactly 32 hex characters (40 hex).
+        _cloudflare_beacon_html("d" * 40),
+        # A beacon token with a non-hex character.
+        _cloudflare_beacon_html("deadbeefdeadbeefdeadbeefdeadbeeg"),
+    ),
+)
+def test_cloudflare_beacon_exception_stays_fail_closed_elsewhere(payload: str) -> None:
+    safe, reason = is_safe_to_store(payload)
+    assert not safe, f"{payload!r} should still be treated as a credential"
+    assert reason
+
+
 @pytest.mark.parametrize(
     "env",
     [

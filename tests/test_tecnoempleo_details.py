@@ -302,6 +302,41 @@ def test_detail_real_page_is_ok_and_populates_fields(conn, settings) -> None:
     assert item.company != "Backend Engineer"
 
 
+def test_detail_cloudflare_beacon_page_body_is_archived(conn, settings) -> None:
+    """The public Cloudflare beacon token must not drop the raw provenance.
+
+    Regression for the systematic Tecnoempleo body suppression: the beacon's
+    32-hex public ``token`` tripped the labelled-credential pattern even though
+    it is not a credential.
+    """
+    from jobscout.models import DetailFetchStatus
+
+    jobs = _store_search_offers(conn, settings)
+    client = FakeHttpClient(
+        [
+            response(
+                200,
+                fixture_text("tecnoempleo_detail_page_cloudflare_beacon.html"),
+                headers={"content-type": "text/html"},
+            )
+        ]
+    )
+    result = fetch_tecnoempleo_details(
+        jobs[:1],
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_ALLOW,
+    )
+    document = result.raw_documents[0]
+    assert document.body is not None
+    assert document.truncated is False
+    assert "credential" not in (document.notes or "")
+    assert result.items[0].status is DetailFetchStatus.OK
+    assert result.items[0].description
+
+
 def test_detail_unknown_markup_stays_partial_honestly(conn, settings) -> None:
     from jobscout.models import DetailFetchStatus
 

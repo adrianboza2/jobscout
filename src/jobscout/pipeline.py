@@ -22,6 +22,7 @@ from .db import (
     get_job,
     insert_detail_fetch,
     insert_raw_document,
+    latest_successful_detail_fetch_source,
     record_run_item,
     store_posting,
     update_job_content,
@@ -374,8 +375,35 @@ def _description_content_hash(job: Job, description: str) -> str:
     )
 
 
+def _foreign_detail_provenance(
+    job: Job, provider: str, prior_successful_source: str | None
+) -> bool:
+    """True when the stored full description is known to come from another provider.
+
+    Cross-provider contamination (DP-1) left some offers — today, GetManfred ones
+    — carrying a description fetched inside another provider's id space. When this
+    fetch's provider is the offer's own provider, and the latest *successful*
+    provenance row came from a different provider, a successful same-provider
+    fetch is allowed to correct the stored text even when it is shorter. Every
+    other combination keeps the ordinary preservation policy: an unknown prior
+    source, a same-provider prior success, or a fetch from a provider other than
+    the offer's own all preserve instead.
+    """
+    job_source = str(getattr(job, "source", "") or "")
+    if not job_source or str(provider) != job_source:
+        return False
+    prior = str(prior_successful_source or "")
+    if not prior:
+        return False
+    return prior != job_source
+
+
 def _merge_detail_description(
-    job: Job, item: DetailItem
+    job: Job,
+    item: DetailItem,
+    *,
+    provider: str = "linkedin",
+    prior_successful_source: str | None = None,
 ) -> tuple[str, ContentStatus, str]:
     """Decide the description to persist for one detail result.
 
@@ -385,7 +413,11 @@ def _merge_detail_description(
     provenance row never claims a hash this fetch did not create.
 
     Invariant: a partial or failed fetch never replaces a previously successful
-    full description. A successful fetch replaces a shorter/partial one.
+    full description. A successful fetch replaces a shorter/partial one, except
+    in the single source-mismatch case (see :func:`_foreign_detail_provenance`):
+    when the stored full description is known to have come from a different
+    provider than the offer's own, a successful same-provider fetch corrects it
+    regardless of length.
     """
     existing_description = job.description or ""
     existing_status = job.content_status
@@ -395,7 +427,13 @@ def _merge_detail_description(
     new_description = item.description or ""
 
     if item.status is DetailFetchStatus.OK and new_description:
-        if existing_full and len(new_description) <= len(existing_description):
+        if (
+            existing_full
+            and len(new_description) <= len(existing_description)
+            and not _foreign_detail_provenance(
+                job, provider, prior_successful_source
+            )
+        ):
             return existing_description, existing_status, ""
         return (
             new_description,
@@ -422,11 +460,13 @@ def _detail_extra_fields(item: Any) -> dict[str, Any]:
     LinkedIn's :class:`DetailItem` exposes none of these, so the returned mapping
     is empty and the LinkedIn path stays byte-for-byte compatible. The
     Tecnoempleo adapter exposes ``company``/``location``/``posted_at`` and a
-    ``technologies`` list; only non-empty values are propagated, and a field the
-    existing row already carries is never overwritten with an empty value.
+    ``technologies`` list; the GetManfred adapter additionally exposes
+    ``employment_type`` and ``salary``. Only non-empty values are propagated, and
+    a field the existing row already carries is never overwritten with an empty
+    value.
     """
     fields: dict[str, Any] = {}
-    for name in ("company", "location", "posted_at"):
+    for name in ("company", "location", "posted_at", "employment_type", "salary"):
         value = getattr(item, name, None)
         if value:
             fields[name] = value
@@ -491,7 +531,14 @@ def ingest_detail_results(
             outcome.notes = (outcome.notes or "") + f" job #{item.job_id} disappeared"
             continue
 
-        description, content_status, produced_hash = _merge_detail_description(job, item)
+        description, content_status, produced_hash = _merge_detail_description(
+            job,
+            item,
+            provider=provider,
+            prior_successful_source=latest_successful_detail_fetch_source(
+                conn, int(job.id)
+            ),
+        )
         extra_fields = _detail_extra_fields(item)
         changed = (
             description != (job.description or "")

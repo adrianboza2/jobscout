@@ -220,7 +220,16 @@ def resolve_source_job_id(job: Any) -> str | None:
     is therefore accepted directly; any other value (URN, URL, or junk) goes
     through normal extraction before falling back to the job URL. A malformed
     id is never accepted as-is.
+
+    The offer's ``source`` is checked first: a job whose provider is present and
+    is not ``linkedin`` is never resolved, so a GetManfred or Tecnoempleo digit
+    id cannot be read inside LinkedIn's numeric id space. Jobs with no ``source``
+    attribute or ``source=None`` keep the historical behaviour (test stubs and
+    callers that predate the provider column rely on it).
     """
+    source = normalize_text(getattr(job, "source", None))
+    if source and source.lower() != "linkedin":
+        return None
     candidate = normalize_text(getattr(job, "source_job_id", None))
     if candidate and _NUMERIC_SOURCE_JOB_ID_RE.fullmatch(candidate):
         return candidate

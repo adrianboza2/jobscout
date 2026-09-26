@@ -29,6 +29,7 @@ from jobscout.scoring.opencode import (
     bound_output,
     build_cli_prompt,
     build_command,
+    effective_prompt_version,
     extract_evaluation_text,
     resolve_executable,
     run_command,
@@ -339,9 +340,74 @@ def test_v5_prompt_keeps_security_framing_and_output_contract(strong_posting, pr
 def test_evaluation_records_the_v5_prompt_version(
     opencode_settings, strong_posting, profile
 ) -> None:
+    # The effective default variant is ``minimal``, so the recorded provenance
+    # carries it as a suffix.
     scorer, _ = make_scorer(opencode_settings, [command_outcome(0, VALID_JSON)])
     evaluation = scorer.score(strong_posting, profile)
-    assert evaluation.prompt_version == OPENCODE_PROMPT_VERSION
+    assert evaluation.prompt_version == f"{OPENCODE_PROMPT_VERSION}+minimal"
+
+
+def test_effective_prompt_version_mirrors_the_variant_setting(opencode_settings) -> None:
+    assert (
+        effective_prompt_version(opencode_settings)
+        == f"{OPENCODE_PROMPT_VERSION}+minimal"
+    )
+    assert (
+        effective_prompt_version(opencode_settings.with_overrides(opencode_variant="max"))
+        == f"{OPENCODE_PROMPT_VERSION}+max"
+    )
+    # An explicitly empty or unset variant keeps the historical bare string.
+    assert (
+        effective_prompt_version(opencode_settings.with_overrides(opencode_variant=""))
+        == OPENCODE_PROMPT_VERSION
+    )
+    disabled = Settings.from_env(env={"JOBSCOUT_OPENCODE_VARIANT": ""}, dotenv_path=None)
+    assert effective_prompt_version(disabled) == OPENCODE_PROMPT_VERSION
+
+
+def test_two_variants_produce_distinguishable_prompt_versions(
+    opencode_settings, strong_posting, profile
+) -> None:
+    minimal_scorer, _ = make_scorer(
+        opencode_settings.with_overrides(opencode_variant="minimal"),
+        [command_outcome(0, VALID_JSON)],
+    )
+    max_scorer, _ = make_scorer(
+        opencode_settings.with_overrides(opencode_variant="max"),
+        [command_outcome(0, VALID_JSON)],
+    )
+    minimal_eval = minimal_scorer.score(strong_posting, profile)
+    max_eval = max_scorer.score(strong_posting, profile)
+    assert minimal_eval.prompt_version == f"{OPENCODE_PROMPT_VERSION}+minimal"
+    assert max_eval.prompt_version == f"{OPENCODE_PROMPT_VERSION}+max"
+    assert minimal_eval.prompt_version != max_eval.prompt_version
+
+
+@pytest.mark.parametrize("variant", ["", None])
+def test_empty_variant_records_the_bare_prompt_version(
+    opencode_settings, strong_posting, profile, variant
+) -> None:
+    if variant is None:
+        settings = Settings.from_env(
+            env={"JOBSCOUT_OPENCODE_VARIANT": ""}, dotenv_path=None
+        )
+    else:
+        settings = opencode_settings.with_overrides(opencode_variant=variant)
+    scorer, _ = make_scorer(settings, [command_outcome(0, VALID_JSON)])
+    assert scorer.score(strong_posting, profile).prompt_version == OPENCODE_PROMPT_VERSION
+
+
+def test_error_outcome_also_records_the_effective_variant(
+    opencode_settings, strong_posting, profile
+) -> None:
+    # The provenance is written on every construction site, not only on success.
+    scorer, _ = make_scorer(
+        opencode_settings.with_overrides(opencode_variant="max"),
+        [command_outcome(1, "", "boom")],
+    )
+    evaluation = scorer.score(strong_posting, profile)
+    assert evaluation.status is EvaluationStatus.ERROR
+    assert evaluation.prompt_version == f"{OPENCODE_PROMPT_VERSION}+max"
 
 
 # ---------------------------------------------------------------------------

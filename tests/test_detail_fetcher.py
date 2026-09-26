@@ -100,6 +100,23 @@ def _store_card(conn, source_job_id: str, **overrides):
     return job
 
 
+def _store_foreign_card(conn, source: str, source_job_id: str, *, url: str):
+    """Store a non-LinkedIn offer so LinkedIn-scoped selection can be tested."""
+    posting = normalize_job_posting(
+        {
+            "source": source,
+            "source_job_id": source_job_id,
+            "jobUrl": url,
+            "jobTitle": f"{source} platform engineer",
+            "companyName": "Foreign Co",
+            "location": f"Remote ({source})",
+        },
+        source=source,
+    )
+    job, _ = store_posting(conn, posting, now="2026-09-15T10:00:00Z")
+    return job
+
+
 def _detail(job, **overrides) -> DetailItem:
     payload = {
         "job_id": int(job.id),
@@ -274,6 +291,44 @@ def test_resolve_source_job_id_prefers_url_when_source_id_is_malformed() -> None
     assert resolve_source_job_id(job) == "3911111111"
 
 
+def test_resolve_source_job_id_refuses_a_present_non_linkedin_source() -> None:
+    # A GetManfred/Tecnoempleo digit id must never be read inside LinkedIn's
+    # numeric id space, whether it arrives as a numeric source id or a URL.
+    getmanfred = SimpleNamespace(
+        source="getmanfred",
+        source_job_id="8383",
+        url="https://www.getmanfred.com/ofertas-empleo/backend-8383",
+    )
+    tecnoempleo = SimpleNamespace(
+        source="tecnoempleo",
+        source_job_id="205650",
+        url="https://www.tecnoempleo.com/aceptacorp/re-205650",
+    )
+    assert resolve_source_job_id(getmanfred) is None
+    assert resolve_source_job_id(tecnoempleo) is None
+    # A LinkedIn source still resolves the slug/numeric-id case.
+    assert (
+        resolve_source_job_id(
+            SimpleNamespace(
+                source="linkedin", source_job_id="4457430073", url=SLUG_DETAIL_URL
+            )
+        )
+        == "4457430073"
+    )
+
+
+def test_resolve_source_job_id_keeps_stub_compatibility_without_source() -> None:
+    # Stubs and callers that predate the provider column keep working: only a
+    # *present* non-LinkedIn source is refused.
+    assert resolve_source_job_id(_job_stub("4457430073", SLUG_DETAIL_URL)) == "4457430073"
+    assert (
+        resolve_source_job_id(
+            SimpleNamespace(source=None, source_job_id="4457430073", url=SLUG_DETAIL_URL)
+        )
+        == "4457430073"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Planning and bounds
 # ---------------------------------------------------------------------------
@@ -333,6 +388,102 @@ def test_jobs_needing_details_selects_only_un_enriched(conn) -> None:
     assert [job.id for job in jobs_needing_details(conn, limit=1)] == [card.id]
     assert [job.id for job in jobs_needing_details(conn, job_ids=[rich.id])] == []
     assert [job.id for job in all_active_jobs(conn)] == [rich.id, card.id]
+
+
+# ---------------------------------------------------------------------------
+# fetch-details selection is LinkedIn-only (all four routes)
+# ---------------------------------------------------------------------------
+
+
+def _detail_selection_args(*, job_id=None, all=False, refresh=False):
+    return SimpleNamespace(job_id=job_id, all=all, refresh=refresh)
+
+
+def test_detail_selection_is_linkedin_only(conn, settings) -> None:
+    from jobscout.cli import _select_detail_jobs
+
+    linkedin_job = _store_card(conn, "3911111111")
+    getmanfred_job = _store_foreign_card(
+        conn,
+        "getmanfred",
+        "8383",
+        url="https://www.getmanfred.com/ofertas-empleo/backend-8383",
+    )
+    tecnoempleo_job = _store_foreign_card(
+        conn,
+        "tecnoempleo",
+        "205650",
+        url="https://www.tecnoempleo.com/aceptacorp/re-205650",
+    )
+
+    # Default route: only the LinkedIn card is selected.
+    default_jobs, _ = _select_detail_jobs(
+        conn, _detail_selection_args(), limit=50
+    )
+    assert [job.id for job in default_jobs] == [linkedin_job.id]
+
+    # --all route: a GetManfred or Tecnoempleo offer is never selected.
+    all_jobs, _ = _select_detail_jobs(
+        conn, _detail_selection_args(all=True), limit=50
+    )
+    assert {job.id for job in all_jobs} == {linkedin_job.id}
+
+    # --job-id route: a foreign id is dropped even when explicitly requested.
+    id_jobs, _ = _select_detail_jobs(
+        conn,
+        _detail_selection_args(job_id=[getmanfred_job.id, linkedin_job.id]),
+        limit=50,
+    )
+    assert [job.id for job in id_jobs] == [linkedin_job.id]
+
+    # Foreign offers remain active and un-enriched in the database.
+    assert get_job(conn, tecnoempleo_job.id).is_active
+    assert get_job(conn, getmanfred_job.id).is_active
+
+
+def test_detail_refresh_selection_is_linkedin_only(conn, settings) -> None:
+    from jobscout.cli import _select_detail_jobs
+
+    linkedin_job = _store_card(conn, "3911111111")
+    getmanfred_job = _store_foreign_card(
+        conn,
+        "getmanfred",
+        "8383",
+        url="https://www.getmanfred.com/ofertas-empleo/backend-8383",
+    )
+    for job in (linkedin_job, getmanfred_job):
+        _insert_fetch(
+            conn,
+            job,
+            status=DetailFetchStatus.OK,
+            fetched_at="2026-07-01T00:00:00Z",
+        )
+
+    jobs, _ = _select_detail_jobs(
+        conn,
+        _detail_selection_args(refresh=True),
+        limit=50,
+        refresh_cutoff=STALE_CUTOFF,
+    )
+    assert [job.id for job in jobs] == [linkedin_job.id]
+
+
+def test_plan_targets_of_a_mixed_selection_contains_only_linkedin(conn, settings) -> None:
+    linkedin_job = _store_card(conn, "3911111111")
+    getmanfred_job = _store_foreign_card(
+        conn,
+        "getmanfred",
+        "8383",
+        url="https://www.getmanfred.com/ofertas-empleo/backend-8383",
+    )
+
+    targets, _ = plan_detail_targets(
+        [linkedin_job, getmanfred_job], settings=settings, max_items=10
+    )
+    assert targets[0].url is not None
+    assert targets[1].url is None
+    assert targets[1].reason
+    assert all(target.url is None or "linkedin.com" in target.url for target in targets)
 
 
 # ---------------------------------------------------------------------------

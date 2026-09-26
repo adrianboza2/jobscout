@@ -202,6 +202,21 @@ def build_cli_prompt(job: Any, profile: Profile) -> str:
     return composed + OPENCODE_OUTPUT_CONTRACT
 
 
+def effective_prompt_version(settings: Settings) -> str:
+    """Return the ``prompt_version`` an OpenCode evaluation must record.
+
+    The configured ``opencode_variant`` is part of the reasoning provenance, so
+    two passes with different variants must be distinguishable after the fact.
+    A non-empty variant is appended as ``<version>+<variant>``; an empty or
+    unset variant keeps the bare historical string byte-identical, so rows
+    produced before variants were recorded stay comparable.
+    """
+    variant = (settings.opencode_variant or "").strip()
+    if variant:
+        return f"{OPENCODE_PROMPT_VERSION}+{variant}"
+    return OPENCODE_PROMPT_VERSION
+
+
 def build_command(
     settings: Settings,
     prompt: str,
@@ -636,7 +651,12 @@ class OpenCodeScorer:
         Failures are represented as evaluations with ``status != ok`` instead of
         raising, so a batch run can continue. ``now`` exists for interface parity
         with the other scorers and is unused.
+
+        Every outcome — CLI failure, parse error, contract error, and success —
+        records the same :func:`effective_prompt_version`, so the reasoning
+        variant is part of the provenance even when the call did not complete.
         """
+        recorded_prompt_version = effective_prompt_version(self.settings)
         try:
             response = self.complete(job, profile)
         except OpenCodeError as exc:
@@ -648,7 +668,7 @@ class OpenCodeScorer:
                 recommendation=Recommendation.NEED_MORE_INFO,
                 confidence=0.0,
                 model=self.settings.opencode_model,
-                prompt_version=OPENCODE_PROMPT_VERSION,
+                prompt_version=recorded_prompt_version,
                 profile_id=profile_id,
                 input_fingerprint=input_fingerprint(job, profile),
                 rationale="OpenCode evaluation could not be completed.",
@@ -668,7 +688,7 @@ class OpenCodeScorer:
                 recommendation=Recommendation.NEED_MORE_INFO,
                 confidence=0.0,
                 model=response.model,
-                prompt_version=OPENCODE_PROMPT_VERSION,
+                prompt_version=recorded_prompt_version,
                 profile_id=profile_id,
                 raw_document_id=raw_document_id,
                 input_fingerprint=input_fingerprint(job, profile),
@@ -686,7 +706,7 @@ class OpenCodeScorer:
                 recommendation=Recommendation.NEED_MORE_INFO,
                 confidence=0.0,
                 model=response.model,
-                prompt_version=OPENCODE_PROMPT_VERSION,
+                prompt_version=recorded_prompt_version,
                 profile_id=profile_id,
                 raw_document_id=raw_document_id,
                 input_fingerprint=input_fingerprint(job, profile),
@@ -716,7 +736,7 @@ class OpenCodeScorer:
             rationale=rationale,
             status=EvaluationStatus.OK,
             model=response.model,
-            prompt_version=OPENCODE_PROMPT_VERSION,
+            prompt_version=recorded_prompt_version,
             profile_id=profile_id,
             raw_document_id=raw_document_id,
             input_fingerprint=input_fingerprint(job, profile),
@@ -782,6 +802,7 @@ __all__ = [
     "bound_output",
     "build_cli_prompt",
     "build_command",
+    "effective_prompt_version",
     "extract_evaluation_text",
     "resolve_executable",
     "run_command",

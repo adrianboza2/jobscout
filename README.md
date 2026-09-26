@@ -111,7 +111,7 @@ Prepara el perfil real antes de cualquier barrido:
 |---|-------|----------------|----------|--------------|
 | 0 | Preparar perfil | `cp profile.example.yaml profile.yaml` (POSIX) o `Copy-Item profile.example.yaml profile.yaml` (PowerShell), y `JOBSCOUT_PROFILE_PATH=profile.yaml` en `.env` | Defines rol objetivo, seniority, skills, dealbreakers y exclusiones. | Decisión humana |
 | 1 | Barrido controlado | `python -m jobscout keyword-plan` y luego `python -m jobscout search-linkedin --keywords "..." --dry-run`; para ejecutarlo, cambia `--dry-run` por `--confirm-network` | Descubre ofertas nuevas. `keyword-plan` es offline; cada búsqueda real es un acto humano explícito. | Semiautomático: autorizas cada consulta |
-| 2 | Enriquecer | `python -m jobscout fetch-details --max-items 10 --confirm-network` (o `fetch-tecnoempleo-details` para ofertas de Tecnoempleo, o `--fixture` para trabajar offline) | Trae la descripción completa de cada oferta, acotado en volumen. Solo sube a `ok` cuando reconoce el detalle. | Semiautomático: autorizas cada corrida |
+| 2 | Enriquecer | `python -m jobscout fetch-details --max-items 10 --confirm-network` (o `fetch-getmanfred-details` / `fetch-tecnoempleo-details` según la plataforma, o `--fixture` para trabajar offline) | Trae la descripción completa de cada oferta, acotado en volumen. Solo sube a `ok` cuando reconoce el detalle. | Semiautomático: autorizas cada corrida |
 | 3 | Puntuar con MiMo | `python -m jobscout score --all --scorer opencode` | El puntuador predeterminado (OpenCode + MiMo) evalúa solo las ofertas que aún no tienen evaluación. | El puntaje es automático; la decisión de postular no |
 | 4 | Generar dashboard | `python -m jobscout dashboard --top 25` | Escribe un HTML local con ofertas, puntajes, evidencia del enlace y filtros de preferencia. | Automático y de solo lectura |
 | 5 | Revisar ofertas | Abre `reports/jobscout-dashboard.html` | Tú marcas **Aplicar** o **Descartar** en el navegador. | Decisión humana exclusivamente |
@@ -133,7 +133,17 @@ Notas del ciclo:
   enriquecimiento.
 - Cada evaluación queda versionada: guarda el `prompt_version` del puntuador y el
   `input_fingerprint` del perfil, así que un cambio de política es distinguible
-  sin reescribir el historial.
+  sin reescribir el historial. Para el puntuador de OpenCode, el `prompt_version`
+  además lleva la variante de razonamiento efectiva como sufijo
+  `<version>+<variant>` (por defecto `+minimal`), así que una corrida `minimal` y
+  una `max` se distinguen después. Un `JOBSCOUT_OPENCODE_VARIANT=` explícitamente
+  vacío conserva el string histórico sin sufijo.
+- La reevaluación **todavía no mira si la entrada cambió**: `score --all` omite
+  cualquier oferta que ya tenga una evaluación exitosa de ese puntuador, aunque
+  el perfil o la descripción hayan cambiado. Usa `--rescore` para forzar una
+  corrida nueva sobre todas las ofertas activas; omitir la reevaluación cuando la
+  entrada no cambió sigue siendo un pendiente documentado, no el comportamiento
+  actual.
 
 ### Criterio de seniority y tecnologías (prompt v5)
 
@@ -367,6 +377,7 @@ subcomando) y `--version`.
 | `keyword-plan [--family ID…] [--location L] [--remote]` | Lista las familias de palabras clave y el comando exacto por consulta (sin red, sin base de datos). |
 | `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas de LinkedIn con la descripción completa. Por defecto, las que aún no están enriquecidas; `--refresh` vuelve sobre las ya consultadas con evidencia obsoleta o reintentable. |
 | `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enriquece ofertas de Tecnoempleo desde su página de detalle pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
+| `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enriquece ofertas de GetManfred desde el JSON-LD `JobPosting` reconocido de su página pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje. |
 | `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. |
@@ -419,6 +430,16 @@ son **DevOps, DevSecOps, Cloud Engineer, Cloud Security, Azure** y posiblemente
 aparte** (revisión humana del catálogo), no un comportamiento automático de este
 adaptador.
 
+GetManfred deja de ser un **inventario solo de título**: hay permiso previo por
+escrito de Manfred para las solicitudes automatizadas y el almacenamiento de las
+descripciones de ofertas en este proyecto. El gate técnico también se cumplió: la
+página de oferta publica un bloque JSON-LD `JobPosting` en el HTML estático, así
+que no hace falta JavaScript. Existe un adaptador de detalle
+(`fetch-getmanfred-details`), con fixture construido a partir de una captura real
+y sin reproducir aquí el texto de los términos ni el contenido de las páginas. El
+adaptador sigue releyendo `robots.txt` antes del primer request: si esa política
+cambia, la corrida falla cerrado en lugar de confiar solo en el permiso de hoy.
+
 `search-tecnoempleo` usa solo la búsqueda pública server-rendered bajo
 `/ofertas-trabajo/`. Construye la URL con la keyword como query param `te`, la
 ubicación como segmento de path y `pagina` solo desde la segunda página. Antes
@@ -446,6 +467,12 @@ python -m jobscout fetch-details --max-items 5 --confirm-network                
 python -m jobscout fetch-details --all --max-items 10 --confirm-network               # re-extrae todo
 python -m jobscout fetch-details --refresh --stale-days 14 --dry-run                  # plan de refresco, offline
 ```
+
+Toda selección de `fetch-details` — la ruta por defecto, `--all`, `--refresh` y un
+`--job-id` explícito — se restringe a ofertas de LinkedIn (`source = linkedin`).
+Un id que no sea de LinkedIn se informa y nunca se planifica, así que un id
+numérico de GetManfred o Tecnoempleo jamás se lee dentro del espacio de ids de
+LinkedIn.
 
 `--refresh` es una selección mutuamente excluyente con `--job-id` y `--all`. Solo
 considera ofertas activas que ya tienen historial de fetch y cuyo último intento
@@ -493,6 +520,35 @@ aplica el pipeline al persistir.
 
 Flujo completo: **búsqueda → enriquecimiento de detalle → scoring**.
 `fetch-tecnoempleo-details` no vuelve a puntuar por sí solo; ejecuta
+`score --all --rescore` (o `score --job-id ID`) después de enriquecer.
+
+Enriquecimiento de detalles de GetManfred:
+
+```bash
+python -m jobscout fetch-getmanfred-details --dry-run                        # plan, sin red ni escrituras
+python -m jobscout fetch-getmanfred-details --max-items 10 --confirm-network # real, acotado
+python -m jobscout fetch-getmanfred-details --all --max-items 20 --confirm-network
+```
+
+Existe permiso previo por escrito de Manfred para las solicitudes automatizadas y
+el almacenamiento de las descripciones de ofertas en este proyecto. Selecciona por
+defecto las ofertas **activas de GetManfred** que todavía no tienen descripción
+completa (`--all` amplía a todas las activas de esa plataforma; cada ruta —
+por defecto, `--all` y `--job-id`— se restringe a `source = getmanfred`).
+Reutiliza el mismo modelo de seguridad que la búsqueda: sin login, sin cookies,
+sin RSS privado ni API; vuelve a leer `robots.txt` y falla cerrado si la ruta de
+detalle está deshabilitada; límites, pacing y techo de descarga conservadores.
+
+Extrae descripción, empresa, ubicación, fecha, tipo de empleo y salario **solo
+del JSON-LD `JobPosting` reconocido** de la página. Un campo que la página no
+expone queda `NULL`: la empresa nunca se deriva del slug y una localidad vacía no
+se reemplaza por un valor inferido. Un detalle reconocido deja la oferta en
+`content_status = ok` con descripción no vacía. Un detalle no reconocido, un 403 o
+un cuerpo truncado quedan en `partial`/`failed` con un error honesto: nunca se
+inventa un `ok`. La decisión de no reemplazar una descripción completa previa por
+un intento parcial o fallido la aplica el pipeline al persistir.
+
+`fetch-getmanfred-details` no vuelve a puntuar por sí solo; ejecuta
 `score --all --rescore` (o `score --job-id ID`) después de enriquecer.
 
 Importación de feedback:

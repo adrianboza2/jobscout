@@ -39,6 +39,13 @@ DEFAULT_LINKEDIN_DETAIL_URL = (
 #: mode reads it without any keyword fan-out.
 DEFAULT_GETMANFRED_SITEMAP_URL = "https://www.getmanfred.com/sitemap-offers.xml"
 DEFAULT_GETMANFRED_OFFER_PATH_PREFIX = "/ofertas-empleo/"
+#: GetManfred's public ``robots.txt``. Re-fetched before the first detail
+#: request; the current document allows ``/`` for every user agent.
+DEFAULT_GETMANFRED_ROBOTS_URL = "https://www.getmanfred.com/robots.txt"
+#: Bounded item cap for the opt-in GetManfred detail-enrichment run. Kept
+#: separate from the sitemap inventory cap so a sweep and an enrichment run can
+#: be budgeted independently.
+DEFAULT_GETMANFRED_DETAIL_MAX_ITEMS = 20
 # The public offers sitemap is larger than the generic raw-document ceiling.
 # Keep this provider-specific allowance bounded instead of raising the global
 # limit used by every other collector.
@@ -189,6 +196,48 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+#: The public Cloudflare beacon script (``data-cf-beacon``) publishes a 32-hex
+#: site token in its JSON ``token`` field. Cloudflare ships that value to every
+#: visitor, so it is not a credential; without an exception the generic
+#: labelled-token pattern rejects the whole page body and Tecnoempleo detail
+#: provenance is lost. Only this exact attribute context with a 32-hex value is
+#: exempted. A real ``token``/``password``/``secret`` form field, a JWT, or a
+#: beacon token that is not exactly 32 hex characters still fails closed.
+_CF_BEACON_ATTRIBUTE_RE = re.compile(
+    r"""data-cf-beacon\s*=\s*(?P<quote>["'])(?P<value>.*?)(?P=quote)""",
+    re.IGNORECASE | re.DOTALL,
+)
+_CF_BEACON_TOKEN_RE = re.compile(
+    r"""["']?token["']?\s*:\s*["'][0-9a-fA-F]{32}["']""",
+    re.IGNORECASE,
+)
+#: Neutral replacement for the exempted key/value pair before pattern matching.
+#: It carries no credential-shaped label and no long token value.
+_CF_BEACON_MASK = '"cf-beacon-public": ""'
+
+
+def _without_cloudflare_beacon_tokens(text: str) -> str:
+    """Return a copy with the public Cloudflare beacon token neutralized.
+
+    The exception is deliberately narrow: it only applies inside a
+    ``data-cf-beacon`` attribute and only to a JSON ``token`` whose value is
+    exactly 32 hex characters. Everything else is returned unchanged, so the
+    generic credential patterns keep seeing real form fields and JWT-like
+    values.
+    """
+    if "cf-beacon" not in text.lower():
+        return text
+
+    def _neutralize_attribute(attribute: re.Match[str]) -> str:
+        value = _CF_BEACON_TOKEN_RE.sub(_CF_BEACON_MASK, attribute.group("value"))
+        return (
+            f"data-cf-beacon={attribute.group('quote')}{value}"
+            f"{attribute.group('quote')}"
+        )
+
+    return _CF_BEACON_ATTRIBUTE_RE.sub(_neutralize_attribute, text)
+
+
 def redact_secrets(text: str, secrets: tuple[str, ...] = ()) -> str:
     """Redact anything that looks like a credential.
 
@@ -201,7 +250,9 @@ def redact_secrets(text: str, secrets: tuple[str, ...] = ()) -> str:
     """
     if not text:
         return text
-    redacted = text
+    # The public Cloudflare beacon token is exempted before any pattern runs, so
+    # it is not rewritten as a credential while everything else still is.
+    redacted = _without_cloudflare_beacon_tokens(text)
     for secret in secrets:
         if secret and len(secret) >= 4:
             redacted = redacted.replace(secret, "***REDACTED***")
@@ -229,8 +280,9 @@ def is_safe_to_store(
     for secret in secrets:
         if secret and len(secret) >= 4 and secret in text:
             return False, "payload contains a configured secret"
+    analyzed = _without_cloudflare_beacon_tokens(text)
     for pattern in _SECRET_PATTERNS:
-        if pattern.search(text):
+        if pattern.search(analyzed):
             return False, "payload looks like it contains a credential"
     return True, "ok"
 
@@ -390,12 +442,14 @@ class Settings:
 
     # GetManfred public sitemap inventory (opt-in, disabled by default).
     getmanfred_sitemap_url: str = DEFAULT_GETMANFRED_SITEMAP_URL
+    getmanfred_robots_url: str = DEFAULT_GETMANFRED_ROBOTS_URL
     getmanfred_offer_path_prefix: str = DEFAULT_GETMANFRED_OFFER_PATH_PREFIX
     getmanfred_max_bytes: int = DEFAULT_GETMANFRED_MAX_BYTES
     #: Bounded number of child sitemaps to follow when the configured URL is a
     #: sitemap index rather than a urlset.
     getmanfred_max_documents: int = 1
     getmanfred_max_items: int = 40
+    getmanfred_detail_max_items: int = DEFAULT_GETMANFRED_DETAIL_MAX_ITEMS
 
     # Tecnoempleo public keyword search (opt-in, disabled by default).
     tecnoempleo_search_url: str = DEFAULT_TECNOEMPLEO_SEARCH_URL
@@ -458,6 +512,11 @@ class Settings:
             self.getmanfred_max_items, name="getmanfred_max_items", hard_max=HARD_MAX_ITEMS
         )
         validate_bounded_int(
+            self.getmanfred_detail_max_items,
+            name="getmanfred_detail_max_items",
+            hard_max=HARD_MAX_ITEMS,
+        )
+        validate_bounded_int(
             self.getmanfred_max_documents, name="getmanfred_max_documents", hard_max=HARD_MAX_PAGES
         )
         validate_bounded_int(
@@ -488,6 +547,7 @@ class Settings:
             validate_linkedin_url(self.linkedin_search_url, name="linkedin_search_url")
             validate_linkedin_url(self.linkedin_detail_url, name="linkedin_detail_url")
             validate_getmanfred_url(self.getmanfred_sitemap_url, name="getmanfred_sitemap_url")
+            validate_getmanfred_url(self.getmanfred_robots_url, name="getmanfred_robots_url")
             validate_tecnoempleo_url(self.tecnoempleo_search_url, name="tecnoempleo_search_url")
             validate_tecnoempleo_url(self.tecnoempleo_robots_url, name="tecnoempleo_robots_url")
             if self.llm_base_url:
@@ -600,6 +660,9 @@ class Settings:
             getmanfred_sitemap_url=_env_str(
                 merged, "GETMANFRED_SITEMAP_URL", DEFAULT_GETMANFRED_SITEMAP_URL
             ),
+            getmanfred_robots_url=_env_str(
+                merged, "GETMANFRED_ROBOTS_URL", DEFAULT_GETMANFRED_ROBOTS_URL
+            ),
             getmanfred_offer_path_prefix=_env_str(
                 merged, "GETMANFRED_OFFER_PATH_PREFIX", DEFAULT_GETMANFRED_OFFER_PATH_PREFIX
             ),
@@ -608,6 +671,9 @@ class Settings:
             ),
             getmanfred_max_documents=_env_int(merged, "GETMANFRED_MAX_DOCUMENTS", 1),
             getmanfred_max_items=_env_int(merged, "GETMANFRED_MAX_ITEMS", 40),
+            getmanfred_detail_max_items=_env_int(
+                merged, "GETMANFRED_DETAIL_MAX_ITEMS", DEFAULT_GETMANFRED_DETAIL_MAX_ITEMS
+            ),
             tecnoempleo_search_url=_env_str(
                 merged, "TECNOEMPLEO_SEARCH_URL", DEFAULT_TECNOEMPLEO_SEARCH_URL
             ),

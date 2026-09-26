@@ -42,6 +42,11 @@ from .collectors.getmanfred import (
     plan_sitemap_urls as plan_getmanfred_urls,
     search_getmanfred,
 )
+from .collectors.getmanfred_details import (
+    GetManfredDetailConfig,
+    fetch_getmanfred_details,
+    plan_detail_targets as plan_getmanfred_detail_targets,
+)
 from .collectors.linkedin import LinkedInSearchConfig, plan_search_urls, search_linkedin
 from .collectors.linkedin_details import (
     DetailFetchConfig,
@@ -512,6 +517,51 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tecno_details_parser.add_argument("--label", default=None, help="human label for the run")
     tecno_details_parser.set_defaults(handler=cmd_fetch_tecnoempleo_details)
+
+    getmanfred_details_parser = add_common(
+        subparsers.add_parser(
+            "fetch-getmanfred-details",
+            help=(
+                "enrich stored GetManfred offers with their public detail page "
+                "(opt-in, disabled by default)"
+            ),
+        )
+    )
+    getmanfred_details_selection = (
+        getmanfred_details_parser.add_mutually_exclusive_group()
+    )
+    getmanfred_details_selection.add_argument(
+        "--job-id", type=int, action="append", help="job id (repeatable)"
+    )
+    getmanfred_details_selection.add_argument(
+        "--all", action="store_true", help="select every active GetManfred offer"
+    )
+    getmanfred_details_parser.add_argument(
+        "--max-items", type=int, default=None, help="item cap (bounded)"
+    )
+    getmanfred_details_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="print the request plan without sending anything or writing data",
+    )
+    getmanfred_details_parser.add_argument(
+        "--confirm-network",
+        action="store_true",
+        help="required acknowledgement that real requests will be sent",
+    )
+    getmanfred_details_parser.add_argument(
+        "--robots",
+        metavar="PATH",
+        default=None,
+        help=(
+            "use this local robots.txt text instead of re-fetching it before a "
+            "confirmed run (still requires --confirm-network for the detail requests)"
+        ),
+    )
+    getmanfred_details_parser.add_argument(
+        "--label", default=None, help="human label for the run"
+    )
+    getmanfred_details_parser.set_defaults(handler=cmd_fetch_getmanfred_details)
 
     list_parser = add_common(subparsers.add_parser("list", help="list recent jobs"))
     list_parser.add_argument("--limit", type=int, default=20)
@@ -996,22 +1046,42 @@ def _select_detail_jobs(
     Returns ``(jobs, omitted)`` where ``jobs`` is bounded to ``limit`` and
     ``omitted`` is how many selected jobs were dropped by that cap. The count
     lets the CLI report truncation instead of always claiming zero.
+
+    Every route is restricted to ``source = 'linkedin'`` (default, ``--all``,
+    ``--refresh``, and explicit ``--job-id``). The fetcher builds a LinkedIn
+    guest-API URL, so letting another provider's numeric id into this selection
+    would read a different posting's body inside LinkedIn's id space.
     """
     if args.job_id:
-        selected = [job for job in (get_job(conn, job_id) for job_id in args.job_id) if job]
+        selected = [
+            job
+            for job in (get_job(conn, job_id) for job_id in args.job_id)
+            if job and job.source == "linkedin"
+        ]
         found = {job.id for job in selected}
         for missing in [job_id for job_id in args.job_id if job_id not in found]:
-            _write_line(f"job #{missing} not found", stream=sys.stderr)
+            _write_line(
+                f"job #{missing} not found among LinkedIn offers", stream=sys.stderr
+            )
         return selected[:limit], max(0, len(selected) - limit)
     if args.all:
-        total = count_active_jobs(conn)
-        return all_active_jobs(conn, limit=limit), max(0, total - limit)
+        total = count_active_jobs(conn, source="linkedin")
+        return (
+            all_active_jobs(conn, limit=limit, source="linkedin"),
+            max(0, total - limit),
+        )
     if getattr(args, "refresh", False):
         cutoff = refresh_cutoff or _refresh_cutoff(args)
-        total = count_jobs_needing_refresh(conn, cutoff=cutoff)
-        return jobs_needing_refresh(conn, limit=limit, cutoff=cutoff), max(0, total - limit)
-    total = count_jobs_needing_details(conn)
-    return jobs_needing_details(conn, limit=limit), max(0, total - limit)
+        total = count_jobs_needing_refresh(conn, cutoff=cutoff, source="linkedin")
+        return (
+            jobs_needing_refresh(conn, limit=limit, cutoff=cutoff, source="linkedin"),
+            max(0, total - limit),
+        )
+    total = count_jobs_needing_details(conn, source="linkedin")
+    return (
+        jobs_needing_details(conn, limit=limit, source="linkedin"),
+        max(0, total - limit),
+    )
 
 
 def _open_existing_readonly(db_path: Path) -> sqlite3.Connection | None:
@@ -1333,6 +1403,177 @@ def cmd_fetch_tecnoempleo_details(args: argparse.Namespace, settings: Settings) 
         result.truncated = omitted
         outcome = ingest_detail_results(
             conn, result, settings=settings, label=args.label, provider="tecnoempleo"
+        )
+    except CollectorError as exc:
+        _write_line(f"detail fetching failed: {exc}", stream=sys.stderr)
+        return EXIT_FAIL_CLOSED
+    finally:
+        conn.close()
+
+    as_json = getattr(args, "as_json", False)
+    text = (
+        f"detail run #{outcome.run_id} [{outcome.status}]: {outcome.enriched} enriched, "
+        f"{outcome.partial} partial, {outcome.skipped} skipped, {outcome.failed} failed "
+        f"(of {outcome.requested} selected)"
+        + (f"\nnote: {outcome.notes}" if outcome.notes else "")
+    )
+    if result.truncated:
+        text += f"\n  {result.truncated} selected job(s) omitted by --max-items"
+    _emit(
+        {
+            **outcome.to_dict(),
+            "planned_urls": result.planned_urls,
+            "truncated": result.truncated,
+        },
+        as_json=as_json,
+        text=text,
+    )
+    if not as_json and (outcome.enriched or outcome.partial):
+        _write_line("next: score --all --rescore (or score --job-id ID) to score the enriched jobs")
+    if outcome.status == SearchRunStatus.FAILED_CLOSED:
+        return EXIT_FAIL_CLOSED
+    if outcome.status == SearchRunStatus.FAILED:
+        return EXIT_ERROR
+    return EXIT_OK
+
+
+def _select_getmanfred_detail_jobs(
+    conn: Any, args: argparse.Namespace, *, limit: int
+) -> tuple[list[Any], int]:
+    """Resolve the selection for ``fetch-getmanfred-details``.
+
+    Returns ``(jobs, omitted)``. The default selection is every active
+    GetManfred offer that still lacks a full description (``partial`` inventory
+    entries included); ``--all`` widens it to every active GetManfred offer.
+    Every route — default, ``--all``, and an explicit ``--job-id`` — is scoped to
+    ``source = getmanfred`` so another provider's id can never be fetched.
+    """
+    source = "getmanfred"
+    if args.job_id:
+        selected = [
+            job
+            for job in (get_job(conn, job_id) for job_id in args.job_id)
+            if job and job.source == source
+        ]
+        found = {job.id for job in selected}
+        for missing in [job_id for job_id in args.job_id if job_id not in found]:
+            _write_line(
+                f"job #{missing} not found among GetManfred offers", stream=sys.stderr
+            )
+        return selected[:limit], max(0, len(selected) - limit)
+    if args.all:
+        jobs = [
+            job
+            for job in all_active_jobs(conn, limit=None)
+            if job.source == source
+        ]
+        return jobs[:limit], max(0, len(jobs) - limit)
+    total = count_jobs_needing_details(conn, source=source)
+    return (
+        jobs_needing_details(conn, limit=limit, source=source),
+        max(0, total - limit),
+    )
+
+
+def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -> int:
+    """Enrich stored GetManfred offers from their public detail pages.
+
+    Offline-plannable and disabled by default. ``--dry-run`` reads the existing
+    database read-only and writes nothing; a live run requires
+    ``--confirm-network`` and re-fetches ``robots.txt`` before the first request.
+    """
+    try:
+        config = GetManfredDetailConfig(
+            max_items=(
+                args.max_items
+                if args.max_items is not None
+                else settings.getmanfred_detail_max_items
+            )
+        )
+    except (ConfigError, ValueError) as exc:
+        _write_line(f"invalid GetManfred detail options: {exc}", stream=sys.stderr)
+        return EXIT_ERROR
+
+    robots_text: str | None = None
+    if args.robots:
+        try:
+            robots_text = Path(args.robots).read_text(encoding="utf-8")
+        except OSError as exc:
+            _write_line(f"robots fixture error: {exc}", stream=sys.stderr)
+            return EXIT_ERROR
+
+    if args.dry_run:
+        jobs: list[Any] = []
+        omitted = 0
+        note: str | None = None
+        conn = _open_existing_readonly(Path(settings.db_path))
+        if conn is None:
+            note = f"no database at {settings.db_path}; nothing to plan"
+        else:
+            try:
+                jobs, omitted = _select_getmanfred_detail_jobs(
+                    conn, args, limit=config.max_items
+                )
+            except sqlite3.DatabaseError:
+                note = "database could not be read or is not initialized; nothing to plan"
+            finally:
+                conn.close()
+        targets, _ = plan_getmanfred_detail_targets(jobs, max_items=config.max_items)
+        planned = [target.url for target in targets if target.url]
+        skipped = [target.reason for target in targets if target.url is None]
+        text = "dry run, no request performed and no data written. Planned requests:\n  " + (
+            "\n  ".join(planned) or "(none)"
+        )
+        if note:
+            text += f"\n  {note}"
+        if omitted:
+            text += f"\n  {omitted} selected job(s) omitted by --max-items"
+        if skipped:
+            text += f"\n  {len(skipped)} selected job(s) have no resolvable GetManfred URL"
+        _emit(
+            {
+                "dry_run": True,
+                "selected": len(targets),
+                "truncated": omitted,
+                "planned_urls": planned,
+                "skipped_reasons": skipped,
+                "note": note,
+            },
+            as_json=getattr(args, "as_json", False),
+            text=text,
+        )
+        return EXIT_OK
+
+    if not args.confirm_network:
+        _write_line(
+            "refusing to run: GetManfred detail fetching is disabled by default.\n"
+            "Rerun with --confirm-network to send bounded requests "
+            f"(max {config.max_items} item(s), {settings.request_delay_seconds:g}s delay), "
+            "or use --dry-run to inspect the plan.",
+            stream=sys.stderr,
+        )
+        return EXIT_FAIL_CLOSED
+
+    conn = connect(settings.db_path)
+    try:
+        init_db(conn)
+        jobs, omitted = _select_getmanfred_detail_jobs(
+            conn, args, limit=config.max_items
+        )
+        try:
+            result = fetch_getmanfred_details(
+                jobs,
+                settings=settings,
+                network_enabled=True,
+                max_items=config.max_items,
+                robots_text=robots_text,
+            )
+        except CollectorDisabledError as exc:  # pragma: no cover - guarded above
+            _write_line(f"detail fetching disabled: {exc}", stream=sys.stderr)
+            return EXIT_FAIL_CLOSED
+        result.truncated = omitted
+        outcome = ingest_detail_results(
+            conn, result, settings=settings, label=args.label, provider="getmanfred"
         )
     except CollectorError as exc:
         _write_line(f"detail fetching failed: {exc}", stream=sys.stderr)

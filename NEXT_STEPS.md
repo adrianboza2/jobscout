@@ -138,6 +138,13 @@ Implemented:
 - (done) Tecnoempleo public server-rendered search adapter
   (`search-tecnoempleo`): `position_kind = search_rank`, runtime `robots.txt`
   enforcement, fail-closed on unsupported markup;
+- (done) GetManfred public detail adapter (`fetch-getmanfred-details`): prior
+  written permission confirmed, the static-HTML `JobPosting` JSON-LD gate passed,
+  and the adapter reuses the Tecnoempleo detail safety model (`robots.txt` re-read
+  and checked per URL, HTTPS `*.getmanfred.com` allow-list, bounded items/pacing,
+  fail-closed, recognized JSON-LD only, persistence through
+  `ingest_detail_results(provider='getmanfred')`). The one-live-request
+  verification is still pending the orchestrator's run.
 - (done) InfoJobs blocked at the adapter level with no CLI command.
 
 Still open:
@@ -149,6 +156,9 @@ Still open:
   are now `content_status=ok` where the recognized markup was available;
 - GetManfred required a one-off 1 MiB bounded sitemap ceiling because its public
   sitemap exceeds the normal raw-document limit;
+- the GetManfred detail adapter is implemented and offline-covered; the single
+  confirmed live offer run remains to be executed and inspected by the
+  orchestrator before the 128 partial GetManfred offers are re-enriched;
 - Tecnoempleo completed 12 of 13 queries; the Junior DevSecOps query failed
   closed on unrecognized live markup and produced no offers;
 - InfoJobs requires an official API authorization and explicit app credentials
