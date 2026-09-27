@@ -1,0 +1,12 @@
+# Project-scoped Codex config. Codex only loads it because the user-level config
+# marks this project as trusted.
+#
+# Why host access for this repo: pytest creates its base temp directory with mode
+# 0o700, which on Windows becomes an owner-only ACL. Inside Codex's Windows
+# sandbox commands run as a separate identity (CodexSandboxOnline /
+# CodexSandboxUsers), so pytest cannot re-open that directory and the suite errors
+# out in fixture setup with WinError 5. Measured on the same commit: 592 passed /
+# 408 errors sandboxed, 1000 passed with host access. Moving the temp root does not
+# fix it (see AGENTS.md). Nothing here runs unattended: approvals stay on-request.
+sandbox_mode = "danger-full-access"
+approval_policy = "on-request"
