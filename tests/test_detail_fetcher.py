@@ -71,6 +71,8 @@ CARDS_FIXTURE = FIXTURES / "linkedin_search_cards_sample.json"
 DETAIL_RESPONSES = FIXTURES / "linkedin_detail_responses.json"
 DETAIL_PAGE = FIXTURES / "linkedin_detail_page.html"
 PROFILE = FIXTURES / "profile_test.yaml"
+ROBOTS_ALLOW = "User-agent: *\nAllow: /\n"
+ROBOTS_DENY = "User-agent: *\nDisallow: /\n"
 
 
 # ---------------------------------------------------------------------------
@@ -732,7 +734,7 @@ def test_fetch_parses_and_bounds_requests(conn, settings) -> None:
     result = fetch_linkedin_details(
         jobs,
         settings=settings,
-        network_enabled=True,
+        network_enabled=True, robots_text=ROBOTS_ALLOW,
         max_items=2,
         client=client,
         sleep=lambda _: None,
@@ -756,7 +758,7 @@ def test_fetch_fails_closed_on_access_denied(conn, settings) -> None:
     jobs = [_store_card(conn, "3911111111"), _store_card(conn, "3912222222")]
     client = FakeHttpClient([response(403, "<html>denied</html>")])
     result = fetch_linkedin_details(
-        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert result.status is SearchRunStatus.FAILED_CLOSED
     assert client.call_count == 1
@@ -770,7 +772,7 @@ def test_fetch_does_not_retry_rate_limit(conn, settings) -> None:
     jobs = [_store_card(conn, "3911111111")]
     client = FakeHttpClient([response(429, "slow down")])
     result = fetch_linkedin_details(
-        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert result.status is SearchRunStatus.FAILED_CLOSED
     assert client.call_count == 1
@@ -790,7 +792,7 @@ def test_fetch_retries_transient_then_succeeds(conn, settings) -> None:
     result = fetch_linkedin_details(
         jobs,
         settings=jitterless,
-        network_enabled=True,
+        network_enabled=True, robots_text=ROBOTS_ALLOW,
         client=client,
         sleep=sleeps.append,
     )
@@ -808,7 +810,7 @@ def test_fetch_gives_up_after_bounded_retries(conn, settings) -> None:
     result = fetch_linkedin_details(
         jobs,
         settings=jitterless,
-        network_enabled=True,
+        network_enabled=True, robots_text=ROBOTS_ALLOW,
         client=client,
         sleep=sleeps.append,
     )
@@ -825,7 +827,7 @@ def test_fetch_records_not_found_and_continues(conn, settings) -> None:
         [response(404, "gone"), response(200, body, headers={"content-type": "text/html"})]
     )
     result = fetch_linkedin_details(
-        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert result.status is SearchRunStatus.COMPLETED
     assert client.call_count == 2
@@ -861,7 +863,7 @@ def test_fetch_records_machine_readable_not_found_status(conn, settings) -> None
     jobs = [_store_card(conn, "3911111111")]
     client = FakeHttpClient([response(410, "gone")])
     result = fetch_linkedin_details(
-        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     item = result.items[0]
     assert item.status is DetailFetchStatus.FAILED
@@ -982,6 +984,21 @@ def test_sanitize_final_url_keeps_only_safe_redirects() -> None:
         REQUESTED_DETAIL_URL, "ftp://www.linkedin.com/jobs/view/1/"
     ) is None
     assert sanitize_final_url(REQUESTED_DETAIL_URL, "file:///etc/passwd") is None
+    # The sanitizer applies the same per-hop policy as the transport: a
+    # same-host downgrade, a non-default port, and a disallowed host are all
+    # dropped rather than persisted.
+    assert sanitize_final_url(
+        REQUESTED_DETAIL_URL, "http://www.linkedin.com/jobs/view/1/"
+    ) is None
+    assert sanitize_final_url(
+        REQUESTED_DETAIL_URL, "https://www.linkedin.com:8443/jobs/view/1/"
+    ) is None
+    assert sanitize_final_url(
+        REQUESTED_DETAIL_URL, "https://evil.test/jobs/view/1/"
+    ) is None
+    assert sanitize_final_url(
+        REQUESTED_DETAIL_URL, "https://linkedin.com.evil.test/jobs/view/1/"
+    ) is None
 
 
 def test_fetch_captures_allowed_redirect_final_url(conn, settings) -> None:
@@ -991,7 +1008,7 @@ def test_fetch_captures_allowed_redirect_final_url(conn, settings) -> None:
         [response(200, body, headers={"content-type": "text/html"}, url=REDIRECT_DETAIL_URL)]
     )
     result = fetch_linkedin_details(
-        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     item = result.items[0]
     assert item.status is DetailFetchStatus.OK
@@ -1009,7 +1026,7 @@ def test_fetch_records_no_final_url_without_redirect(conn, settings) -> None:
         [response(200, body, headers={"content-type": "text/html"}, url=REQUESTED_DETAIL_URL)]
     )
     result = fetch_linkedin_details(
-        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     # The requested URL is echoed back, so there was no redirect to persist.
     assert result.items[0].final_url is None
@@ -1030,11 +1047,61 @@ def test_fetch_drops_unsafe_redirect_final_url(conn, settings, unsafe_url) -> No
         [response(200, body, headers={"content-type": "text/html"}, url=unsafe_url)]
     )
     result = fetch_linkedin_details(
-        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert result.items[0].status is DetailFetchStatus.OK
     # The description still enriches the job; only the unsafe URL is dropped.
     assert result.items[0].final_url is None
+
+
+# ---------------------------------------------------------------------------
+# robots.txt gate
+# ---------------------------------------------------------------------------
+
+
+def test_detail_robots_disallow_fails_closed_before_any_request(conn, settings) -> None:
+    job = _store_card(conn, "3911111111")
+    # No responses are queued: any request at all would raise AssertionError.
+    client = FakeHttpClient([])
+    result = fetch_linkedin_details(
+        [job],
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_DENY,
+    )
+    assert result.status is SearchRunStatus.FAILED_CLOSED
+    assert client.call_count == 0
+    assert "robots.txt disallows" in (result.error or "")
+
+
+def test_detail_robots_is_fetched_before_the_first_detail_request(conn, settings) -> None:
+    job = _store_card(conn, "3911111111")
+    body = fixture_text("linkedin_detail_page.html")
+    client = FakeHttpClient(
+        [
+            response(200, ROBOTS_ALLOW, headers={"content-type": "text/plain"}),
+            response(200, body, headers={"content-type": "text/html"}),
+        ]
+    )
+    result = fetch_linkedin_details(
+        [job], settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    assert result.status is SearchRunStatus.COMPLETED
+    assert client.calls[0]["url"] == settings.linkedin_robots_url
+    assert client.call_count == 2
+
+
+def test_detail_robots_fetch_failure_fails_closed(conn, settings) -> None:
+    job = _store_card(conn, "3911111111")
+    client = FakeHttpClient([response(403, "denied")])
+    result = fetch_linkedin_details(
+        [job], settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    assert result.status is SearchRunStatus.FAILED_CLOSED
+    assert "robots.txt" in (result.error or "")
+    assert client.call_count == 1
 
 
 def test_ingest_persists_redirect_final_url(conn, settings) -> None:
@@ -1044,7 +1111,7 @@ def test_ingest_persists_redirect_final_url(conn, settings) -> None:
         [response(200, body, headers={"content-type": "text/html"}, url=REDIRECT_DETAIL_URL)]
     )
     result = fetch_linkedin_details(
-        jobs=[job], settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs=[job], settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     outcome = ingest_detail_results(conn, result, settings=settings)
 
@@ -1066,7 +1133,7 @@ def test_ingest_persists_null_final_url_without_redirect(conn, settings) -> None
         [response(200, body, headers={"content-type": "text/html"}, url=REQUESTED_DETAIL_URL)]
     )
     result = fetch_linkedin_details(
-        jobs=[job], settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs=[job], settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     ingest_detail_results(conn, result, settings=settings)
 
@@ -1084,7 +1151,7 @@ def test_failed_fetch_never_captures_final_url(conn, settings, http_status) -> N
     client = FakeHttpClient([response(http_status, "nope", url=REDIRECT_DETAIL_URL)])
     bounded = settings.with_overrides(http_max_retries=0, request_jitter_seconds=0.0)
     result = fetch_linkedin_details(
-        jobs, settings=bounded, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=bounded, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     item = result.items[0]
     assert item.status is DetailFetchStatus.FAILED
@@ -1125,7 +1192,7 @@ def test_fetch_rejects_oversized_download(conn, settings) -> None:
     )
     client = FakeHttpClient([response(200, big_body, headers={"content-type": "text/html"})])
     result = fetch_linkedin_details(
-        jobs, settings=tiny, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=tiny, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     item = result.items[0]
     assert item.status is DetailFetchStatus.FAILED
@@ -1149,7 +1216,7 @@ def test_oversized_detail_is_not_persisted_in_a_small_detail_cap_run(conn, setti
     )
     client = FakeHttpClient([response(200, big_body, headers={"content-type": "text/html"})])
     result = fetch_linkedin_details(
-        [job], settings=tiny, network_enabled=True, client=client, sleep=lambda _: None
+        [job], settings=tiny, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     ingest_detail_results(conn, result, settings=tiny)
 
@@ -1176,7 +1243,7 @@ def test_detail_body_above_raw_cap_is_not_stored(conn, settings) -> None:
     )
     client = FakeHttpClient([response(200, body, headers={"content-type": "text/html"})])
     result = fetch_linkedin_details(
-        jobs, settings=mismatched, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=mismatched, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     # It is under the detail ceiling, so it may be parsed...
     assert result.items[0].status is DetailFetchStatus.OK
@@ -1193,7 +1260,7 @@ def test_fetch_honours_transport_truncation_header(conn, settings) -> None:
         [response(200, body, headers={"content-type": "text/html", TRUNCATION_HEADER: "1"})]
     )
     result = fetch_linkedin_details(
-        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert result.items[0].status is DetailFetchStatus.FAILED
     assert result.items[0].description is None
@@ -1203,7 +1270,7 @@ def test_fetch_reports_unidentifiable_jobs_as_skipped(conn, settings) -> None:
     job = _store_card(conn, "no-linkedin-id", jobTitle="Mystery Role")
     client = FakeHttpClient([])  # any request would raise in FakeHttpClient
     result = fetch_linkedin_details(
-        [job], settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        [job], settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert client.call_count == 0
     assert result.items[0].status is DetailFetchStatus.SKIPPED
@@ -1217,7 +1284,7 @@ def test_fetch_uses_numeric_source_id_from_slug_url(conn, settings) -> None:
     body = fixture_text("linkedin_detail_page.html")
     client = FakeHttpClient([response(200, body, headers={"content-type": "text/html"})])
     result = fetch_linkedin_details(
-        [job], settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        [job], settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
 
     assert client.call_count == 1
@@ -1234,7 +1301,7 @@ def test_fetch_never_uses_ambient_credentials(conn, settings) -> None:
     body = fixture_text("linkedin_detail_page.html")
     client = FakeHttpClient([response(200, body, headers={"content-type": "text/html"})])
     fetch_linkedin_details(
-        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     headers = client.calls[0]["headers"]
     assert "Cookie" not in headers
@@ -1254,7 +1321,7 @@ def test_ingest_persists_enrichment_and_provenance(conn, settings) -> None:
     body = fixture_text("linkedin_detail_page.html")
     client = FakeHttpClient([response(200, body, headers={"content-type": "text/html"})])
     result = fetch_linkedin_details(
-        [job], settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        [job], settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     outcome = ingest_detail_results(
         conn, result, settings=settings, now="2026-09-15T12:00:00Z"
@@ -1520,7 +1587,7 @@ def test_fetch_does_not_store_credential_looking_raw_body(conn, settings) -> Non
     )
     client = FakeHttpClient([response(200, body, headers={"content-type": "text/html"})])
     result = fetch_linkedin_details(
-        jobs, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        jobs, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     document = result.raw_documents[0]
     assert document.body is None

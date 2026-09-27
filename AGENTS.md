@@ -14,7 +14,7 @@ publish pipeline, no service. Everything runs from the repository root.
 
 ## Commands
 
-    .venv\Scripts\python.exe -m pytest -q          # offline suite, ~15-20 s, expect 1000 passed
+    .venv\Scripts\python.exe -m pytest -q          # full offline suite, ~15-25 s on the host
     .venv\Scripts\python.exe -m jobscout --help
     .venv\Scripts\python.exe -m jobscout keyword-plan          # offline, no network
     .venv\Scripts\python.exe -m jobscout rank --top 10         # reads data/jobscout.sqlite3
@@ -34,8 +34,9 @@ owner-only Windows ACL; the sandbox runs as a separate identity
 does not stick — pytest recreates it — and moving it into the repo with `--basetemp` only
 moves the problem and leaves directories the real user cannot read afterwards.
 
-- Measured: same command, same commit — sandboxed run `592 passed, 408 errors`; with host
-  access (`--sandbox danger-full-access`) `1000 passed in 17.97s`.
+- Measured: same command, same commit — the sandboxed run errors in fixture setup for the
+  large majority of tests; with host access (`--sandbox danger-full-access`) the full suite
+  passes in under ~20 s. Exact counts drift as the suite grows, so do not pin them here.
 - Therefore: when tests must actually run, use Codex with host access, or ask the user to run
   them. Never treat that PermissionError as a defect of this repository and never "fix" tests
   or code because of it.

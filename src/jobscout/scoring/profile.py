@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -21,6 +22,11 @@ PROFILE_VERSION = "v1"
 
 SENIORITY_LEVELS = ("internship", "junior", "mid", "senior", "lead", "manager", "director", "unknown")
 REMOTE_PREFERENCES = ("remote_only", "remote_preferred", "onsite_ok", "any")
+#: Currencies the profile's own compensation floor may use. Offers are compared
+#: only within one currency: ``$`` means USD, there is no FX conversion, and a
+#: floor in any other currency is a profile error rather than a silently applied
+#: number.
+SUPPORTED_CURRENCIES = ("USD", "EUR")
 DEFAULT_WEIGHTS = {
     "skills": 0.35,
     "must_have_skills": 0.15,
@@ -29,6 +35,32 @@ DEFAULT_WEIGHTS = {
     "language": 0.10,
     "recency": 0.10,
 }
+
+#: Keys the parser consumes. Everything else in the source file is an unknown
+#: key: ignored by scoring but preserved verbatim in the snapshot and included in
+#: the fingerprint (see :meth:`Profile.to_dict`).
+KNOWN_FIELDS = frozenset(
+    {
+        "profile",
+        "name",
+        "summary",
+        "target_roles",
+        "seniority",
+        "years_experience",
+        "locations",
+        "remote_preference",
+        "languages",
+        "min_salary",
+        "salary_currency",
+        "must_have_skills",
+        "nice_to_have_skills",
+        "dealbreakers",
+        "excluded_companies",
+        "require_all_must_have",
+        "max_posting_age_days",
+        "weights",
+    }
+)
 
 
 class ProfileError(ValueError):
@@ -65,7 +97,15 @@ class Profile:
         return [str(item.get("name", "")).strip() for item in self.languages if item.get("name")]
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        """Canonical profile view: normalized known fields plus unknown keys.
+
+        Known fields keep their canonicalized values; every key the parser did
+        not consume round-trips verbatim. The same mapping feeds
+        :meth:`fingerprint`, so adding or editing an unknown key changes the
+        profile version even though scoring ignores it — which is what
+        ``profile.example.yaml`` promises.
+        """
+        payload: dict[str, Any] = {
             "name": self.name,
             "summary": self.summary,
             "target_roles": list(self.target_roles),
@@ -84,6 +124,10 @@ class Profile:
             "max_posting_age_days": self.max_posting_age_days,
             "weights": dict(self.weights),
         }
+        for key, value in self.raw.items():
+            if key not in KNOWN_FIELDS:
+                payload[key] = value
+        return payload
 
     def fingerprint(self) -> str:
         payload = json.dumps(self.to_dict(), ensure_ascii=False, sort_keys=True, default=str)
@@ -148,6 +192,10 @@ def _opt_float(data: dict[str, Any], key: str) -> float | None:
     value = data.get(key)
     if value is None or value == "":
         return None
+    # A real boolean is a YAML/JSON ``true``/``false``, never a number. Without
+    # this guard ``float(True)`` would silently read ``true`` as ``1``.
+    if isinstance(value, bool):
+        raise ProfileError(f"profile field '{key}' must be a number")
     try:
         return float(value)
     except (TypeError, ValueError) as exc:
@@ -158,10 +206,41 @@ def _opt_int(data: dict[str, Any], key: str) -> int | None:
     value = data.get(key)
     if value is None or value == "":
         return None
+    if isinstance(value, bool):
+        raise ProfileError(f"profile field '{key}' must be an integer")
     try:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise ProfileError(f"profile field '{key}' must be an integer") from exc
+
+
+def _opt_bool(data: dict[str, Any], key: str, default: bool) -> bool:
+    """Strict boolean: only a real YAML/JSON boolean is accepted.
+
+    A quoted ``"false"`` is a string, not a boolean, and must never be coerced
+    to ``True`` by :func:`bool` (which treats any non-empty string as truthy).
+    """
+    if key not in data or data[key] is None:
+        return default
+    value = data[key]
+    if isinstance(value, bool):
+        return value
+    raise ProfileError(f"profile field '{key}' must be a boolean (true/false)")
+
+
+def _parse_currency(data: dict[str, Any]) -> str:
+    raw = data.get("salary_currency", "USD")
+    if raw is None or raw == "":
+        return "USD"
+    if not isinstance(raw, str):
+        raise ProfileError("profile field 'salary_currency' must be a currency code")
+    code = raw.strip().upper()
+    if code not in SUPPORTED_CURRENCIES:
+        raise ProfileError(
+            "profile field 'salary_currency' must be one of "
+            f"{', '.join(SUPPORTED_CURRENCIES)} (got {raw!r})"
+        )
+    return code
 
 
 def _parse_languages(data: dict[str, Any]) -> list[dict[str, str]]:
@@ -189,10 +268,17 @@ def _parse_weights(data: dict[str, Any]) -> dict[str, float]:
         raise ProfileError("profile field 'weights' must be a mapping")
     weights = dict(DEFAULT_WEIGHTS)
     for key, value in raw.items():
+        if isinstance(value, bool):
+            raise ProfileError(f"weight '{key}' must be a number")
         try:
-            weights[str(key)] = float(value)
+            number = float(value)
         except (TypeError, ValueError) as exc:
             raise ProfileError(f"weight '{key}' must be a number") from exc
+        if not math.isfinite(number):
+            raise ProfileError(f"weight '{key}' must be a finite number")
+        if number < 0:
+            raise ProfileError(f"weight '{key}' must be >= 0")
+        weights[str(key)] = number
     if sum(weights.values()) <= 0:
         raise ProfileError("profile weights must sum to a positive value")
     return weights
@@ -211,6 +297,12 @@ def profile_from_dict(data: dict[str, Any], *, source_path: str | None = None) -
             f"profile field 'remote_preference' must be one of {', '.join(REMOTE_PREFERENCES)}"
         )
 
+    max_posting_age_days = (
+        _opt_int(data, "max_posting_age_days") if "max_posting_age_days" in data else 30
+    )
+    if max_posting_age_days is not None and max_posting_age_days < 0:
+        raise ProfileError("profile field 'max_posting_age_days' must be >= 0 or null")
+
     profile = Profile(
         name=str(data.get("name", "default") or "default").strip(),
         summary=str(data.get("summary", "") or ""),
@@ -221,15 +313,13 @@ def profile_from_dict(data: dict[str, Any], *, source_path: str | None = None) -
         remote_preference=remote_preference,
         languages=_parse_languages(data),
         min_salary=_opt_float(data, "min_salary"),
-        salary_currency=str(data.get("salary_currency", "USD") or "USD"),
+        salary_currency=_parse_currency(data),
         must_have_skills=_require_str_list(data, "must_have_skills"),
         nice_to_have_skills=_require_str_list(data, "nice_to_have_skills"),
         dealbreakers=_require_str_list(data, "dealbreakers"),
         excluded_companies=_require_str_list(data, "excluded_companies"),
-        require_all_must_have=bool(data.get("require_all_must_have", False)),
-        max_posting_age_days=_opt_int(data, "max_posting_age_days")
-        if "max_posting_age_days" in data
-        else 30,
+        require_all_must_have=_opt_bool(data, "require_all_must_have", False),
+        max_posting_age_days=max_posting_age_days,
         weights=_parse_weights(data),
         raw=dict(data),
         source_path=source_path,
@@ -347,11 +437,13 @@ def iter_profile_facts(profile: Profile) -> Iterable[str]:
 
 __all__ = [
     "DEFAULT_WEIGHTS",
+    "KNOWN_FIELDS",
     "PROFILE_VERSION",
     "Profile",
     "ProfileError",
     "REMOTE_PREFERENCES",
     "SENIORITY_LEVELS",
+    "SUPPORTED_CURRENCIES",
     "build_snapshot",
     "extract_evidence",
     "iter_profile_facts",

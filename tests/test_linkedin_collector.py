@@ -34,6 +34,8 @@ from jobscout.pipeline import ingest_collector_result
 
 HTML_FIXTURE = FIXTURES / "linkedin_search_page.html"
 DRIFT_FIXTURE = FIXTURES / "linkedin_search_page_drift.html"
+ROBOTS_ALLOW = "User-agent: *\nAllow: /\n"
+ROBOTS_DENY = "User-agent: *\nDisallow: /\n"
 
 
 def test_build_search_url_is_bounded_and_encoded() -> None:
@@ -215,7 +217,7 @@ def test_collection_honours_configured_raw_max_bytes(settings) -> None:
     tiny = settings.with_overrides(raw_max_bytes=64)
     config = LinkedInSearchConfig(keywords="backend", max_pages=1)
     result = search_linkedin(
-        config, settings=tiny, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=tiny, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert len(result.raw_documents) == 1
     document = result.raw_documents[0]
@@ -244,7 +246,7 @@ def test_live_search_bounds_the_transport_at_raw_max_bytes(settings, monkeypatch
     monkeypatch.setattr(linkedin, "UrllibHttpClient", factory)
     tiny = settings.with_overrides(raw_max_bytes=1234)
     config = LinkedInSearchConfig(keywords="backend", max_pages=1)
-    search_linkedin(config, settings=tiny, network_enabled=True, sleep=lambda _: None)
+    search_linkedin(config, settings=tiny, network_enabled=True, robots_text=ROBOTS_ALLOW, sleep=lambda _: None)
 
     assert captured["max_download_bytes"] == 1234
 
@@ -262,7 +264,7 @@ def test_normal_live_search_response_is_parsed_and_stored(settings, monkeypatch)
         lambda **kwargs: UrllibHttpClient(opener=opener, **kwargs),
     )
     result = search_linkedin(
-        config, settings=settings, network_enabled=True, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, sleep=lambda _: None
     )
 
     assert result.postings
@@ -288,7 +290,7 @@ def test_oversized_live_search_response_is_bounded_and_not_parsed(
         lambda **kwargs: UrllibHttpClient(opener=opener, **kwargs),
     )
     result = search_linkedin(
-        config, settings=tiny, network_enabled=True, sleep=lambda _: None
+        config, settings=tiny, network_enabled=True, robots_text=ROBOTS_ALLOW, sleep=lambda _: None
     )
 
     assert result.pages_fetched == 1
@@ -311,7 +313,7 @@ def test_collection_parses_pages_and_respects_item_cap(settings) -> None:
     result = search_linkedin(
         config,
         settings=settings,
-        network_enabled=True,
+        network_enabled=True, robots_text=ROBOTS_ALLOW,
         client=client,
         sleep=lambda _: None,
     )
@@ -331,7 +333,7 @@ def test_collection_stops_at_the_item_cap(settings) -> None:
     )
     config = LinkedInSearchConfig(keywords="backend", max_pages=3, max_items=2)
     result = search_linkedin(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert result.items_found == 2
     assert client.call_count == 1
@@ -341,7 +343,7 @@ def test_collection_fails_closed_on_access_denied(settings) -> None:
     client = FakeHttpClient([response(403, "<html>denied</html>")])
     config = LinkedInSearchConfig(keywords="backend")
     result = search_linkedin(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert result.status is SearchRunStatus.FAILED_CLOSED
     assert client.call_count == 1
@@ -354,7 +356,7 @@ def test_collection_fails_closed_on_rate_limit(settings) -> None:
     client = FakeHttpClient([response(429, "slow down")])
     config = LinkedInSearchConfig(keywords="backend")
     result = search_linkedin(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert result.status is SearchRunStatus.FAILED_CLOSED
     assert client.call_count == 1
@@ -376,7 +378,7 @@ def test_collection_retries_transient_failures_then_gives_up(settings) -> None:
     result = search_linkedin(
         config,
         settings=jitterless,
-        network_enabled=True,
+        network_enabled=True, robots_text=ROBOTS_ALLOW,
         client=client,
         sleep=sleeps.append,
     )
@@ -392,7 +394,7 @@ def test_collection_empty_page_stops_early(settings) -> None:
     client = FakeHttpClient([response(200, "<html>nothing here</html>", headers={"content-type": "text/html"})])
     config = LinkedInSearchConfig(keywords="backend", max_pages=3)
     result = search_linkedin(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert client.call_count == 1
     assert result.pages_fetched == 1
@@ -410,7 +412,7 @@ def test_collection_diagnoses_non_empty_body_with_zero_cards(settings) -> None:
     client = FakeHttpClient([response(200, body, headers={"content-type": "text/html"})])
     config = LinkedInSearchConfig(keywords="backend", max_pages=3)
     result = search_linkedin(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert client.call_count == 1
     assert result.status is SearchRunStatus.COMPLETED
@@ -430,7 +432,7 @@ def test_collection_dedupes_repeated_drift_cards(settings) -> None:
     )
     config = LinkedInSearchConfig(keywords="cloud", max_pages=2, max_items=10)
     result = search_linkedin(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert client.call_count == 2
     assert result.pages_fetched == 2
@@ -446,7 +448,7 @@ def test_drift_cards_flow_through_pipeline_and_dedupe(conn, settings) -> None:
             [response(200, fixture_text("linkedin_search_page_drift.html"), headers={"content-type": "text/html"})]
         )
         return search_linkedin(
-            config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+            config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
         )
 
     first = ingest_collector_result(
@@ -476,7 +478,7 @@ def test_collection_applies_pacing_between_pages(settings) -> None:
     config = LinkedInSearchConfig(keywords="backend", max_pages=2)
     sleeps: list[float] = []
     search_linkedin(
-        config, settings=settings, network_enabled=True, client=client, sleep=sleeps.append
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=sleeps.append
     )
     # A real pacer sleep of at least the configured delay happens between pages.
     assert sleeps and sleeps[0] >= settings.request_delay_seconds
@@ -485,8 +487,63 @@ def test_collection_applies_pacing_between_pages(settings) -> None:
 def test_collection_never_uses_ambient_credentials(settings) -> None:
     client = FakeHttpClient([response(200, "<html></html>")])
     config = LinkedInSearchConfig(keywords="backend", max_pages=1)
-    search_linkedin(config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None)
+    search_linkedin(config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None)
     headers = client.calls[0]["headers"]
     assert "Cookie" not in headers
     assert "Authorization" not in headers
     assert headers["Accept-Language"].startswith("en")
+
+
+# ---------------------------------------------------------------------------
+# robots.txt gate
+# ---------------------------------------------------------------------------
+
+
+def test_robots_disallow_fails_closed_before_any_search_request(settings) -> None:
+    # No responses are queued: any request at all would raise AssertionError.
+    client = FakeHttpClient([])
+    config = LinkedInSearchConfig(keywords="backend", max_pages=2)
+    result = search_linkedin(
+        config,
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_DENY,
+    )
+    assert result.status is SearchRunStatus.FAILED_CLOSED
+    assert client.call_count == 0
+    assert "robots.txt disallows" in (result.error or "")
+    assert result.postings == []
+
+
+def test_robots_is_fetched_before_the_first_search_request(settings) -> None:
+    client = FakeHttpClient(
+        [
+            response(200, ROBOTS_ALLOW, headers={"content-type": "text/plain"}),
+            response(
+                200,
+                fixture_text("linkedin_search_page.html"),
+                headers={"content-type": "text/html"},
+            ),
+        ]
+    )
+    config = LinkedInSearchConfig(keywords="backend", max_pages=1)
+    result = search_linkedin(
+        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    assert result.status is SearchRunStatus.COMPLETED
+    assert client.calls[0]["url"] == settings.linkedin_robots_url
+    assert client.calls[1]["url"] != settings.linkedin_robots_url
+
+
+def test_robots_fetch_failure_fails_closed(settings) -> None:
+    # A 403 on robots.txt means permission could not be established.
+    client = FakeHttpClient([response(403, "denied")])
+    config = LinkedInSearchConfig(keywords="backend", max_pages=1)
+    result = search_linkedin(
+        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    assert result.status is SearchRunStatus.FAILED_CLOSED
+    assert "robots.txt" in (result.error or "")
+    assert client.call_count == 1

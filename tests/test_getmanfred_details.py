@@ -321,6 +321,25 @@ def test_detail_refetches_robots_before_the_first_offer_request(conn, settings) 
     assert result.items[0].status is DetailFetchStatus.OK
 
 
+def test_sanitize_final_url_uses_the_strict_shared_policy() -> None:
+    from jobscout.collectors.getmanfred_details import _sanitize_final_url
+
+    requested = OFFER_URL
+    allowed = "https://www.getmanfred.com/ofertas-empleo/8476/other-slug"
+    assert _sanitize_final_url(requested, allowed) == allowed
+    # No redirect observed.
+    assert _sanitize_final_url(requested, requested) is None
+    assert _sanitize_final_url(requested, "") is None
+    assert _sanitize_final_url(requested, None) is None
+    # HTTPS only, no credentials, default port, allowed host.
+    assert _sanitize_final_url(requested, "http://www.getmanfred.com/x") is None
+    assert _sanitize_final_url(requested, "https://www.getmanfred.com:8443/x") is None
+    assert _sanitize_final_url(requested, "https://user:pass@www.getmanfred.com/x") is None
+    assert _sanitize_final_url(requested, "https://evil.test/x") is None
+    assert _sanitize_final_url(requested, "https://www.getmanfred.com.evil.test/x") is None
+    assert _sanitize_final_url(requested, "file:///etc/passwd") is None
+
+
 # ---------------------------------------------------------------------------
 # Fetch behaviour
 # ---------------------------------------------------------------------------

@@ -72,23 +72,25 @@ from .dashboard import (
     project_key,
 )
 from .db import (
+    active_variants,
     all_active_jobs,
     connect,
     connect_readonly,
-    count_active_jobs,
+    count_active_variants,
     count_jobs,
-    count_jobs_needing_details,
-    count_jobs_needing_refresh,
+    count_variants_needing_details,
+    count_variants_needing_refresh,
     evaluation_count,
     feedback_count,
     get_job,
     init_db,
     job_detail_fetch_count,
-    jobs_needing_details,
     jobs_needing_evaluation,
-    jobs_needing_refresh,
     list_jobs,
     list_search_runs,
+    variant_job_for_source,
+    variants_needing_details,
+    variants_needing_refresh,
 )
 from .feedback import FeedbackError, import_feedback
 from .keywords import (
@@ -106,7 +108,7 @@ from .notify import (
 )
 from .pipeline import ingest_collector_result, ingest_detail_results, ingest_fixture
 from .preference import PreferenceAssessment, PreferenceOutcome, assess_preference
-from .scoring import SCORERS, evaluate_job, load_profile
+from .scoring import SCORERS, evaluate_job, fingerprint_resolver, load_profile
 from .scoring.profile import ProfileError
 from .timeutil import iso_days_ago
 
@@ -348,6 +350,15 @@ def build_parser() -> argparse.ArgumentParser:
     search_parser.add_argument(
         "--dry-run", action="store_true", help="print the request plan without sending anything"
     )
+    search_parser.add_argument(
+        "--robots",
+        metavar="PATH",
+        default=None,
+        help=(
+            "use this local robots.txt text instead of re-fetching it before a "
+            "confirmed run (still requires --confirm-network for the search requests)"
+        ),
+    )
     search_parser.set_defaults(handler=cmd_search_linkedin)
 
     getmanfred_parser = add_common(
@@ -386,6 +397,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     getmanfred_parser.add_argument(
         "--dry-run", action="store_true", help="print the request plan without sending anything"
+    )
+    getmanfred_parser.add_argument(
+        "--robots",
+        metavar="PATH",
+        default=None,
+        help=(
+            "use this local robots.txt text instead of re-fetching it before a "
+            "confirmed run (still requires --confirm-network for the sitemap requests)"
+        ),
     )
     getmanfred_parser.add_argument("--label", default=None, help="human label for the run")
     getmanfred_parser.set_defaults(handler=cmd_search_getmanfred)
@@ -473,6 +493,15 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         default=None,
         help="offline detail responses (JSON); never touches the network",
+    )
+    details_parser.add_argument(
+        "--robots",
+        metavar="PATH",
+        default=None,
+        help=(
+            "use this local robots.txt text instead of re-fetching it before a "
+            "confirmed run (still requires --confirm-network for the detail requests)"
+        ),
     )
     details_parser.add_argument("--label", default=None, help="human label for the run")
     details_parser.set_defaults(handler=cmd_fetch_details)
@@ -579,7 +608,14 @@ def build_parser() -> argparse.ArgumentParser:
     score_parser = add_common(subparsers.add_parser("score", help="evaluate jobs"))
     selection = score_parser.add_mutually_exclusive_group(required=True)
     selection.add_argument("--job-id", type=int, action="append", help="job id (repeatable)")
-    selection.add_argument("--all", action="store_true", help="select every active job")
+    selection.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "select every active job; scoring is input-aware, so only offers whose "
+            "effective input changed are re-evaluated unless --rescore is given"
+        ),
+    )
     score_parser.add_argument(
         "--scorer",
         choices=SCORER_CHOICES,
@@ -588,7 +624,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     score_parser.add_argument("--limit", type=int, default=None)
     score_parser.add_argument(
-        "--rescore", action="store_true", help="re-evaluate jobs that already have a score"
+        "--rescore",
+        action="store_true",
+        help="force re-evaluation even when the scoring input is unchanged",
     )
     score_parser.set_defaults(handler=cmd_score)
 
@@ -778,6 +816,14 @@ def cmd_search_linkedin(args: argparse.Namespace, settings: Settings) -> int:
         _write_line(f"invalid search options: {exc}", stream=sys.stderr)
         return EXIT_ERROR
 
+    robots_text: str | None = None
+    if args.robots:
+        try:
+            robots_text = Path(args.robots).read_text(encoding="utf-8")
+        except OSError as exc:
+            _write_line(f"robots fixture error: {exc}", stream=sys.stderr)
+            return EXIT_ERROR
+
     if args.dry_run:
         planned = plan_search_urls(config, settings=settings)
         _emit(
@@ -802,7 +848,12 @@ def cmd_search_linkedin(args: argparse.Namespace, settings: Settings) -> int:
     try:
         init_db(conn)
         try:
-            result = search_linkedin(config, settings=settings, network_enabled=True)
+            result = search_linkedin(
+                config,
+                settings=settings,
+                network_enabled=True,
+                robots_text=robots_text,
+            )
         except CollectorDisabledError as exc:  # pragma: no cover - guarded above
             _write_line(f"collector disabled: {exc}", stream=sys.stderr)
             return EXIT_FAIL_CLOSED
@@ -864,6 +915,14 @@ def cmd_search_getmanfred(args: argparse.Namespace, settings: Settings) -> int:
         _write_line(f"invalid GetManfred options: {exc}", stream=sys.stderr)
         return EXIT_ERROR
 
+    robots_text: str | None = None
+    if args.robots:
+        try:
+            robots_text = Path(args.robots).read_text(encoding="utf-8")
+        except OSError as exc:
+            _write_line(f"robots fixture error: {exc}", stream=sys.stderr)
+            return EXIT_ERROR
+
     if args.dry_run:
         planned = plan_getmanfred_urls(config)
         _emit(
@@ -888,7 +947,12 @@ def cmd_search_getmanfred(args: argparse.Namespace, settings: Settings) -> int:
     try:
         init_db(conn)
         try:
-            result = search_getmanfred(config, settings=settings, network_enabled=True)
+            result = search_getmanfred(
+                config,
+                settings=settings,
+                network_enabled=True,
+                robots_text=robots_text,
+            )
         except CollectorDisabledError as exc:  # pragma: no cover - guarded above
             _write_line(f"collector disabled: {exc}", stream=sys.stderr)
             return EXIT_FAIL_CLOSED
@@ -1053,33 +1117,36 @@ def _select_detail_jobs(
     would read a different posting's body inside LinkedIn's id space.
     """
     if args.job_id:
-        selected = [
-            job
-            for job in (get_job(conn, job_id) for job_id in args.job_id)
-            if job and job.source == "linkedin"
-        ]
-        found = {job.id for job in selected}
+        selected = []
+        found: set[int] = set()
+        for job_id in args.job_id:
+            job = variant_job_for_source(conn, job_id, "linkedin")
+            if job is not None:
+                selected.append(job)
+                found.add(job_id)
         for missing in [job_id for job_id in args.job_id if job_id not in found]:
             _write_line(
                 f"job #{missing} not found among LinkedIn offers", stream=sys.stderr
             )
         return selected[:limit], max(0, len(selected) - limit)
     if args.all:
-        total = count_active_jobs(conn, source="linkedin")
+        total = count_active_variants(conn, source="linkedin")
         return (
-            all_active_jobs(conn, limit=limit, source="linkedin"),
+            active_variants(conn, source="linkedin", limit=limit),
             max(0, total - limit),
         )
     if getattr(args, "refresh", False):
         cutoff = refresh_cutoff or _refresh_cutoff(args)
-        total = count_jobs_needing_refresh(conn, cutoff=cutoff, source="linkedin")
+        total = count_variants_needing_refresh(conn, source="linkedin", cutoff=cutoff)
         return (
-            jobs_needing_refresh(conn, limit=limit, cutoff=cutoff, source="linkedin"),
+            variants_needing_refresh(
+                conn, source="linkedin", cutoff=cutoff, limit=limit
+            ),
             max(0, total - limit),
         )
-    total = count_jobs_needing_details(conn, source="linkedin")
+    total = count_variants_needing_details(conn, source="linkedin")
     return (
-        jobs_needing_details(conn, limit=limit, source="linkedin"),
+        variants_needing_details(conn, source="linkedin", limit=limit),
         max(0, total - limit),
     )
 
@@ -1186,6 +1253,18 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
             return EXIT_ERROR
         offline_transport = FixtureDetailTransport(fixture.entries)
 
+    robots_text: str | None = None
+    if args.robots:
+        try:
+            robots_text = Path(args.robots).read_text(encoding="utf-8")
+        except OSError as exc:
+            _write_line(f"robots fixture error: {exc}", stream=sys.stderr)
+            return EXIT_ERROR
+    elif offline_transport is not None:
+        # The injected fixture transport only knows detail responses and never
+        # touches the network, so an offline run skips the robots request.
+        robots_text = ""
+
     if args.dry_run:
         # Match ``search-linkedin --dry-run``: plan only, and never create a
         # database. Read the existing database if (and only if) it is present.
@@ -1224,6 +1303,7 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
                 network_enabled=True,
                 max_items=config.max_items,
                 client=offline_transport,
+                robots_text=robots_text,
             )
         except CollectorDisabledError as exc:  # pragma: no cover - guarded above
             _write_line(f"detail fetching disabled: {exc}", stream=sys.stderr)
@@ -1279,27 +1359,25 @@ def _select_tecnoempleo_detail_jobs(
     """
     source = "tecnoempleo"
     if args.job_id:
-        selected = [
-            job
-            for job in (get_job(conn, job_id) for job_id in args.job_id)
-            if job and job.source == source
-        ]
-        found = {job.id for job in selected}
+        selected = []
+        found: set[int] = set()
+        for job_id in args.job_id:
+            job = variant_job_for_source(conn, job_id, source)
+            if job is not None:
+                selected.append(job)
+                found.add(job_id)
         for missing in [job_id for job_id in args.job_id if job_id not in found]:
             _write_line(
                 f"job #{missing} not found among Tecnoempleo offers", stream=sys.stderr
             )
         return selected[:limit], max(0, len(selected) - limit)
     if args.all:
-        jobs = [
-            job
-            for job in all_active_jobs(conn, limit=None)
-            if job.source == source
-        ]
-        return jobs[:limit], max(0, len(jobs) - limit)
-    total = count_jobs_needing_details(conn, source=source)
+        total = count_active_variants(conn, source=source)
+        jobs = active_variants(conn, source=source, limit=limit)
+        return jobs, max(0, total - limit)
+    total = count_variants_needing_details(conn, source=source)
     return (
-        jobs_needing_details(conn, limit=limit, source=source),
+        variants_needing_details(conn, source=source, limit=limit),
         max(0, total - limit),
     )
 
@@ -1450,27 +1528,25 @@ def _select_getmanfred_detail_jobs(
     """
     source = "getmanfred"
     if args.job_id:
-        selected = [
-            job
-            for job in (get_job(conn, job_id) for job_id in args.job_id)
-            if job and job.source == source
-        ]
-        found = {job.id for job in selected}
+        selected = []
+        found: set[int] = set()
+        for job_id in args.job_id:
+            job = variant_job_for_source(conn, job_id, source)
+            if job is not None:
+                selected.append(job)
+                found.add(job_id)
         for missing in [job_id for job_id in args.job_id if job_id not in found]:
             _write_line(
                 f"job #{missing} not found among GetManfred offers", stream=sys.stderr
             )
         return selected[:limit], max(0, len(selected) - limit)
     if args.all:
-        jobs = [
-            job
-            for job in all_active_jobs(conn, limit=None)
-            if job.source == source
-        ]
-        return jobs[:limit], max(0, len(jobs) - limit)
-    total = count_jobs_needing_details(conn, source=source)
+        total = count_active_variants(conn, source=source)
+        jobs = active_variants(conn, source=source, limit=limit)
+        return jobs, max(0, total - limit)
+    total = count_variants_needing_details(conn, source=source)
     return (
-        jobs_needing_details(conn, limit=limit, source=source),
+        variants_needing_details(conn, source=source, limit=limit),
         max(0, total - limit),
     )
 
@@ -1683,7 +1759,17 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
         elif args.rescore:
             jobs = all_active_jobs(conn, limit=args.limit)
         else:
-            jobs = jobs_needing_evaluation(conn, scorer=args.scorer, limit=args.limit)
+            # Input-aware selection: only offers whose current effective scoring
+            # input has no successful evaluation yet are re-scored, so a changed
+            # profile, model, prompt/policy, or description is picked up without
+            # re-running unchanged offers. ``--rescore`` still forces every
+            # active offer.
+            jobs = jobs_needing_evaluation(
+                conn,
+                scorer=args.scorer,
+                limit=args.limit,
+                fingerprint_for=fingerprint_resolver(args.scorer, settings, profile),
+            )
 
         ok_count = 0
         failed: list[dict[str, Any]] = []

@@ -15,7 +15,11 @@ from jobscout.url_policy import (
     UrlPolicyError,
     is_http_scheme,
     is_linkedin_host,
+    is_safe_https_url,
+    is_safe_redirect_target,
     redirect_allowed,
+    redirect_target_violation,
+    response_url_violation,
     validate_linkedin_url,
     validate_llm_base_url,
 )
@@ -194,6 +198,116 @@ def test_is_http_scheme() -> None:
     assert is_http_scheme("http://localhost/x") is True
     assert is_http_scheme("file:///etc/passwd") is False
     assert is_http_scheme("data:text/plain,x") is False
+
+
+# ---------------------------------------------------------------------------
+# Per-hop redirect target policy
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "source,target",
+    (
+        ("https://www.linkedin.com/jobs", "https://www.linkedin.com/other"),
+        # LinkedIn's real www -> locale hop stays inside the parent domain.
+        ("https://www.linkedin.com/jobs", "https://es.linkedin.com/jobs"),
+        ("https://api.example.com/v1", "https://api.example.com/v2"),
+    ),
+)
+def test_safe_redirect_targets(source: str, target: str) -> None:
+    assert redirect_target_violation(source, target) is None
+    assert is_safe_redirect_target(source, target) is True
+
+
+@pytest.mark.parametrize(
+    "source,target,needle",
+    (
+        # Same-host downgrade to plaintext HTTP is refused.
+        ("https://www.linkedin.com/jobs", "http://www.linkedin.com/jobs", "non-HTTPS"),
+        # Even an unrelated non-HTTPS scheme is refused.
+        ("https://www.linkedin.com/jobs", "file:///etc/passwd", "non-HTTPS"),
+        ("https://www.linkedin.com/jobs", "ftp://www.linkedin.com/x", "non-HTTPS"),
+        # Embedded credentials in the target are refused.
+        (
+            "https://www.linkedin.com/jobs",
+            "https://user:pass@www.linkedin.com/jobs",
+            "credentials",
+        ),
+        ("https://www.linkedin.com/jobs", "https://@www.linkedin.com/jobs", "credentials"),
+        # Non-default ports are refused.
+        ("https://www.linkedin.com/jobs", "https://www.linkedin.com:8443/jobs", "port"),
+        # Disallowed hosts are refused, including lookalikes.
+        ("https://www.linkedin.com/jobs", "https://evil.test/jobs", "cross-host"),
+        (
+            "https://www.linkedin.com/jobs",
+            "https://linkedin.com.evil.test/jobs",
+            "cross-host",
+        ),
+    ),
+)
+def test_unsafe_redirect_targets(source: str, target: str, needle: str) -> None:
+    reason = redirect_target_violation(source, target)
+    assert reason is not None and needle in reason
+    assert is_safe_redirect_target(source, target) is False
+
+
+def test_is_safe_https_url() -> None:
+    assert is_safe_https_url("https://www.linkedin.com/x") is True
+    assert is_safe_https_url("https://www.linkedin.com:443/x") is True
+    assert is_safe_https_url("http://www.linkedin.com/x") is False
+    assert is_safe_https_url("https://www.linkedin.com:8443/x") is False
+    assert is_safe_https_url("https://user:pass@www.linkedin.com/x") is False
+    assert is_safe_https_url("https:///x") is False
+    assert is_safe_https_url("file:///etc/passwd") is False
+
+
+# ---------------------------------------------------------------------------
+# Resolved response URL policy (no redirect handler assumed)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "request_url,response_url",
+    (
+        ("https://www.linkedin.com/jobs", "https://www.linkedin.com/jobs"),
+        ("https://www.linkedin.com/jobs", "https://www.linkedin.com/other"),
+        ("https://www.linkedin.com/jobs", "https://es.linkedin.com/jobs"),
+        ("https://www.linkedin.com:443/jobs", "https://www.linkedin.com/jobs"),
+        ("https://llm.internal:8443/v1", "https://llm.internal:8443/v2"),
+    ),
+)
+def test_safe_response_urls(request_url: str, response_url: str) -> None:
+    assert response_url_violation(request_url, response_url) is None
+
+
+@pytest.mark.parametrize(
+    "request_url,response_url,needle",
+    (
+        ("https://www.linkedin.com/jobs", "http://www.linkedin.com/jobs", "non-HTTPS"),
+        ("https://www.linkedin.com/jobs", "file:///etc/passwd", "non-HTTPS"),
+        (
+            "https://www.linkedin.com/jobs",
+            "https://user:pass@www.linkedin.com/jobs",
+            "credentials",
+        ),
+        (
+            "https://www.linkedin.com/jobs",
+            "https://www.linkedin.com:8443/jobs",
+            "port",
+        ),
+        ("https://www.linkedin.com/jobs", "https://evil.test/jobs", "cross-host"),
+        (
+            "https://llm.internal:8443/v1",
+            "https://llm.internal/v1",
+            "port",
+        ),
+    ),
+)
+def test_unsafe_response_urls(
+    request_url: str, response_url: str, needle: str
+) -> None:
+    reason = response_url_violation(request_url, response_url)
+    assert reason is not None and needle in reason
 
 
 # ---------------------------------------------------------------------------

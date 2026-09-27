@@ -65,7 +65,11 @@ from ..models import (
 )
 from ..normalize import normalize_job_posting
 from ..timeutil import utcnow_iso
-from ..url_policy import is_getmanfred_host, validate_getmanfred_url
+from ..url_policy import (
+    is_getmanfred_host,
+    is_safe_https_url,
+    validate_getmanfred_url,
+)
 from .keyword_match import matching_keywords
 from .base import (
     TRUNCATION_HEADER,
@@ -77,9 +81,11 @@ from .base import (
     HttpResponse,
     RateLimitedError,
     UrllibHttpClient,
+    fetch_robots,
     fetch_with_policy,
 )
 from .ratelimit import BackoffPolicy, RequestPacer
+from .robots import check_robots
 
 PROVIDER = "getmanfred"
 SITEMAP_KIND_URLSET = "urlset"
@@ -97,6 +103,12 @@ class GetManfredSitemapConfig:
     sitemap (no fan-out, no private endpoint): only offers whose normalized
     title/slug matches it are kept, and the matched keyword is stored as
     provenance on each posting.
+
+    ``max_documents`` counts **documents**, not offers: the root sitemap and every
+    discovered child sitemap each consume one. A configured sitemap **index**
+    therefore needs more than one document to expose any offer; with the cap
+    exhausted on the index alone the run fails closed as incomplete instead of
+    reporting a successful empty inventory.
     """
 
     sitemap_url: str = DEFAULT_GETMANFRED_SITEMAP_URL
@@ -315,11 +327,15 @@ def search_getmanfred(
     client: HttpClient | None = None,
     sleep: Callable[[float], None] | None = None,
     on_attempt: Callable[[Any], None] | None = None,
+    robots_text: str | None = None,
 ) -> CollectorResult:
     """Collect a bounded GetManfred inventory from the public sitemap.
 
     Without ``network_enabled=True`` this raises :class:`CollectorDisabledError`;
     with ``dry_run=True`` it returns the planned URL and performs no I/O.
+    ``robots_text`` may be injected so offline tests skip the robots request; a
+    live run fetches and enforces ``robots.txt`` before the first sitemap
+    request (including any discovered child sitemap).
     """
     planned = plan_sitemap_urls(config)
 
@@ -362,11 +378,36 @@ def search_getmanfred(
     seen_documents: set[str] = set()
     documents_fetched = 0
 
+    if robots_text is None:
+        ok, fetched_robots, robots_note = fetch_robots(
+            transport,
+            settings.getmanfred_robots_url,
+            policy=policy,
+            pacer=pacer,
+            sleep=sleep,
+        )
+        if not ok:
+            result.status = SearchRunStatus.FAILED_CLOSED
+            result.error = robots_note
+            result.notes = "could not establish robots.txt permission; run aborted"
+            return result
+        robots_text = fetched_robots
+
     while queue and documents_fetched < config.max_documents:
         url = queue.pop(0)
         if url in seen_documents:
             continue
         seen_documents.add(url)
+        # Re-check every document, including discovered children, so a robots
+        # change cannot be bypassed through a sitemap index.
+        allowed, reason = check_robots(
+            robots_text, url, user_agent=settings.user_agent
+        )
+        if not allowed:
+            result.status = SearchRunStatus.FAILED_CLOSED
+            result.error = f"refusing disallowed path for {url}: {reason}"
+            result.notes = "robots.txt disallows the sitemap path; run aborted"
+            return result
         pacer.wait()
         try:
             response: HttpResponse = fetch_with_policy(
@@ -414,7 +455,15 @@ def search_getmanfred(
             _extend_unique(result.postings, postings, limit=config.max_items)
         elif kind == SITEMAP_KIND_INDEX:
             if not _enqueue_child_sitemaps(queue, response.body):
-                result.notes = f"{url} is a sitemap index with no allowed child sitemap"
+                # An index that exposes no safe child is an unusable document,
+                # not a successful empty inventory: fail closed like an
+                # unrecognized sitemap body, so a hostile index is visible.
+                result.status = SearchRunStatus.FAILED_CLOSED
+                result.error = (
+                    f"sitemap index {url} exposed no allowed child sitemap"
+                )
+                result.notes = "sitemap index had no safe child sitemap; run aborted"
+                return result
         else:
             # A 200 that is not a recognized sitemap is an unsupported response:
             # fail closed instead of recording a silent empty inventory.
@@ -425,6 +474,28 @@ def search_getmanfred(
 
         if len(result.postings) >= config.max_items:
             break
+
+    if queue and result.status is SearchRunStatus.COMPLETED:
+        if not result.postings:
+            # The document budget was spent on the index and no child sitemap was
+            # fetched, so the inventory is incomplete, not a successful empty one.
+            # Fail closed instead of reporting zero offers without a signal; the
+            # configured cap itself is preserved.
+            result.status = SearchRunStatus.FAILED_CLOSED
+            result.error = (
+                f"sitemap document cap ({config.max_documents}) reached before any "
+                "child sitemap was fetched"
+            )
+            result.notes = (
+                f"inventory incomplete: the {config.max_documents}-document cap was "
+                "spent on the sitemap index; no child sitemap was fetched"
+            )
+            return result
+        result.notes = (
+            f"{len(result.postings)} offer(s) discovered before the "
+            f"{config.max_documents}-document cap left {len(queue)} child sitemap(s) "
+            "unvisited"
+        )
 
     result.items_found = len(result.postings)
     if result.notes is None and result.status is SearchRunStatus.COMPLETED:
@@ -437,11 +508,44 @@ def search_getmanfred(
     return result
 
 
+def is_allowed_child_sitemap(url: str) -> bool:
+    """Return whether a sitemap-index child is safe to queue and fetch.
+
+    A child must be HTTPS on a GetManfred host, use the default HTTPS port,
+    embed no credentials, and point at a plain ``.xml`` path without parent
+    traversal. The path is validated *after* a single safe URL decode, and any
+    path whose decode still contains a percent escape is refused, so an encoded
+    ``..`` or a double-encoded traversal cannot slip past. Anything else — a
+    downgraded scheme, a foreign host, a non-default port, embedded credentials,
+    or an offer/static page — is skipped, so a compromised or hostile index
+    cannot redirect the crawl.
+    """
+    if not is_safe_https_url(url):
+        return False
+    try:
+        parts = urlsplit(str(url or ""))
+    except ValueError:
+        return False
+    if not is_getmanfred_host(parts.hostname or ""):
+        return False
+    raw_path = parts.path or ""
+    if "\\" in raw_path or "\x00" in raw_path:
+        return False
+    decoded = unquote(raw_path)
+    if "\\" in decoded or "\x00" in decoded or "%" in decoded:
+        return False
+    if not decoded.startswith("/"):
+        return False
+    if any(segment == ".." for segment in decoded.split("/")):
+        return False
+    return decoded.lower().endswith(".xml")
+
+
 def _enqueue_child_sitemaps(queue: list[str], xml_text: str) -> bool:
-    """Append allow-listed child sitemaps from an index; return whether any were added."""
+    """Append validated child sitemaps from an index; return whether any were added."""
     added = False
     for child in parse_index_entries(xml_text):
-        if not is_getmanfred_host(urlsplit(child).hostname or ""):
+        if not is_allowed_child_sitemap(child):
             continue
         queue.append(child)
         added = True
@@ -503,6 +607,7 @@ __all__ = [
     "SITEMAP_KIND_URLSET",
     "classify_sitemap",
     "extract_getmanfred_job_id",
+    "is_allowed_child_sitemap",
     "is_offer_url",
     "parse_index_entries",
     "parse_url_entries",

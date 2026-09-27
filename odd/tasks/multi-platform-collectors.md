@@ -38,7 +38,8 @@ keyword, observed position, and comparable search cycle.
    `--rescore` is only for a profile/prompt change.
 
 ## Tasks
-- [x] Generalize provider/cycle/position provenance and migrations (schema v5).
+- [x] Generalize provider/cycle/position provenance and migrations (schema v5);
+  later extended by schema v6 provider variants (`job_variants`).
 - [x] Split analytics by platform, keyword, and cycle.
 - [x] Implement GetManfred sitemap adapter with optional local keyword filter.
 - [x] Implement Tecnoempleo public search adapter and tests.
@@ -68,9 +69,13 @@ Implemented and verified:
   `ingest_fixture` accept an explicit `provider`; `CollectorResult` moved to
   `collectors/base.py`. A config without a provider still defaults to
   `linkedin`, so existing callers and run params are byte-for-byte compatible.
-- **Additive migration v5.** `search_runs.cycle_id` and
-  `search_run_items.position_kind` are added nullable; a real pre-v5 database is
-  migrated in place and historical rows keep their values (`NULL`).
+- **Additive migrations v5 and v6.** v5 added `search_runs.cycle_id` and
+  `search_run_items.position_kind` as nullable; a real pre-v5 database is
+  migrated in place and historical rows keep their values (`NULL`). v6 added the
+  provider-variant layer (`job_variants` plus a nullable
+  `job_detail_fetches.variant_id`), so a second provider observing the same
+  canonical role keeps its own id/URL and availability/detail state instead of
+  overwriting the first provider's identity (see `NEXT_STEPS.md`).
 - **Provider-scoped analytics.** Dashboard keyword series are keyed by
   `provider|keyword|cycle`; the same literal keyword from LinkedIn, GetManfred,
   and Tecnoempleo produces three distinct series (verified end to end). Inventory

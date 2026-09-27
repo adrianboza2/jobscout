@@ -123,6 +123,50 @@ def test_score_is_idempotent_without_rescore(db_path: Path, capsys) -> None:
     assert "scored 4 job(s)" in capsys.readouterr().out
 
 
+def test_score_reselects_when_the_profile_changes(
+    db_path: Path, tmp_path: Path, capsys
+) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    base_args = [
+        "--db",
+        str(db_path),
+        "--profile",
+        str(PROFILE),
+        "score",
+        "--all",
+        "--scorer",
+        "heuristic",
+    ]
+    assert main(base_args) == EXIT_OK
+    capsys.readouterr()
+    # Same input: a normal pass has nothing to do.
+    assert main(base_args) == EXIT_OK
+    assert "scored 0 job(s)" in capsys.readouterr().out
+
+    changed = tmp_path / "profile_changed.yaml"
+    changed.write_text(
+        PROFILE.read_text(encoding="utf-8").replace(
+            "max_posting_age_days: 30", "max_posting_age_days: 7"
+        ),
+        encoding="utf-8",
+    )
+    changed_args = [
+        "--db",
+        str(db_path),
+        "--profile",
+        str(changed),
+        "score",
+        "--all",
+        "--scorer",
+        "heuristic",
+    ]
+    # The profile change alters the effective input, so the offers are selected
+    # again without needing --rescore.
+    assert main(changed_args) == EXIT_OK
+    assert "scored 4 job(s)" in capsys.readouterr().out
+
+
 def test_score_specific_job_and_unknown_job(db_path: Path, capsys) -> None:
     main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
     capsys.readouterr()

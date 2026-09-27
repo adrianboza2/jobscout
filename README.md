@@ -112,7 +112,7 @@ Prepara el perfil real antes de cualquier barrido:
 | 0 | Preparar perfil | `cp profile.example.yaml profile.yaml` (POSIX) o `Copy-Item profile.example.yaml profile.yaml` (PowerShell), y `JOBSCOUT_PROFILE_PATH=profile.yaml` en `.env` | Defines rol objetivo, seniority, skills, dealbreakers y exclusiones. | Decisión humana |
 | 1 | Barrido controlado | `python -m jobscout keyword-plan` y luego `python -m jobscout search-linkedin --keywords "..." --dry-run`; para ejecutarlo, cambia `--dry-run` por `--confirm-network` | Descubre ofertas nuevas. `keyword-plan` es offline; cada búsqueda real es un acto humano explícito. | Semiautomático: autorizas cada consulta |
 | 2 | Enriquecer | `python -m jobscout fetch-details --max-items 10 --confirm-network` (o `fetch-getmanfred-details` / `fetch-tecnoempleo-details` según la plataforma, o `--fixture` para trabajar offline) | Trae la descripción completa de cada oferta, acotado en volumen. Solo sube a `ok` cuando reconoce el detalle. | Semiautomático: autorizas cada corrida |
-| 3 | Puntuar con MiMo | `python -m jobscout score --all --scorer opencode` | El puntuador predeterminado (OpenCode + MiMo) evalúa solo las ofertas que aún no tienen evaluación. | El puntaje es automático; la decisión de postular no |
+| 3 | Puntuar con MiMo | `python -m jobscout score --all --scorer opencode` | El puntuador predeterminado (OpenCode + MiMo) evalúa solo las ofertas cuya entrada de puntuación cambió o que aún no tienen evaluación. | El puntaje es automático; la decisión de postular no |
 | 4 | Generar dashboard | `python -m jobscout dashboard --top 25` | Escribe un HTML local con ofertas, puntajes, evidencia del enlace y filtros de preferencia. | Automático y de solo lectura |
 | 5 | Revisar ofertas | Abre `reports/jobscout-dashboard.html` | Tú marcas **Aplicar** o **Descartar** en el navegador. | Decisión humana exclusivamente |
 | 6 | Exportar/importar feedback | Exporta el JSON desde el tablero y ejecuta `python -m jobscout import-feedback jobscout-feedback.json` | Tus decisiones pasan de `localStorage` a la tabla `job_feedback` de SQLite. | Importar es automático una vez que lo invocas |
@@ -125,25 +125,25 @@ Notas del ciclo:
 - **Nunca se postula automáticamente.** Tampoco hay programador de tareas; las
   notificaciones locales son opt-in y manuales (`jobscout notify`), y cada
   corrida la invocas tú.
-- `--rescore` **no es un paso diario**: re-evalúa ofertas ya puntuadas y solo hace
-  falta cuando cambias el perfil o el prompt. Para las ofertas nuevas, el ciclo
-  normal es `score --all --scorer opencode`, que evalúa justo las que todavía no
-  tienen puntaje.
+- `--rescore` **no es un paso diario**: fuerza una pasada nueva sobre *todas*
+  las ofertas activas. El `score --all --scorer opencode` normal ahora **mira la
+  entrada**: evalúa justo las ofertas cuya entrada efectiva actual no tiene una
+  evaluación exitosa, así que omite las que no cambiaron y detecta solo el
+  perfil, modelo, prompt/política o descripción modificados.
 - `fetch-details` no vuelve a puntuar por sí solo; el paso 3 cierra el
   enriquecimiento.
-- Cada evaluación queda versionada: guarda el `prompt_version` del puntuador y el
-  `input_fingerprint` del perfil, así que un cambio de política es distinguible
-  sin reescribir el historial. Para el puntuador de OpenCode, el `prompt_version`
-  además lleva la variante de razonamiento efectiva como sufijo
-  `<version>+<variant>` (por defecto `+minimal`), así que una corrida `minimal` y
-  una `max` se distinguen después. Un `JOBSCOUT_OPENCODE_VARIANT=` explícitamente
-  vacío conserva el string histórico sin sufijo.
-- La reevaluación **todavía no mira si la entrada cambió**: `score --all` omite
-  cualquier oferta que ya tenga una evaluación exitosa de ese puntuador, aunque
-  el perfil o la descripción hayan cambiado. Usa `--rescore` para forzar una
-  corrida nueva sobre todas las ofertas activas; omitir la reevaluación cuando la
-  entrada no cambió sigue siendo un pendiente documentado, no el comportamiento
-  actual.
+- Cada evaluación queda versionada con un único **fingerprint de entrada
+  efectiva** sobre la identidad del puntuador, el modelo, la versión efectiva del
+  prompt/política, el perfil (incluidas las claves desconocidas preservadas) y el
+  contenido puntuado de la oferta. Una evaluación exitosa se reutiliza solo
+  mientras ese fingerprint no cambia, así que un cambio de política o de
+  contenido es distinguible sin reescribir el historial y un éxito viejo nunca
+  puede tapar una entrada modificada. Para el puntuador de OpenCode, el
+  fingerprint y el `prompt_version` además llevan la variante de razonamiento
+  efectiva como sufijo `<version>+<variant>` (por defecto `+minimal`), así que una
+  corrida `minimal` y una `max` se distinguen después. Un
+  `JOBSCOUT_OPENCODE_VARIANT=` explícitamente vacío conserva el string histórico
+  sin sufijo.
 
 ### Criterio de seniority y tecnologías (prompt v5)
 
@@ -371,11 +371,11 @@ subcomando) y `--version`.
 |---------|-----------|
 | `init-db` | Crea o verifica el esquema. Idempotente. |
 | `ingest-fixture PATH [--source S] [--label L]` | Normaliza, deduplica y guarda un fixture JSON (sin red). |
-| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Búsqueda pública acotada. Deshabilitada sin `--confirm-network`. |
-| `search-getmanfred [--keywords K] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Inventario del sitemap público de GetManfred. `--keywords` aplica un filtro **local** (título/slug), sin fan-out ni endpoint privado. Sin ranking. Deshabilitado sin `--confirm-network`. |
+| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--robots PATH] [--dry-run \| --confirm-network]` | Búsqueda pública acotada. Vuelve a leer `robots.txt` antes del primer request y falla cerrado si la ruta está deshabilitada. Deshabilitada sin `--confirm-network`. |
+| `search-getmanfred [--keywords K] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--robots PATH] [--dry-run \| --confirm-network]` | Inventario del sitemap público de GetManfred. Vuelve a leer `robots.txt` antes del primer request. `--keywords` aplica un filtro **local** (título/slug), sin fan-out ni endpoint privado. Sin ranking. Deshabilitado sin `--confirm-network`. |
 | `search-tecnoempleo --keywords K [--location L] [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Búsqueda pública server-rendered de Tecnoempleo. Respeta `robots.txt` en tiempo de ejecución. Deshabilitada sin `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | Lista las familias de palabras clave y el comando exacto por consulta (sin red, sin base de datos). |
-| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas de LinkedIn con la descripción completa. Por defecto, las que aún no están enriquecidas; `--refresh` vuelve sobre las ya consultadas con evidencia obsoleta o reintentable. |
+| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--robots PATH] [--label L]` | Enriquece ofertas de LinkedIn con la descripción completa. Vuelve a leer `robots.txt` antes del primer request; una corrida `--fixture` es offline y no lo consulta. Por defecto, las que aún no están enriquecidas; `--refresh` vuelve sobre las ya consultadas con evidencia obsoleta o reintentable. |
 | `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enriquece ofertas de Tecnoempleo desde su página de detalle pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
 | `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enriquece ofertas de GetManfred desde el JSON-LD `JobPosting` reconocido de su página pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje. |
@@ -408,7 +408,24 @@ python -m jobscout search-tecnoempleo --keywords "cloud security" --max-pages 2 
 `search-getmanfred` es un **inventario**, no una búsqueda: no genera fan-out y
 cada posición observada se guarda como `position_kind = none` con rank `0`. El
 título se deriva del slug público de la URL y la empresa queda desconocida,
-porque el sitemap no la expone. Los postings quedan en estado `partial`.
+porque el sitemap no la expone. Los postings quedan en estado `partial`. Como
+todo collector en vivo, vuelve a leer `robots.txt` antes del primer request y
+falla cerrado si una ruta está deshabilitada. Cuando la URL configurada es un
+índice de sitemaps, un hijo solo se encola si es HTTPS sobre un host
+`getmanfred.com`, con puerto por defecto, sin credenciales y en una ruta `.xml`
+plana de sitemap. La ruta se valida después de un único decodificado seguro de
+URL, así que un `..` codificado o doblemente codificado (y cualquier barra
+invertida) se rechaza. Cualquier otro hijo se omite y nunca se descarga, y un
+índice que no produce ningún hijo seguro falla cerrado en lugar de registrar un
+inventario vacío. `--max-documents` cuenta **documentos** (el sitemap raíz más
+cada hijo descubierto), así que seguir un índice de sitemaps necesita más de uno;
+un presupuesto gastado en el índice sin ningún hijo descargado falla cerrado como
+inventario incompleto en lugar de un inventario vacío exitoso.
+
+`search-linkedin` vuelve a leer `robots.txt` antes del primer request y falla
+cerrado si la ruta de búsqueda guest está deshabilitada (o si el documento no se
+puede leer), de modo que un cambio de política detiene la corrida en lugar de
+asumir permiso.
 
 GetManfred no expone un endpoint de búsqueda por palabra clave. `--keywords`
 aplica el término **localmente** al sitemap en una sola descarga: solo se
@@ -469,10 +486,10 @@ python -m jobscout fetch-details --refresh --stale-days 14 --dry-run            
 ```
 
 Toda selección de `fetch-details` — la ruta por defecto, `--all`, `--refresh` y un
-`--job-id` explícito — se restringe a ofertas de LinkedIn (`source = linkedin`).
-Un id que no sea de LinkedIn se informa y nunca se planifica, así que un id
-numérico de GetManfred o Tecnoempleo jamás se lee dentro del espacio de ids de
-LinkedIn.
+`--job-id` explícito — se acota a la **variante de proveedor de LinkedIn**, no al
+proveedor con el que se vio por primera vez el job canónico. Un id que no sea de
+LinkedIn se informa y nunca se planifica, así que un id numérico de GetManfred o
+Tecnoempleo jamás se lee dentro del espacio de ids de LinkedIn.
 
 `--refresh` es una selección mutuamente excluyente con `--job-id` y `--all`. Solo
 considera ofertas activas que ya tienen historial de fetch y cuyo último intento
@@ -494,6 +511,17 @@ filas. Un refresco real conserva sus mismas barreras de red que el resto de
 
 `fetch-details` no vuelve a puntuar por sí solo: ejecuta
 `score --all --rescore` después de enriquecer.
+
+La identidad por proveedor se guarda por oferta en la tabla `job_variants`
+(esquema v6). La fila canónica de `jobs` sigue siendo el padre deduplicado entre
+proveedores, mientras que cada variante conserva su id externo, su URL de listado
+y su estado de disponibilidad/detalle. Un segundo proveedor que ve el mismo rol
+agrega una variante; nunca sobrescribe la identidad del primero. Un `404`/`410`
+definitivo desactiva solo esa variante, y la oferta canónica sigue activa
+mientras alguna otra variante lo esté. Una base existente se actualiza in situ:
+cada job heredado recibe exactamente una variante construida desde su propia
+evidencia persistida, y una identidad heredada ambigua o incompleta queda marcada
+`needs_review` en lugar de adivinarse.
 
 Enriquecimiento de detalles de Tecnoempleo:
 
@@ -619,7 +647,19 @@ asociado, para que todo puntaje sea auditable después.
 
 Determinista y sin dependencias. Dimensiones: `must_have_skills`, `skills`
 (deseables), `seniority`, `location`, `language`, `recency` y `compensation`. Los
-pesos salen del perfil y se renormalizan sobre las dimensiones aplicables.
+pesos salen del perfil y se renormalizan sobre las dimensiones aplicables. La
+carga del perfil es estricta: los campos booleanos aceptan solo `true`/`false`
+reales, los pesos deben ser finitos y no negativos, y `salary_currency` debe ser
+`USD` o `EUR`.
+
+La compensación se compara **solo dentro de una misma moneda**. Una oferta
+cotizada únicamente en otra moneda explícita (por ejemplo GBP) es un bloqueo
+duro; una moneda ambigua o ausente y un período de pago ausente son desconocidos
+(neutros) y nunca se comparan; USD y EUR nunca se convierten entre sí. Solo un
+monto anual explícito se normaliza al piso mensual (`año / 12`). La recencia
+respeta `max_posting_age_days`: una fecha conocida más vieja que el límite lleva
+la penalización de oferta vieja, `null` desactiva el límite (siguen aplicando los
+tramos graduados) y una fecha ausente es neutra — nunca se puntúa como vieja.
 
 ### LLM compatible con OpenAI
 
@@ -733,8 +773,11 @@ Estas garantías las aplica el código, no solo la documentación:
   `*.linkedin.com`**; la URL base del LLM debe ser HTTPS. Esquemas `file:`,
   `ftp:`, `data:`, `http:`, hosts parecidos y credenciales embebidas se rechazan
   al iniciar.
-- Las redirecciones se siguen solo al mismo host (o bajo el dominio padre de
-  LinkedIn); una redirección a otro host falla cerrado y nunca se reintenta.
+- Cada salto de redirección debe seguir siendo HTTPS en un host permitido, usar
+  el puerto HTTPS por defecto y no llevar credenciales embebidas. Una bajada al
+  mismo host hacia `http://`, un puerto no estándar, una URL con `user:pass@` o
+  un host ajeno fallan cerrado y nunca se reintentan. El sanitizador de URL final
+  aplica la misma política antes de persistir un valor.
 - Solo se reintentan fallas transitorias (timeouts, 5xx). 401/403/429 y estados
   inesperados **fallan de inmediato**.
 - Los payloads crudos se guardan solo si están por debajo de

@@ -67,52 +67,67 @@ the input actually changed.
 
 ## Tasks
 
-- [ ] DP-1 (first) Restrict LinkedIn detail targets to `source = 'linkedin'`:
-  - `_detail_selection` in `src/jobscout/cli.py:1013-1014` calls
-    `jobs_needing_details(conn, limit=limit)` with no `source`, so
-    `fetch-details` walks every provider. Pass `source="linkedin"` (the function
-    already supports it, `src/jobscout/db.py:932-938`).
-  - `resolve_source_job_id` (`src/jobscout/collectors/linkedin_details.py:214-231`)
-    accepts any digit-only `source_job_id` without checking the offer's
-    provider. Return `None` when the job's `source` is present and is not
-    `linkedin`, and when neither the stored id nor the URL resolves as a
-    LinkedIn id/URL. `build_detail_url` (same file, line 234) then has nothing to
-    substitute into the template from `src/jobscout/config.py:35`.
-  - Tests (offline): a GetManfred job with a numeric `source_job_id` produces no
-    target; a Tecnoempleo job likewise; a LinkedIn job whose URL is the slug form
-    and whose `source_job_id` is numeric still resolves; the planned target list
-    of a mixed selection contains only LinkedIn jobs.
-  - Verify: `PYTHONPATH=src python -m jobscout fetch-details --dry-run` (offline,
-    no network) must show zero non-LinkedIn targets; after one
-    `--confirm-network` run, re-run the join query below and expect no new rows
-    where `jobs.source <> job_detail_fetches.source`.
-- [ ] DP-2 Record the reasoning variant in provenance:
-  - `OPENCODE_PROMPT_VERSION` (`src/jobscout/scoring/opencode.py:83`) and the
-    four construction sites that write `prompt_version` / `model` (same file,
-    ~650-722).
+- [x] DP-1 Restrict LinkedIn detail targets to LinkedIn offers:
+  - `_select_detail_jobs` (`src/jobscout/cli.py:1097-1147`) resolves every route
+    through the provider-variant layer: explicit `--job-id` uses
+    `variant_job_for_source(..., "linkedin")`, `--all` uses
+    `active_variants(source="linkedin")`, `--refresh` uses
+    `variants_needing_refresh(source="linkedin")`, and the default uses
+    `variants_needing_details(source="linkedin")`
+    (`src/jobscout/db.py:1485`, `src/jobscout/db.py:1548`,
+    `src/jobscout/db.py:1693`). A non-LinkedIn id/content is reported and never
+    planned.
+  - `resolve_source_job_id` (`src/jobscout/collectors/linkedin_details.py:213`)
+    returns `None` when the job's `source` is present and is not `linkedin`, and
+    when neither the stored id nor the URL resolves as a LinkedIn id/URL.
+    `build_detail_url` (same file, `:243`) therefore never substitutes another
+    provider's id, and the template comes from `DEFAULT_LINKEDIN_DETAIL_URL`
+    (`src/jobscout/config.py:34`).
+  - Tests (offline, `tests/test_detail_fetcher.py`): a mixed selection contains
+    only the LinkedIn target; foreign ids are dropped on the default, `--all`,
+    and `--job-id` routes; a LinkedIn slug URL with a numeric id still resolves;
+    no test opens a socket.
+  - Verify (human step, not re-run here): `PYTHONPATH=src python -m jobscout
+    fetch-details --dry-run` (offline) must show zero non-LinkedIn targets; after
+    one `--confirm-network` run, re-run the join query below and expect no new
+    rows where `jobs.source <> job_detail_fetches.source`.
+- [x] DP-2 Record the reasoning variant in provenance:
+  - `OPENCODE_PROMPT_VERSION` (`src/jobscout/scoring/opencode.py:84`) and the four
+    construction sites that write `prompt_version` (`src/jobscout/scoring/opencode.py:690`,
+    `:710`, `:728`, `:758`), all fed by `effective_prompt_version`
+    (`src/jobscout/scoring/opencode.py:206`).
   - Rule: when `settings.opencode_variant` is non-empty, the recorded
     `prompt_version` carries it as a suffix (`<version>+<variant>`); when no
-    variant is configured the string must stay byte-identical to today, so
-    historical rows remain comparable and existing tests keep passing. Mirror the
-    provenance style the heuristic fallback already uses
-    (`src/jobscout/scoring/__init__.py:132-141`).
-  - Tests: two evaluations from runs with different variants differ in
-    `prompt_version`; with no variant configured the value is unchanged.
-  - Verify: `JOBSCOUT_OPENCODE_VARIANT=max PYTHONPATH=src python -m jobscout score
-    --job-id <ID> --scorer opencode --rescore` and read the column.
-- [ ] DP-3 Skip re-evaluation when the input did not change:
-  - `jobs_needing_evaluation` (`src/jobscout/db.py:869-889`) ignores
-    `input_fingerprint`. Skip an offer when a successful evaluation already
-    exists with the same `(scorer, model, prompt_version, input_fingerprint)`.
-  - `--rescore` keeps forcing every active job; document that in README.md and
-    README.en.md as part of this change.
-  - Tests: identical fingerprint is not selected; a changed fingerprint (a
-    rewritten description) is selected; `--rescore` behaviour unchanged.
-  - Verify: run `score --all --scorer heuristic` twice on a database copy; the
-    second run must select 0 offers, and `--rescore` must still select all
-    active ones.
-- [x] DP-4 GetManfred detail enrichment **(complete: permission confirmed, static
-  JSON-LD gate passed, bounded adapter implemented and verified)**:
+    variant is configured the string stays byte-identical to the historical value,
+    so old rows remain comparable. The OpenCode scorer also records its own
+    effective-input fingerprint (`input_fingerprint(job, profile, settings)`), so
+    the variant is part of the fingerprint too.
+  - Tests: `tests/test_opencode.py` (two variants differ in `prompt_version`; no
+    variant keeps the bare version). Verify command below remains a human step.
+  - Verify (human step, not re-run here): `JOBSCOUT_OPENCODE_VARIANT=max
+    PYTHONPATH=src python -m jobscout score --job-id <ID> --scorer opencode
+    --rescore` and read the column.
+- [x] DP-3 Skip re-evaluation when the input did not change:
+  - `jobs_needing_evaluation` (`src/jobscout/db.py:1296`) takes an optional
+    `fingerprint_for` callable and selects an offer only when no successful
+    evaluation from that scorer carries its *current* effective-input
+    fingerprint. That single fingerprint already covers scorer, model,
+    prompt/policy version, profile, and job content, so a separate
+    `(scorer, model, prompt_version, input_fingerprint)` tuple is not needed.
+  - The CLI passes `fingerprint_resolver(...)` for normal selection
+    (`src/jobscout/cli.py:1767`); `--rescore` still forces every active job via
+    `all_active_jobs`. `README.md` and `README.en.md` document the contract.
+  - Tests (offline): `tests/test_cli.py::test_score_is_idempotent_without_rescore`
+    and `::test_score_reselects_when_the_profile_changes`; the input-aware
+    selection and changed-input-not-masked cases in `tests/test_db.py` and
+    `tests/test_job_variants.py`.
+  - Verify (human step, not re-run here): run `score --all --scorer heuristic`
+    twice on a database copy; the second run must select 0 offers, and
+    `--rescore` must still select all active ones.
+- [x] DP-4 GetManfred detail enrichment **(implementation complete: permission
+  confirmed, static JSON-LD gate passed, bounded adapter implemented and
+  offline-covered; the live enrichment record below is historical and was not
+  re-verified in this audit, and the pending live check stays pending)**:
   - Gate: prior **written permission from Manfred** covering automated requests and
     the storage of offer descriptions in this project is confirmed. The static-HTML
     gate also passed: `robots.txt` was re-checked immediately before the capture
@@ -132,17 +147,21 @@ the input actually changed.
   - [x] Fixture: `tests/fixtures/getmanfred_detail_page_jobposting.html` is built
     from the real captured JSON-LD script excerpt, not a synthetic page.
   - [x] CLI `fetch-getmanfred-details` with `--dry-run` (no request, read-only),
-    `--confirm-network`, `--job-id`/`--all` scoped to `source = getmanfred`,
-    `--max-items`, `--robots`, and `--json`, mirroring the other detail commands.
+    `--confirm-network`, `--job-id`/`--all` scoped to the GetManfred provider
+    variant, `--max-items`, `--robots`, and `--json`, mirroring the other detail
+    commands.
   - [x] Offline tests in `tests/test_getmanfred_details.py` (real fixture parse,
     optional/null fields, URL/host/robots refusal, caps, dry-run, confirmation
     required, fail-closed statuses, redirect handling, provider isolation, and the
     preserve-successful-description invariant). No test opens a socket.
-  - [x] Verify (orchestrator): `fetch-getmanfred-details --dry-run` planned 20 of
-    128 pending offers under the 20-item cap; one confirmed fetch enriched job 937.
-    Read-only verification confirmed `content_status = ok`, description length 569,
-    `job_detail_fetches.source = getmanfred`, status `ok`, and HTTP 200. The
-    targeted GetManfred enrichment run completed 128 enrichments in total.
+  - Historical record only — **not re-verified in this audit, not a substitute for
+    the pending live check below**: a prior orchestrator note reported that
+    `fetch-getmanfred-details --dry-run` planned 20 of 128 pending offers under the
+    20-item cap, that one confirmed fetch enriched job 937 (`content_status = ok`,
+    description length 569, `job_detail_fetches.source = getmanfred`, HTTP 200),
+    and that a targeted run reported 128 enrichments in total. This is dated
+    historical evidence from that task record; no live call was made and no local
+    database was inspected now.
 - [x] DP-5 Investigate and fix Tecnoempleo body suppression:
   - One live detail-page capture showed the generic credential detector was
     matching Cloudflare's public `data-cf-beacon` JSON `token` field (32 hex chars).
@@ -230,20 +249,24 @@ archived HTML and matched the stored text character for character (5/5 samples,
 
 ## Checks
 
-- [ ] `python -m pytest -q` passes (offline, no network).
-- [ ] `fetch-details --dry-run` plans no non-LinkedIn target.
+- [x] `.venv/Scripts/python.exe -m pytest -q` passes offline: **1129 passed** (no network).
+- [ ] `fetch-details --dry-run` plans no non-LinkedIn target. (Offline coverage:
+      `tests/test_detail_fetcher.py`; the dry-run itself is a human step.)
 - [ ] One `score --all --scorer heuristic` run on a database copy followed by a
       second run selects 0 offers; `--rescore` still selects all active ones.
+      (Offline coverage: `tests/test_cli.py` idempotency/re-selection tests; the
+      database-copy run is a human step.)
 - [ ] A `--variant max` evaluation and a `--variant minimal` evaluation of the
-      same offer differ in `prompt_version`.
+      same offer differ in `prompt_version`. (Offline coverage:
+      `tests/test_opencode.py`; the live scoring run is a human step.)
 - [ ] The join query above shows no row where `jobs.source <> job_detail_fetches.source`
       after the next confirmed run.
 - [ ] DP-4 live check (orchestrator): `fetch-getmanfred-details --dry-run` plans only
       GetManfred `/ofertas-empleo/{id}/...` URLs, then ONE offer with
       `--confirm-network` moves `content_status` to `ok` with a non-zero description.
       Pending; the offline adapter work does not substitute for it.
-- [ ] README.md and README.en.md updated in the same commit as DP-3 (the
-      `--rescore` contract changes meaning).
+- [x] README.md and README.en.md updated for the DP-3 `--rescore` contract (in the
+      working tree; not committed by this change).
 
 ## Order and rationale
 

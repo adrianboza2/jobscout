@@ -19,6 +19,7 @@ from jobscout.collectors.getmanfred import (
     GetManfredSitemapConfig,
     classify_sitemap,
     extract_getmanfred_job_id,
+    is_allowed_child_sitemap,
     is_offer_url,
     parse_index_entries,
     parse_url_entries,
@@ -35,6 +36,8 @@ from jobscout.pipeline import ingest_collector_result
 SITEMAP_FIXTURE = FIXTURES / "getmanfred_sitemap_offers.xml"
 INDEX_FIXTURE = FIXTURES / "getmanfred_sitemap_index.xml"
 OFFER_PREFIX = "/ofertas-empleo/"
+ROBOTS_ALLOW = "User-agent: *\nAllow: /\n"
+ROBOTS_DENY = "User-agent: *\nDisallow: /\n"
 
 
 def test_classify_and_parse_a_real_urlset() -> None:
@@ -153,7 +156,7 @@ def test_search_getmanfred_applies_keyword_with_single_request(settings) -> None
     )
     config = GetManfredSitemapConfig(keywords="Cloud Engineer", max_items=10)
     result = search_getmanfred(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert result.status is SearchRunStatus.COMPLETED
     assert client.call_count == 1  # local filter, no fan-out
@@ -167,7 +170,7 @@ def test_search_getmanfred_keyword_records_run_params(conn, settings) -> None:
     )
     config = GetManfredSitemapConfig(keywords="Platform Engineer", max_items=10)
     result = search_getmanfred(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     outcome = ingest_collector_result(
         conn, result, config=config, settings=settings, cycle_id="c1"
@@ -186,7 +189,7 @@ def test_keyword_provenance_is_stored_without_mixing_platforms(conn, settings) -
     )
     gm_config = GetManfredSitemapConfig(keywords="Platform Engineer", max_items=10)
     gm_result = search_getmanfred(
-        gm_config, settings=settings, network_enabled=True, client=gm_client, sleep=lambda _: None
+        gm_config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=gm_client, sleep=lambda _: None
     )
     ingest_collector_result(
         conn, gm_result, config=gm_config, settings=settings, cycle_id="cycle-1"
@@ -198,7 +201,7 @@ def test_keyword_provenance_is_stored_without_mixing_platforms(conn, settings) -
     )
     li_config = LinkedInSearchConfig(keywords="Platform Engineer", max_pages=1, max_items=10)
     li_result = search_linkedin(
-        li_config, settings=settings, network_enabled=True, client=li_client, sleep=lambda _: None
+        li_config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=li_client, sleep=lambda _: None
     )
     ingest_collector_result(
         conn, li_result, config=li_config, settings=settings, cycle_id="cycle-1"
@@ -278,7 +281,7 @@ def test_live_inventory_parses_and_records_raw_document(settings) -> None:
     result = search_getmanfred(
         GetManfredSitemapConfig(max_items=10),
         settings=settings,
-        network_enabled=True,
+        network_enabled=True, robots_text=ROBOTS_ALLOW,
         client=client,
         sleep=lambda _: None,
     )
@@ -300,7 +303,7 @@ def test_getmanfred_body_just_below_provider_limit_is_parsed(settings) -> None:
     result = search_getmanfred(
         GetManfredSitemapConfig(max_items=10),
         settings=settings,
-        network_enabled=True,
+        network_enabled=True, robots_text=ROBOTS_ALLOW,
         client=FakeHttpClient([response(200, body, headers={"content-type": "application/xml"})]),
         sleep=lambda _: None,
     )
@@ -314,7 +317,7 @@ def test_getmanfred_body_over_provider_limit_is_rejected_with_note(settings) -> 
     result = search_getmanfred(
         GetManfredSitemapConfig(max_items=10),
         settings=settings,
-        network_enabled=True,
+        network_enabled=True, robots_text=ROBOTS_ALLOW,
         client=FakeHttpClient(
             [response(200, body, headers={TRUNCATION_HEADER: "1"})]
         ),
@@ -343,7 +346,7 @@ def test_sitemap_index_follows_only_allow_listed_children(settings) -> None:
         max_items=10,
     )
     result = search_getmanfred(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     assert result.status is SearchRunStatus.COMPLETED
     assert len(result.postings) == 3
@@ -353,12 +356,211 @@ def test_sitemap_index_follows_only_allow_listed_children(settings) -> None:
     assert all("evil.test" not in url for url in called)
 
 
+def test_child_sitemap_validation_rejects_malicious_targets() -> None:
+    # Only HTTPS, default-port, credential-free GetManfred .xml paths are safe.
+    assert is_allowed_child_sitemap("https://www.getmanfred.com/sitemap-offers.xml")
+    assert is_allowed_child_sitemap("https://getmanfred.com/sitemap.xml")
+    assert not is_allowed_child_sitemap("http://www.getmanfred.com/sitemap.xml")
+    assert not is_allowed_child_sitemap("https://www.getmanfred.com:8443/sitemap.xml")
+    assert not is_allowed_child_sitemap("https://user:pass@www.getmanfred.com/sitemap.xml")
+    assert not is_allowed_child_sitemap("https://evil.test/sitemap-offers.xml")
+    assert not is_allowed_child_sitemap("https://getmanfred.com.evil.test/sitemap.xml")
+    assert not is_allowed_child_sitemap("https://www.getmanfred.com/ofertas-empleo/1/x")
+    assert not is_allowed_child_sitemap("https://www.getmanfred.com/../secret.xml")
+    assert not is_allowed_child_sitemap("https://www.getmanfred.com/sitemap-offers")
+    assert not is_allowed_child_sitemap("")
+
+
+def test_child_sitemap_validation_rejects_encoded_traversal() -> None:
+    # Traversal hidden behind URL encoding, backslashes, or a second encoding
+    # layer must never enqueue.
+    assert not is_allowed_child_sitemap(
+        "https://www.getmanfred.com/%2e%2e/secret.xml"
+    )
+    assert not is_allowed_child_sitemap(
+        "https://www.getmanfred.com/%2e%2e%2fsecret.xml"
+    )
+    assert not is_allowed_child_sitemap(
+        "https://www.getmanfred.com/%252e%252e/secret.xml"
+    )
+    assert not is_allowed_child_sitemap(
+        "https://www.getmanfred.com/..%5csecret.xml"
+    )
+    assert not is_allowed_child_sitemap(
+        "https://www.getmanfred.com/a\\..\\b.xml"
+    )
+    assert not is_allowed_child_sitemap(
+        "https://www.getmanfred.com/sitemap%2f..%2fsecret.xml"
+    )
+    # A benign percent-encoded character survives a single decode and is kept.
+    assert is_allowed_child_sitemap(
+        "https://www.getmanfred.com/sitemap%20offers.xml"
+    )
+
+
+MALICIOUS_INDEX = """<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<sitemap><loc>http://www.getmanfred.com/sitemap-http.xml</loc></sitemap>
+<sitemap><loc>https://evil.test/sitemap-evil.xml</loc></sitemap>
+<sitemap><loc>https://www.getmanfred.com:8443/sitemap-port.xml</loc></sitemap>
+<sitemap><loc>https://user:pass@www.getmanfred.com/sitemap-creds.xml</loc></sitemap>
+<sitemap><loc>https://www.getmanfred.com/ofertas-empleo/1/x</loc></sitemap>
+<sitemap><loc>https://www.getmanfred.com/sitemap-offers.xml</loc></sitemap>
+</sitemapindex>
+"""
+
+
+def test_malicious_sitemap_index_children_are_never_fetched(settings) -> None:
+    client = FakeHttpClient(
+        [
+            response(200, MALICIOUS_INDEX, headers={"content-type": "application/xml"}),
+            response(
+                200, fixture_text("getmanfred_sitemap_offers.xml"), headers={"content-type": "application/xml"}
+            ),
+        ]
+    )
+    config = GetManfredSitemapConfig(
+        sitemap_url="https://www.getmanfred.com/sitemap.xml",
+        max_documents=2,
+        max_items=10,
+    )
+    result = search_getmanfred(
+        config,
+        settings=settings,
+        network_enabled=True,
+        robots_text=ROBOTS_ALLOW,
+        client=client,
+        sleep=lambda _: None,
+    )
+    called = [call["url"] for call in client.calls]
+    assert called == [
+        "https://www.getmanfred.com/sitemap.xml",
+        "https://www.getmanfred.com/sitemap-offers.xml",
+    ]
+    assert all("evil.test" not in url for url in called)
+    assert result.status is SearchRunStatus.COMPLETED
+
+
+def test_sitemap_index_with_no_safe_child_fails_closed(settings) -> None:
+    index = """<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<sitemap><loc>https://evil.test/sitemap-evil.xml</loc></sitemap>
+<sitemap><loc>http://www.getmanfred.com/sitemap-http.xml</loc></sitemap>
+<sitemap><loc>https://www.getmanfred.com/%2e%2e/secret.xml</loc></sitemap>
+<sitemap><loc>https://www.getmanfred.com/ofertas-empleo/1/x</loc></sitemap>
+</sitemapindex>
+"""
+    client = FakeHttpClient(
+        [response(200, index, headers={"content-type": "application/xml"})]
+    )
+    result = search_getmanfred(
+        GetManfredSitemapConfig(),
+        settings=settings,
+        network_enabled=True,
+        robots_text=ROBOTS_ALLOW,
+        client=client,
+        sleep=lambda _: None,
+    )
+    # An index that yields no safe child is refused, not recorded as an empty
+    # but successful inventory, and no child request is attempted.
+    assert result.status is SearchRunStatus.FAILED_CLOSED
+    assert "no allowed child" in (result.error or "")
+    assert client.call_count == 1
+    assert all("evil.test" not in call["url"] for call in client.calls)
+
+
+def test_sitemap_index_with_document_cap_one_fails_closed(settings) -> None:
+    # A real sitemap index with a valid child, but the default document budget
+    # (1) is spent on the index itself. That is an incomplete inventory, not a
+    # successful empty one, and the cap is preserved (no child is fetched).
+    client = FakeHttpClient(
+        [
+            response(
+                200,
+                fixture_text("getmanfred_sitemap_index.xml"),
+                headers={"content-type": "application/xml"},
+            )
+        ]
+    )
+    config = GetManfredSitemapConfig(
+        sitemap_url="https://www.getmanfred.com/sitemap.xml",
+        max_documents=1,
+        max_items=10,
+    )
+    result = search_getmanfred(
+        config,
+        settings=settings,
+        network_enabled=True,
+        robots_text=ROBOTS_ALLOW,
+        client=client,
+        sleep=lambda _: None,
+    )
+
+    assert result.status is SearchRunStatus.FAILED_CLOSED
+    assert result.postings == []
+    assert "cap" in (result.error or "").lower()
+    assert client.call_count == 1
+    assert [call["url"] for call in client.calls] == [
+        "https://www.getmanfred.com/sitemap.xml"
+    ]
+
+
+def test_robots_disallow_fails_closed_before_sitemap_request(settings) -> None:
+    # No responses are queued: any request at all would raise AssertionError.
+    client = FakeHttpClient([])
+    result = search_getmanfred(
+        GetManfredSitemapConfig(),
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_DENY,
+    )
+    assert result.status is SearchRunStatus.FAILED_CLOSED
+    assert client.call_count == 0
+    assert "robots.txt disallows" in (result.error or "")
+
+
+def test_robots_is_fetched_before_the_first_sitemap_request(settings) -> None:
+    client = FakeHttpClient(
+        [
+            response(200, ROBOTS_ALLOW, headers={"content-type": "text/plain"}),
+            response(
+                200, fixture_text("getmanfred_sitemap_offers.xml"), headers={"content-type": "application/xml"}
+            ),
+        ]
+    )
+    result = search_getmanfred(
+        GetManfredSitemapConfig(max_items=10),
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+    )
+    assert result.status is SearchRunStatus.COMPLETED
+    assert client.calls[0]["url"] == settings.getmanfred_robots_url
+
+
+def test_robots_fetch_failure_fails_closed(settings) -> None:
+    client = FakeHttpClient([response(403, "denied")])
+    result = search_getmanfred(
+        GetManfredSitemapConfig(),
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+    )
+    assert result.status is SearchRunStatus.FAILED_CLOSED
+    assert "robots.txt" in (result.error or "")
+    assert client.call_count == 1
+
+
 def test_unsupported_body_fails_closed(settings) -> None:
     client = FakeHttpClient([response(200, "<html>not a sitemap</html>")])
     result = search_getmanfred(
         GetManfredSitemapConfig(),
         settings=settings,
-        network_enabled=True,
+        network_enabled=True, robots_text=ROBOTS_ALLOW,
         client=client,
         sleep=lambda _: None,
     )
@@ -371,7 +573,7 @@ def test_access_denied_fails_closed(settings) -> None:
     result = search_getmanfred(
         GetManfredSitemapConfig(),
         settings=settings,
-        network_enabled=True,
+        network_enabled=True, robots_text=ROBOTS_ALLOW,
         client=client,
         sleep=lambda _: None,
     )
@@ -385,7 +587,7 @@ def test_ingestion_records_provider_cycle_and_none_position(conn, settings) -> N
     )
     config = GetManfredSitemapConfig(max_items=10)
     result = search_getmanfred(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     outcome = ingest_collector_result(
         conn, result, config=config, settings=settings, cycle_id="cycle-2026-09"
@@ -414,7 +616,7 @@ def test_inventory_reingest_is_idempotent(conn, settings) -> None:
         return search_getmanfred(
             GetManfredSitemapConfig(max_items=10),
             settings=settings,
-            network_enabled=True,
+            network_enabled=True, robots_text=ROBOTS_ALLOW,
             client=client,
             sleep=lambda _: None,
         )

@@ -34,6 +34,10 @@ DEFAULT_LINKEDIN_SEARCH_URL = (
 DEFAULT_LINKEDIN_DETAIL_URL = (
     "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{job_id}"
 )
+#: LinkedIn's public ``robots.txt``. Re-fetched before the first LinkedIn
+#: search or detail request; a disallowed path (or an unreadable document) stops
+#: the run closed instead of assuming permission.
+DEFAULT_LINKEDIN_ROBOTS_URL = "https://www.linkedin.com/robots.txt"
 #: GetManfred advertises this sitemap in its public ``robots.txt`` (which also
 #: allows ``/``), and its entries are individual offer detail URLs. Inventory
 #: mode reads it without any keyword fan-out.
@@ -425,6 +429,7 @@ class Settings:
     #: startup instead of silently planning nothing.
     keyword_families: tuple[str, ...] = ()
     linkedin_search_url: str = DEFAULT_LINKEDIN_SEARCH_URL
+    linkedin_robots_url: str = DEFAULT_LINKEDIN_ROBOTS_URL
     # Download ceiling for a live search response as well as the limit above
     # which a raw body is not stored verbatim: the search transport reads at most
     # this many bytes, and a body that hits the ceiling is recorded as metadata
@@ -545,6 +550,7 @@ class Settings:
         # embedded credentials.
         try:
             validate_linkedin_url(self.linkedin_search_url, name="linkedin_search_url")
+            validate_linkedin_url(self.linkedin_robots_url, name="linkedin_robots_url")
             validate_linkedin_url(self.linkedin_detail_url, name="linkedin_detail_url")
             validate_getmanfred_url(self.getmanfred_sitemap_url, name="getmanfred_sitemap_url")
             validate_getmanfred_url(self.getmanfred_robots_url, name="getmanfred_robots_url")
@@ -649,6 +655,9 @@ class Settings:
             keyword_families=_env_str_list(merged, "KEYWORD_FAMILIES"),
             linkedin_search_url=_env_str(
                 merged, "LINKEDIN_SEARCH_URL", DEFAULT_LINKEDIN_SEARCH_URL
+            ),
+            linkedin_robots_url=_env_str(
+                merged, "LINKEDIN_ROBOTS_URL", DEFAULT_LINKEDIN_ROBOTS_URL
             ),
             raw_max_bytes=_env_int(merged, "RAW_MAX_BYTES", 262_144),
             linkedin_detail_url=_env_str(

@@ -47,19 +47,21 @@ from urllib.parse import urlsplit
 from ..config import (
     HARD_MAX_ITEMS,
     Settings,
-    is_safe_to_store,
     validate_bounded_int,
 )
 from ..models import (
     ContentStatus,
     DetailFetchStatus,
     RawDocument,
-    RawDocumentKind,
     SearchRunStatus,
 )
 from ..normalize import content_hash, html_to_text, normalize_text
 from ..timeutil import parse_datetime, to_iso, utcnow_iso
-from ..url_policy import is_http_scheme, is_tecnoempleo_host
+from ..url_policy import (
+    is_http_scheme,
+    is_tecnoempleo_host,
+    sanitize_final_url as _shared_sanitize_final_url,
+)
 from .base import (
     TRUNCATION_HEADER,
     AccessDeniedError,
@@ -71,15 +73,13 @@ from .base import (
     NotFoundError,
     RateLimitedError,
     UrllibHttpClient,
+    fetch_robots,
     fetch_with_policy,
+    record_detail_response,
 )
 from .ratelimit import BackoffPolicy, RequestPacer
 from .robots import check_robots
-from .tecnoempleo import (
-    PROVIDER,
-    _fetch_robots,
-    extract_tecnoempleo_job_id,
-)
+from .tecnoempleo import PROVIDER, extract_tecnoempleo_job_id
 
 #: Class/``itemprop`` markers that positively identify the description block in
 #: a Tecnoempleo offer page. Matching is token-based, so a lookalike such as
@@ -699,22 +699,14 @@ def parse_detail_fields(html_text: str) -> TecnoempleoDetailFields:
 
 
 def _sanitize_final_url(requested_url: str | None, response_url: str | None) -> str | None:
-    """Return the safe final URL of an allowed same-host redirect, else ``None``."""
-    requested = str(requested_url or "").strip()
-    candidate = str(response_url or "").strip()
-    if not candidate or candidate == requested:
-        return None
-    if not is_http_scheme(candidate):
-        return None
-    try:
-        parts = urlsplit(candidate)
-    except ValueError:
-        return None
-    if "@" in parts.netloc:
-        return None
-    if not is_tecnoempleo_host(parts.hostname or ""):
-        return None
-    return candidate
+    """Return the safe final URL of an allowed redirect, else ``None``.
+
+    Thin alias for the shared strict policy
+    :func:`jobscout.url_policy.sanitize_final_url`: HTTPS only (never a plaintext
+    downgrade), no embedded credentials, default HTTPS port, and a host allowed
+    relative to the requested URL.
+    """
+    return _shared_sanitize_final_url(requested_url, response_url)
 
 
 def _record_detail_response(
@@ -726,30 +718,16 @@ def _record_detail_response(
     item: TecnoempleoDetailItem,
     store_body: bool = True,
 ) -> None:
-    """Attach a size-bounded raw document for a response."""
-    if response is None:
-        return
-    body = response.body or ""
-    if store_body:
-        safe, reason = is_safe_to_store(body, max_bytes=max_bytes)
-    else:
-        safe, reason = False, "response exceeded the detail download limit"
-    document = RawDocument(
-        kind=RawDocumentKind.JOB_DETAIL,
+    """Attach a size-bounded raw document (shared implementation)."""
+    record_detail_response(
+        result,
+        response,
+        url,
         source=PROVIDER,
-        url=url,
-        status_code=response.status_code,
-        content_type=response.headers.get("content-type"),
-        sha256=hashlib.sha256(body.encode("utf-8", errors="replace")).hexdigest(),
-        byte_size=len(body.encode("utf-8", errors="replace")),
-        fetched_at=response.fetched_at,
-        stored_at=utcnow_iso(),
-        truncated=not safe,
-        notes=None if safe else f"body not stored: {reason}",
-        body=body if safe else None,
+        max_bytes=max_bytes,
+        item=item,
+        store_body=store_body,
     )
-    item.raw_document_index = len(result.raw_documents)
-    result.raw_documents.append(document)
 
 
 def fetch_tecnoempleo_details(
@@ -816,9 +794,9 @@ def fetch_tecnoempleo_details(
     robots_note = "robots.txt supplied by caller; not fetched"
     if planned:
         if robots_text is None:
-            ok, fetched_robots, robots_note = _fetch_robots(
+            ok, fetched_robots, robots_note = fetch_robots(
+                transport,
                 settings.tecnoempleo_robots_url,
-                transport=transport,
                 policy=policy,
                 pacer=pacer,
                 sleep=sleep,

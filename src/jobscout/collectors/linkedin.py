@@ -59,9 +59,11 @@ from .base import (
     HttpResponse,
     RateLimitedError,
     UrllibHttpClient,
+    fetch_robots,
     fetch_with_policy,
 )
 from .ratelimit import BackoffPolicy, RequestPacer
+from .robots import check_robots
 
 DEFAULT_PAGE_SIZE = 25
 DEFAULT_BASE_URL = "https://www.linkedin.com"
@@ -375,12 +377,15 @@ def search_linkedin(
     client: HttpClient | None = None,
     sleep: Callable[[float], None] | None = None,
     on_attempt: Callable[[Any], None] | None = None,
+    robots_text: str | None = None,
 ) -> CollectorResult:
     """Collect one bounded search result set.
 
     Without ``network_enabled=True`` this raises
     :class:`CollectorDisabledError`; with ``dry_run=True`` it returns the planned
-    URLs and performs no I/O at all.
+    URLs and performs no I/O at all. ``robots_text`` may be injected so offline
+    tests skip the robots request; a live run fetches and enforces
+    ``robots.txt`` before the first search request.
 
     Live reads are bounded by ``Settings.raw_max_bytes`` at the transport, so a
     page larger than the configured raw ceiling is never buffered whole in
@@ -428,6 +433,31 @@ def search_linkedin(
 
     result = CollectorResult(planned_urls=planned)
     seen_fingerprints: set[str] = set()
+
+    if robots_text is None:
+        ok, fetched_robots, robots_note = fetch_robots(
+            transport,
+            settings.linkedin_robots_url,
+            policy=policy,
+            pacer=pacer,
+            sleep=sleep,
+        )
+        if not ok:
+            result.status = SearchRunStatus.FAILED_CLOSED
+            result.error = robots_note
+            result.notes = "could not establish robots.txt permission; run aborted"
+            return result
+        robots_text = fetched_robots
+
+    for url in planned:
+        allowed, reason = check_robots(
+            robots_text, url, user_agent=settings.user_agent
+        )
+        if not allowed:
+            result.status = SearchRunStatus.FAILED_CLOSED
+            result.error = f"refusing disallowed path for {url}: {reason}"
+            result.notes = "robots.txt disallows the search path; run aborted"
+            return result
 
     for page_index, url in enumerate(planned):
         # The pacer enforces the minimum delay between outbound requests; its

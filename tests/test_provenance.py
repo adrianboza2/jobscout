@@ -46,6 +46,7 @@ from jobscout.pipeline import ingest_collector_result, ingest_fixture
 
 DRIFT_FIXTURE = FIXTURES / "linkedin_search_page_drift.html"
 NOW = "2026-09-15T12:00:00Z"
+ROBOTS_ALLOW = "User-agent: *\nAllow: /\n"
 
 
 def _posting(source: str, job_id: str, title: str, company: str) -> JobPosting:
@@ -105,7 +106,7 @@ def test_ingest_collector_result_accepts_an_explicit_provider(conn, settings) ->
     )
     config = LinkedInSearchConfig(keywords="cloud", max_pages=1, max_items=10)
     result = search_linkedin(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     outcome = ingest_collector_result(
         conn,
@@ -279,7 +280,7 @@ def test_linkedin_regression_provenance_and_rank(conn, settings) -> None:
     )
     config = LinkedInSearchConfig(keywords="cloud", max_pages=1, max_items=10)
     result = search_linkedin(
-        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+        config, settings=settings, network_enabled=True, robots_text=ROBOTS_ALLOW, client=client, sleep=lambda _: None
     )
     outcome = ingest_collector_result(
         conn, result, config=config, settings=settings, now=NOW

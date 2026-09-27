@@ -7,14 +7,16 @@ pure and therefore testable without any network access.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
-from typing import Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
-from ..models import JobPosting, RawDocument, SearchRunStatus
+from ..config import is_safe_to_store
+from ..models import JobPosting, RawDocument, RawDocumentKind, SearchRunStatus
 from ..normalize import html_to_text
 from ..timeutil import utcnow_iso
-from ..url_policy import is_http_scheme, redirect_allowed
+from ..url_policy import is_http_scheme, redirect_target_violation, response_url_violation
 from .ratelimit import (
     BackoffPolicy,
     FailureClass,
@@ -153,9 +155,10 @@ def build_redirect_handler():
 
     ``urllib`` follows redirects to any host by default, which would let a
     compromised or misconfigured endpoint bounce the collector to an unrelated
-    host. Only same-host redirects and, for LinkedIn, redirects within the same
-    ``linkedin.com`` parent domain are allowed; everything else raises
-    :class:`UnsafeUrlError`, which is never retried.
+    host or downgrade it to plaintext HTTP. Every hop is vetted by
+    :func:`jobscout.url_policy.redirect_target_violation`: HTTPS only, no
+    embedded credentials, default HTTPS port, and a host allowed relative to the
+    source. A violation raises :class:`UnsafeUrlError`, which is never retried.
     """
     import urllib.request
 
@@ -163,21 +166,90 @@ def build_redirect_handler():
         def redirect_request(
             self, req, fp, code, msg, headers, newurl
         ):  # noqa: ANN001 - urllib signature
-            source = urlsplit(req.full_url).hostname or ""
-            target_parts = urlsplit(newurl)
-            target = target_parts.hostname or ""
-            if target_parts.scheme.lower() not in ("http", "https"):
-                raise UnsafeUrlError(
-                    "refusing redirect to a non-HTTP scheme "
-                    f"{target_parts.scheme or 'none'!r} for {newurl!r}"
-                )
-            if not redirect_allowed(source, target):
-                raise UnsafeUrlError(
-                    f"refusing cross-host redirect from {source!r} to {target!r}"
-                )
+            reason = redirect_target_violation(req.full_url, newurl)
+            if reason:
+                raise UnsafeUrlError(f"refusing unsafe redirect to {newurl!r}: {reason}")
             return super().redirect_request(req, fp, code, msg, headers, newurl)
 
     return _Handler()
+
+
+def fetch_robots(
+    transport: HttpClient,
+    robots_url: str,
+    *,
+    policy: BackoffPolicy,
+    pacer: RequestPacer | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> tuple[bool, str, str]:
+    """Fetch ``robots.txt`` and return ``(ok, text, note)``.
+
+    A definitive 404 means the site publishes no policy, which is treated as
+    "no restrictions". Every other failure returns ``ok=False`` so callers fail
+    closed instead of assuming permission. Shared by every collector that gates
+    a live run on ``robots.txt``.
+    """
+    try:
+        response = fetch_with_policy(
+            transport, robots_url, policy=policy, pacer=pacer, sleep=sleep
+        )
+    except NotFoundError:
+        return True, "", "robots.txt not found; treating as allow-all"
+    except (AccessDeniedError, RateLimitedError) as exc:
+        return False, "", f"robots.txt refused access: {exc}"
+    except CollectorError as exc:
+        return False, "", f"robots.txt could not be read: {exc}"
+    return True, response.body or "", "robots.txt read"
+
+
+def record_detail_response(
+    result: Any,
+    response: "HttpResponse | None",
+    url: str,
+    *,
+    source: str,
+    max_bytes: int,
+    item: Any,
+    store_body: bool = True,
+) -> None:
+    """Attach a size-bounded ``job_detail`` raw document and link it to ``item``.
+
+    The single implementation shared by every detail adapter. It hashes exactly
+    the body it persists, keeps the response status/content-type/fetched-at, and
+    stamps ``stored_at`` now. ``store_body=False`` records provenance metadata
+    only, so an already-oversized body is never persisted. ``item`` must expose a
+    mutable ``raw_document_index``; it is set to the index of the appended
+    document so the ingest pipeline can resolve the exact raw row.
+    """
+    if response is None:
+        return
+    body = response.body or ""
+    encoded = body.encode("utf-8", errors="replace")
+    if not store_body:
+        safe, reason = False, "response exceeded the detail download limit"
+    elif len(encoded) > max_bytes:
+        # Name the size ceiling explicitly so the provenance note keeps the
+        # established "download limit" phrasing instead of only the generic
+        # ``is_safe_to_store`` size reason.
+        safe, reason = False, f"payload exceeds the {max_bytes}-byte download limit"
+    else:
+        safe, reason = is_safe_to_store(body, max_bytes=max_bytes)
+    document = RawDocument(
+        kind=RawDocumentKind.JOB_DETAIL,
+        source=source,
+        url=url,
+        status_code=response.status_code,
+        content_type=response.headers.get("content-type"),
+        sha256=hashlib.sha256(body.encode("utf-8", errors="replace")).hexdigest(),
+        byte_size=len(body.encode("utf-8", errors="replace")),
+        fetched_at=response.fetched_at,
+        stored_at=utcnow_iso(),
+        truncated=not safe,
+        notes=None if safe else f"body not stored: {reason}",
+        body=body if safe else None,
+    )
+    item.raw_document_index = len(result.raw_documents)
+    result.raw_documents.append(document)
 
 
 class UrllibHttpClient:
@@ -267,9 +339,16 @@ class UrllibHttpClient:
         try:
             with opener.open(request, timeout=self.timeout) as response:  # type: ignore[attr-defined]
                 final_url = response.geturl()
-                if not is_http_scheme(final_url):
+                # Validate the URL the response actually came from, not just the
+                # redirect-handler hops: an injected opener can return any URL,
+                # and a handler is not guaranteed to be in the chain. The policy
+                # is the same one a hop gets — HTTPS only, no credentials, a host
+                # allowed relative to the request, and the request's own HTTPS
+                # port (default for every provider endpoint).
+                reason = response_url_violation(url, final_url)
+                if reason:
                     raise UnsafeUrlError(
-                        f"refusing non-HTTP response URL {final_url!r}"
+                        f"refusing unsafe response URL {final_url!r}: {reason}"
                     )
                 raw, truncated = self._bounded_read(response)
                 response_headers = {k.lower(): v for k, v in response.headers.items()}
@@ -424,6 +503,8 @@ __all__ = [
     "UnsafeUrlError",
     "UrllibHttpClient",
     "build_redirect_handler",
+    "fetch_robots",
     "fetch_with_policy",
     "html_to_text",
+    "record_detail_response",
 ]

@@ -22,7 +22,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from .dedupe import DedupeDecision, decide_duplicate
 from .models import (
@@ -34,6 +34,7 @@ from .models import (
     JobDetailFetch,
     JobFeedback,
     JobPosting,
+    JobVariant,
     ProfileEvidence,
     ProfileSnapshot,
     RawDocument,
@@ -47,7 +48,7 @@ from .models import (
 )
 from .timeutil import utcnow_iso
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS search_runs (
@@ -116,6 +117,36 @@ CREATE TABLE IF NOT EXISTS jobs (
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_dedupe_key ON jobs(dedupe_key);
 CREATE INDEX IF NOT EXISTS idx_jobs_last_seen ON jobs(last_seen_at);
+
+-- Per-provider identity for a canonical (deduplicated) job. The ``jobs`` row is
+-- the cross-provider parent; each variant keeps one provider's external id, its
+-- own listing URL, and its own availability/detail state so a second provider
+-- observing the same role never overwrites the first provider's identity.
+CREATE TABLE IF NOT EXISTS job_variants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    source TEXT NOT NULL DEFAULT '',
+    source_job_id TEXT,
+    url TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    content_status TEXT NOT NULL DEFAULT 'unknown',
+    content_hash TEXT NOT NULL DEFAULT '',
+    detail_status TEXT,
+    detail_fetched_at TEXT,
+    description_chars INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    review_state TEXT NOT NULL DEFAULT 'resolved',
+    raw_document_id INTEGER REFERENCES raw_documents(id) ON DELETE SET NULL,
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_job_variants_job ON job_variants(job_id);
+CREATE INDEX IF NOT EXISTS idx_job_variants_source ON job_variants(source, is_active);
+-- Provider rows are unique per external id; NULL ids are allowed (a needs_review
+-- variant may have no id) and are looked up by URL instead.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_job_variants_provider_id
+    ON job_variants(job_id, source, source_job_id)
+    WHERE source_job_id IS NOT NULL AND source_job_id <> '';
 
 CREATE TABLE IF NOT EXISTS search_run_items (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,6 +230,7 @@ CREATE TABLE IF NOT EXISTS job_detail_fetches (
     fetched_at TEXT,
     stored_at TEXT NOT NULL,
     raw_document_id INTEGER REFERENCES raw_documents(id) ON DELETE SET NULL,
+    variant_id INTEGER REFERENCES job_variants(id) ON DELETE SET NULL,
     error TEXT,
     notes TEXT
 );
@@ -319,8 +351,74 @@ def _migrate_v5_add_cycle_and_position(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE search_run_items ADD COLUMN position_kind TEXT")
 
 
+def _migrate_v6_add_job_variants(conn: sqlite3.Connection) -> None:
+    """Add the provider-variant layer without touching canonical job identity.
+
+    Two additive steps, both inside the caller's transaction:
+
+    * ``job_detail_fetches.variant_id`` (nullable FK) so new provenance can name
+      the variant it belongs to; historical rows keep ``NULL``.
+    * Exactly one ``job_variants`` row per existing job, built only from that
+      job's own persisted evidence. When the provider id *and* the listing URL
+      are both missing, or the source is empty, the variant is written with
+      ``review_state = 'needs_review'`` instead of a guessed identity. No
+      cross-provider link is ever invented: the variant's parent is the job it
+      was already stored as.
+    """
+    if "variant_id" not in _table_columns(conn, "job_detail_fetches"):
+        conn.execute(
+            "ALTER TABLE job_detail_fetches ADD COLUMN variant_id INTEGER "
+            "REFERENCES job_variants(id) ON DELETE SET NULL"
+        )
+
+    rows = conn.execute(
+        """
+        SELECT j.* FROM jobs j
+        WHERE NOT EXISTS (SELECT 1 FROM job_variants v WHERE v.job_id = j.id)
+        ORDER BY j.id
+        """
+    ).fetchall()
+    for row in rows:
+        source = str(row["source"] or "").strip()
+        source_job_id = str(row["source_job_id"] or "").strip() or None
+        url = str(row["url"] or "").strip() or None
+        if not source:
+            review_state = "needs_review"
+            notes = "legacy backfill: provider source missing; identity unresolved"
+        elif not source_job_id and not url:
+            review_state = "needs_review"
+            notes = "legacy backfill: no provider id or listing URL; identity unresolved"
+        else:
+            review_state = "resolved"
+            notes = "legacy backfill from the canonical job row"
+        conn.execute(
+            """
+            INSERT INTO job_variants (
+                job_id, source, source_job_id, url, first_seen_at, last_seen_at,
+                content_status, content_hash, description_chars, is_active,
+                review_state, raw_document_id, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(row["id"]),
+                source,
+                source_job_id,
+                url,
+                row["first_seen_at"],
+                row["last_seen_at"],
+                row["content_status"],
+                row["content_hash"],
+                len(str(row["description"] or "")),
+                int(row["is_active"]),
+                review_state,
+                row["raw_document_id"],
+                notes,
+            ),
+        )
+
+
 def _apply_migrations(conn: sqlite3.Connection, current: int) -> None:
-    """Upgrade an existing database in place from ``current`` to v5.
+    """Upgrade an existing database in place from ``current`` to v6.
 
     ``SCHEMA_SQL`` only uses ``CREATE TABLE IF NOT EXISTS``, so it can create a
     brand-new database with the current shape but can never add a column to a
@@ -331,6 +429,8 @@ def _apply_migrations(conn: sqlite3.Connection, current: int) -> None:
         _migrate_v4_add_final_url(conn)
     if current < 5:
         _migrate_v5_add_cycle_and_position(conn)
+    if current < 6:
+        _migrate_v6_add_job_variants(conn)
 
 
 def init_db(conn: sqlite3.Connection) -> int:
@@ -456,7 +556,29 @@ def _row_to_detail_fetch(row: sqlite3.Row) -> JobDetailFetch:
         fetched_at=row["fetched_at"],
         stored_at=row["stored_at"],
         raw_document_id=row["raw_document_id"],
+        variant_id=row["variant_id"],
         error=row["error"],
+        notes=row["notes"],
+    )
+
+
+def _row_to_variant(row: sqlite3.Row) -> JobVariant:
+    return JobVariant(
+        id=row["id"],
+        job_id=row["job_id"],
+        source=row["source"],
+        source_job_id=row["source_job_id"],
+        url=row["url"],
+        first_seen_at=row["first_seen_at"],
+        last_seen_at=row["last_seen_at"],
+        content_status=ContentStatus(row["content_status"]),
+        content_hash=row["content_hash"],
+        detail_status=row["detail_status"],
+        detail_fetched_at=row["detail_fetched_at"],
+        description_chars=row["description_chars"],
+        is_active=bool(row["is_active"]),
+        review_state=row["review_state"],
+        raw_document_id=row["raw_document_id"],
         notes=row["notes"],
     )
 
@@ -670,6 +792,294 @@ def find_duplicate(conn: sqlite3.Connection, posting: JobPosting) -> DedupeDecis
     return decide_duplicate(posting, fingerprints, dedupe_keys)
 
 
+def _variant_review_state(
+    source: str, source_job_id: str | None, url: str | None
+) -> tuple[str, str | None]:
+    """Classify a provider identity as resolved or needing review.
+
+    Ambiguity is never resolved by guessing: a missing provider or a missing
+    provider id *and* URL yields ``needs_review`` so a human can revisit it.
+    """
+    if not source:
+        return "needs_review", "provider source missing; identity unresolved"
+    if not source_job_id and not url:
+        return "needs_review", "no provider id or listing URL; identity unresolved"
+    return "resolved", None
+
+
+def resolve_variant_id(
+    conn: sqlite3.Connection,
+    *,
+    job_id: int,
+    source: str,
+    source_job_id: str | None = None,
+    url: str | None = None,
+) -> int | None:
+    """Find the variant for a provider identity, preferring the external id.
+
+    Lookup order: exact ``(job_id, source, source_job_id)``, then
+    ``(job_id, source, url)``, then a provider row that itself carries no
+    identity. Returns ``None`` when no variant matches; it never falls back to a
+    different provider.
+    """
+    normalized_source = str(source or "").strip()
+    normalized_id = str(source_job_id or "").strip() or None
+    normalized_url = str(url or "").strip() or None
+    if not normalized_source:
+        return None
+    if normalized_id:
+        row = conn.execute(
+            "SELECT id FROM job_variants WHERE job_id = ? AND source = ? AND source_job_id = ?",
+            (int(job_id), normalized_source, normalized_id),
+        ).fetchone()
+        if row is not None:
+            return int(row["id"])
+    if normalized_url:
+        row = conn.execute(
+            "SELECT id FROM job_variants WHERE job_id = ? AND source = ? AND url = ?",
+            (int(job_id), normalized_source, normalized_url),
+        ).fetchone()
+        if row is not None:
+            return int(row["id"])
+    if not normalized_id and not normalized_url:
+        row = conn.execute(
+            """
+            SELECT id FROM job_variants
+            WHERE job_id = ? AND source = ?
+              AND (source_job_id IS NULL OR source_job_id = '')
+              AND (url IS NULL OR url = '')
+            ORDER BY id LIMIT 1
+            """,
+            (int(job_id), normalized_source),
+        ).fetchone()
+        if row is not None:
+            return int(row["id"])
+        # A detail item can lose its identity (for example a skipped target whose
+        # URL did not resolve). Bind it to the provider's lone variant rather than
+        # inventing a second one; multiple variants stay ambiguous and return None.
+        rows = conn.execute(
+            "SELECT id FROM job_variants WHERE job_id = ? AND source = ? ORDER BY id",
+            (int(job_id), normalized_source),
+        ).fetchall()
+        if len(rows) == 1:
+            return int(rows[0]["id"])
+    return None
+
+
+def ensure_job_variant(
+    conn: sqlite3.Connection,
+    job_id: int,
+    *,
+    source: str,
+    source_job_id: str | None = None,
+    url: str | None = None,
+    timestamp: str,
+    raw_document_id: int | None = None,
+    content_status: ContentStatus | str = ContentStatus.UNKNOWN,
+    content_hash: str = "",
+    description_chars: int = 0,
+) -> int:
+    """Find or create one provider variant from explicit identity fields.
+
+    A second provider observing the same canonical role adds/refreshes its own
+    variant; the canonical ``jobs`` row and the first provider's identity are
+    never overwritten. Existing variant content is only upgraded to ``ok``,
+    never downgraded, by a later search card.
+    """
+    normalized_source = str(source or "").strip()
+    normalized_id = str(source_job_id or "").strip() or None
+    normalized_url = str(url or "").strip() or None
+    normalized_status = str(content_status)
+    variant_id = resolve_variant_id(
+        conn,
+        job_id=int(job_id),
+        source=normalized_source,
+        source_job_id=normalized_id,
+        url=normalized_url,
+    )
+    if variant_id is not None:
+        with conn:
+            conn.execute(
+                """
+                UPDATE job_variants
+                SET last_seen_at = ?, is_active = 1,
+                    url = COALESCE(url, ?), source_job_id = COALESCE(source_job_id, ?),
+                    content_status = CASE WHEN ? = 'ok' THEN ? ELSE content_status END,
+                    content_hash = CASE WHEN ? = 'ok' THEN ? ELSE content_hash END,
+                    description_chars = CASE WHEN ? = 'ok' THEN ? ELSE description_chars END,
+                    raw_document_id = COALESCE(?, raw_document_id)
+                WHERE id = ?
+                """,
+                (
+                    timestamp,
+                    normalized_url,
+                    normalized_id,
+                    normalized_status,
+                    normalized_status,
+                    normalized_status,
+                    content_hash,
+                    normalized_status,
+                    int(description_chars),
+                    raw_document_id,
+                    variant_id,
+                ),
+            )
+        return variant_id
+
+    review_state, notes = _variant_review_state(
+        normalized_source, normalized_id, normalized_url
+    )
+    with conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO job_variants (
+                job_id, source, source_job_id, url, first_seen_at, last_seen_at,
+                content_status, content_hash, description_chars, is_active,
+                review_state, raw_document_id, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            """,
+            (
+                int(job_id),
+                normalized_source,
+                normalized_id,
+                normalized_url,
+                timestamp,
+                timestamp,
+                normalized_status,
+                content_hash,
+                int(description_chars),
+                review_state,
+                raw_document_id,
+                notes,
+            ),
+        )
+    return int(cursor.lastrowid)
+
+
+def upsert_job_variant(
+    conn: sqlite3.Connection,
+    job_id: int,
+    posting: JobPosting,
+    *,
+    timestamp: str,
+    raw_document_id: int | None = None,
+) -> int:
+    """Record this posting's provider identity under its canonical job."""
+    return ensure_job_variant(
+        conn,
+        job_id,
+        source=str(getattr(posting, "source", "") or ""),
+        source_job_id=getattr(posting, "source_job_id", None),
+        url=getattr(posting, "url", None),
+        timestamp=timestamp,
+        raw_document_id=raw_document_id,
+        content_status=getattr(posting, "content_status", ContentStatus.UNKNOWN),
+        content_hash=str(getattr(posting, "content_hash", "") or ""),
+        description_chars=len(getattr(posting, "description", "") or ""),
+    )
+
+
+def get_job_variant(
+    conn: sqlite3.Connection, variant_id: int
+) -> JobVariant | None:
+    row = conn.execute(
+        "SELECT * FROM job_variants WHERE id = ?", (int(variant_id),)
+    ).fetchone()
+    return _row_to_variant(row) if row else None
+
+
+def job_variants_for_job(
+    conn: sqlite3.Connection, job_id: int
+) -> list[JobVariant]:
+    rows = conn.execute(
+        "SELECT * FROM job_variants WHERE job_id = ? ORDER BY id",
+        (int(job_id),),
+    ).fetchall()
+    return [_row_to_variant(row) for row in rows]
+
+
+def update_job_variant_detail(
+    conn: sqlite3.Connection,
+    variant_id: int,
+    *,
+    status: str,
+    content_status: ContentStatus | str | None = None,
+    content_hash: str | None = None,
+    description_chars: int | None = None,
+    fetched_at: str | None = None,
+    last_seen_at: str | None = None,
+) -> None:
+    """Record one detail-fetch outcome on a variant.
+
+    ``content_status`` is only written when the caller has richer evidence
+    (``ok``/``partial``); a failed attempt records ``detail_status`` alone so it
+    cannot downgrade a previously enriched variant.
+    """
+    assignments = ["detail_status = ?"]
+    params: list[Any] = [str(status)]
+    if fetched_at is not None:
+        assignments.append("detail_fetched_at = COALESCE(?, detail_fetched_at)")
+        params.append(fetched_at)
+    if content_status is not None:
+        assignments.append("content_status = ?")
+        params.append(str(content_status))
+    if content_hash:
+        assignments.append("content_hash = ?")
+        params.append(content_hash)
+    if description_chars is not None:
+        assignments.append("description_chars = ?")
+        params.append(int(description_chars))
+    if last_seen_at:
+        assignments.append("last_seen_at = ?")
+        params.append(last_seen_at)
+    params.append(int(variant_id))
+    with conn:
+        conn.execute(
+            f"UPDATE job_variants SET {', '.join(assignments)} WHERE id = ?",
+            params,
+        )
+
+
+def deactivate_job_variant(conn: sqlite3.Connection, variant_id: int) -> bool:
+    """Mark one provider variant inactive, never deleting its history."""
+    with conn:
+        cursor = conn.execute(
+            "UPDATE job_variants SET is_active = 0 WHERE id = ? AND is_active = 1",
+            (int(variant_id),),
+        )
+    return cursor.rowcount > 0
+
+
+def _sync_job_active(conn: sqlite3.Connection, job_id: int) -> bool:
+    """Keep a canonical job active while at least one provider variant is.
+
+    A job with no variant rows (should not happen after the v6 backfill, but
+    possible for a hand-built database) is left untouched rather than guessed.
+    Returns ``True`` only when the canonical status actually changed.
+    """
+    row = conn.execute(
+        "SELECT COUNT(*) AS total, "
+        "SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active "
+        "FROM job_variants WHERE job_id = ?",
+        (int(job_id),),
+    ).fetchone()
+    total = int(row["total"] or 0)
+    if total == 0:
+        return False
+    want = 1 if int(row["active"] or 0) > 0 else 0
+    with conn:
+        cursor = conn.execute(
+            "UPDATE jobs SET is_active = ? WHERE id = ? AND is_active != ?",
+            (want, int(job_id), want),
+        )
+    return cursor.rowcount > 0
+
+
+def sync_job_active(conn: sqlite3.Connection, job_id: int) -> bool:
+    """Public wrapper around the canonical-status reconciliation."""
+    return _sync_job_active(conn, job_id)
+
+
 def store_posting(
     conn: sqlite3.Connection,
     posting: JobPosting,
@@ -726,6 +1136,13 @@ def store_posting(
                 ),
             )
         job.id = int(cursor.lastrowid)
+        upsert_job_variant(
+            conn,
+            job.id,
+            posting,
+            timestamp=timestamp,
+            raw_document_id=posting.raw_document_id,
+        )
         return job, decision
 
     existing_id = int(decision.existing_job_id or 0)
@@ -758,6 +1175,16 @@ def store_posting(
             ),
         )
     refreshed = get_job(conn, existing_id)
+    # Record this provider's own identity even when the canonical row was first
+    # seen from another provider: the new variant is what makes the second
+    # provider selectable and enrichable.
+    upsert_job_variant(
+        conn,
+        existing_id,
+        posting,
+        timestamp=timestamp,
+        raw_document_id=posting.raw_document_id,
+    )
     return (refreshed or job), decision
 
 
@@ -871,22 +1298,63 @@ def jobs_needing_evaluation(
     *,
     scorer: ScorerName | str,
     limit: int | None = None,
+    fingerprint_for: Callable[[Job], str] | None = None,
 ) -> list[Job]:
-    """Jobs with no successful evaluation from ``scorer`` yet."""
-    sql = """
-        SELECT j.* FROM jobs j
-        WHERE j.is_active = 1
-          AND NOT EXISTS (
-              SELECT 1 FROM evaluations e
-              WHERE e.job_id = j.id AND e.scorer = ? AND e.status = 'ok'
-          )
-        ORDER BY j.last_seen_at DESC, j.id DESC
+    """Active jobs whose current scoring input has no successful evaluation.
+
+    With ``fingerprint_for`` the selection is **input-aware**: a job is returned
+    when no successful (``status = 'ok'``) evaluation from ``scorer`` carries the
+    job's *current* effective-input fingerprint. That keeps a changed profile,
+    model, prompt/policy, or rewritten description from being masked by an older
+    success — the older row simply stops matching. Historical rows with an empty
+    fingerprint also stop matching, so unknown provenance is re-evaluated rather
+    than trusted. ``--rescore`` intentionally bypasses this function.
+
+    Without ``fingerprint_for`` the legacy behaviour is preserved: a job is
+    returned when it has no successful evaluation from ``scorer`` at all.
     """
-    params: list[Any] = [str(scorer)]
-    if limit is not None:
-        sql += " LIMIT ?"
-        params.append(int(limit))
-    return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
+    if limit is not None and int(limit) <= 0:
+        return []
+    if fingerprint_for is None:
+        sql = """
+            SELECT j.* FROM jobs j
+            WHERE j.is_active = 1
+              AND NOT EXISTS (
+                  SELECT 1 FROM evaluations e
+                  WHERE e.job_id = j.id AND e.scorer = ? AND e.status = 'ok'
+              )
+            ORDER BY j.last_seen_at DESC, j.id DESC
+        """
+        params: list[Any] = [str(scorer)]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(int(limit))
+        return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
+
+    candidates = [
+        _row_to_job(row)
+        for row in conn.execute(
+            "SELECT j.* FROM jobs j WHERE j.is_active = 1 "
+            "ORDER BY j.last_seen_at DESC, j.id DESC"
+        ).fetchall()
+    ]
+    successful: dict[int, set[str]] = {}
+    for row in conn.execute(
+        "SELECT job_id, input_fingerprint FROM evaluations "
+        "WHERE scorer = ? AND status = 'ok'",
+        (str(scorer),),
+    ).fetchall():
+        successful.setdefault(int(row["job_id"]), set()).add(row["input_fingerprint"] or "")
+
+    selected: list[Job] = []
+    for job in candidates:
+        expected = fingerprint_for(job)
+        if expected in successful.get(int(job.id or 0), set()):
+            continue
+        selected.append(job)
+        if limit is not None and len(selected) >= int(limit):
+            break
+    return selected
 
 
 def all_active_jobs(
@@ -978,6 +1446,145 @@ def jobs_needing_details(
         sql += " LIMIT ?"
         params.append(int(limit))
     return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# Provider-variant detail selection
+# ---------------------------------------------------------------------------
+#
+# The fetchers need the chosen *variant's* provider id and listing URL, not the
+# canonical ``jobs`` row's first-seen identity. These readers return canonical
+# ``Job`` objects whose ``source``/``source_job_id``/``url`` are replaced with
+# the selected variant's values, so the existing provider plan functions resolve
+# the correct URL without a second identity model.
+
+_VARIANT_SELECT_COLUMNS = """
+    j.*,
+    v.source AS variant_source,
+    v.source_job_id AS variant_source_job_id,
+    v.url AS variant_url,
+    v.id AS variant_id
+"""
+
+
+def _jobs_with_variant_identity(rows: Sequence[sqlite3.Row]) -> list[Job]:
+    jobs: list[Job] = []
+    for row in rows:
+        job = _row_to_job(row)
+        jobs.append(
+            replace(
+                job,
+                source=row["variant_source"],
+                source_job_id=row["variant_source_job_id"],
+                url=row["variant_url"],
+            )
+        )
+    return jobs
+
+
+def variants_needing_details(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    limit: int | None = None,
+    job_ids: Sequence[int] | None = None,
+) -> list[Job]:
+    """Active variants for ``source`` whose own detail is still incomplete.
+
+    Variant-scoped on purpose: a second provider's variant is enriched even when
+    the canonical job was already enriched from another provider.
+    """
+    clauses = [
+        "j.is_active = 1",
+        "v.is_active = 1",
+        "v.source = ?",
+        "(v.content_status != 'ok' OR v.description_chars <= 0)",
+    ]
+    params: list[Any] = [str(source)]
+    if job_ids:
+        placeholders = ",".join("?" for _ in job_ids)
+        clauses.append(f"v.job_id IN ({placeholders})")
+        params.extend(int(job_id) for job_id in job_ids)
+    sql = (
+        "SELECT "
+        + _VARIANT_SELECT_COLUMNS
+        + " FROM job_variants v JOIN jobs j ON j.id = v.job_id WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY v.last_seen_at DESC, v.id DESC"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return _jobs_with_variant_identity(conn.execute(sql, params).fetchall())
+
+
+def active_variants(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    limit: int | None = None,
+    job_ids: Sequence[int] | None = None,
+) -> list[Job]:
+    """Every active variant for ``source``, regardless of detail status."""
+    clauses = ["j.is_active = 1", "v.is_active = 1", "v.source = ?"]
+    params: list[Any] = [str(source)]
+    if job_ids:
+        placeholders = ",".join("?" for _ in job_ids)
+        clauses.append(f"v.job_id IN ({placeholders})")
+        params.extend(int(job_id) for job_id in job_ids)
+    sql = (
+        "SELECT "
+        + _VARIANT_SELECT_COLUMNS
+        + " FROM job_variants v JOIN jobs j ON j.id = v.job_id WHERE "
+        + " AND ".join(clauses)
+        # Ascending canonical job id preserves the historical `--all` order of
+        # `all_active_jobs`, so a bounded run processes offers deterministically
+        # and a later fail-closed refusal cannot pre-empt an earlier success.
+        + " ORDER BY j.id ASC, v.id ASC"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return _jobs_with_variant_identity(conn.execute(sql, params).fetchall())
+
+
+def variant_job_for_source(
+    conn: sqlite3.Connection, job_id: int, source: str
+) -> Job | None:
+    """The ``source`` variant of one job, for the explicit ``--job-id`` route.
+
+    Unlike the bulk selectors this ignores ``is_active`` so an explicit request
+    keeps the historical ability to target a deactivated offer.
+    """
+    row = conn.execute(
+        "SELECT "
+        + _VARIANT_SELECT_COLUMNS
+        + " FROM job_variants v JOIN jobs j ON j.id = v.job_id "
+        "WHERE v.job_id = ? AND v.source = ? ORDER BY v.id LIMIT 1",
+        (int(job_id), str(source)),
+    ).fetchone()
+    return _jobs_with_variant_identity([row])[0] if row is not None else None
+
+
+def count_active_variants(conn: sqlite3.Connection, *, source: str) -> int:
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM job_variants v JOIN jobs j ON j.id = v.job_id "
+            "WHERE j.is_active = 1 AND v.is_active = 1 AND v.source = ?",
+            (str(source),),
+        ).fetchone()[0]
+    )
+
+
+def count_variants_needing_details(conn: sqlite3.Connection, *, source: str) -> int:
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM job_variants v JOIN jobs j ON j.id = v.job_id "
+            "WHERE j.is_active = 1 AND v.is_active = 1 AND v.source = ? "
+            "AND (v.content_status != 'ok' OR v.description_chars <= 0)",
+            (str(source),),
+        ).fetchone()[0]
+    )
 
 
 #: Joins a job to its single most recent detail-fetch attempt (highest id,
@@ -1086,6 +1693,59 @@ def jobs_needing_refresh(
     return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
 
 
+def variants_needing_refresh(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    cutoff: str,
+    limit: int | None = None,
+    job_ids: Sequence[int] | None = None,
+) -> list[Job]:
+    """Active variants for ``source`` whose latest fetch evidence is stale.
+
+    Reuses the job-level refresh predicate but scopes it to an active variant of
+    the requested provider, and returns the variant's own identity so the
+    fetcher rebuilds the correct URL.
+    """
+    clauses = ["j.is_active = 1", "v.is_active = 1", _jobs_needing_refresh_predicate()]
+    params: list[Any] = [str(source), cutoff]
+    if job_ids:
+        placeholders = ",".join("?" for _ in job_ids)
+        clauses.append(f"j.id IN ({placeholders})")
+        params.extend(int(job_id) for job_id in job_ids)
+    sql = (
+        "SELECT "
+        + _VARIANT_SELECT_COLUMNS
+        + " FROM jobs j "
+        + _LATEST_DETAIL_FETCH_JOIN
+        + " JOIN job_variants v ON v.job_id = j.id AND v.source = ?"
+        " WHERE "
+        + " AND ".join(clauses)
+        + " ORDER BY COALESCE(f.fetched_at, f.stored_at) ASC, j.id ASC"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return _jobs_with_variant_identity(conn.execute(sql, params).fetchall())
+
+
+def count_variants_needing_refresh(
+    conn: sqlite3.Connection, *, source: str, cutoff: str
+) -> int:
+    clauses = ["j.is_active = 1", "v.is_active = 1", _jobs_needing_refresh_predicate()]
+    params: list[Any] = [str(source), cutoff]
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM jobs j "
+            + _LATEST_DETAIL_FETCH_JOIN
+            + " JOIN job_variants v ON v.job_id = j.id AND v.source = ?"
+            " WHERE "
+            + " AND ".join(clauses),
+            params,
+        ).fetchone()[0]
+    )
+
+
 def update_job_content(
     conn: sqlite3.Connection,
     job_id: int,
@@ -1185,8 +1845,8 @@ def insert_detail_fetch(
             INSERT INTO job_detail_fetches (
                 job_id, run_id, source, url, final_url, status, http_status,
                 content_status, description_chars, byte_size, sha256, content_hash,
-                fetched_at, stored_at, raw_document_id, error, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                fetched_at, stored_at, raw_document_id, variant_id, error, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(fetch.job_id),
@@ -1204,6 +1864,7 @@ def insert_detail_fetch(
                 fetch.fetched_at,
                 stored_at,
                 fetch.raw_document_id,
+                fetch.variant_id,
                 fetch.error,
                 fetch.notes,
             ),

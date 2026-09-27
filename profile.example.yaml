@@ -35,7 +35,12 @@ languages:
   - name: English
     level: advanced
 
-# Optional compensation floor. Only used when the posting states a number.
+# Optional compensation floor, compared only against a posting in the same
+# currency. `salary_currency` must be USD or EUR; `$` means USD. There is no FX
+# conversion: an ambiguous or missing currency stays unknown (neutral), a known
+# currency outside USD/EUR is hard-rejected, and a posting without an explicit
+# period is not compared. Only an explicitly annual amount is normalized to the
+# monthly floor (year / 12).
 min_salary: 4000
 salary_currency: USD
 
@@ -64,7 +69,9 @@ excluded_companies:
 
 require_all_must_have: false
 
-# Postings older than this lose recency points; `null` disables the check.
+# A known posting older than this scores the stale recency penalty; `null`
+# disables the limit (the graduated freshness tiers still apply). A posting with
+# no date is unknown and scored neutrally, never as stale.
 max_posting_age_days: 30
 
 # Dimension weights. Missing dimensions are omitted and the remaining weights

@@ -2,27 +2,59 @@
 
 Pure and offline-testable: :func:`RobotsRules.parse` takes the text a server
 returned and the collector applies the verdict before sending any request. The
-rules implemented are the ones that matter for a single, well-behaved client:
+rules implemented are the subset a single, well-behaved crawler needs:
 
-* ``User-agent`` groups, matched case-insensitively as a substring of our own
-  user agent. A specific matching group wins over the ``*`` group; when no
-  specific group matches, the ``*`` group applies.
-* ``Allow``/``Disallow`` prefixes. The longest matching path wins and ``Allow``
-  wins ties, which is the behaviour crawlers are expected to implement.
-* An empty ``Disallow:`` (or ``Allow: /``) means "nothing is disallowed".
+* ``User-agent`` groups. The most specific group that matches our user agent
+  wins: an agent token matching as a case-insensitive substring beats ``*``, and
+  among matching tokens the longest one wins. Every group carrying the winning
+  token is combined, so the same crawler split across several ``User-agent``
+  blocks cannot silently lose rules. The ``*`` group applies only when no
+  specific token matches.
+* ``Allow``/``Disallow`` path patterns. ``*`` matches any character sequence and
+  a trailing ``$`` anchors the pattern to the end of the path (the standard
+  crawler extensions). The most specific matching rule wins and ``Allow`` wins
+  ties, which is the behaviour crawlers are expected to implement.
+* An empty ``Disallow:`` (or ``Allow:`` with no path) matches nothing, so it
+  does not disallow anything.
 
-Wildcards inside a rule are treated literally; that errs toward *denying* only
-when the literal path matches, so it never grants broader access than intended.
 An unparseable line is ignored rather than guessed.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 #: A single parsed rule: ``allow`` is True for an Allow line, False for Disallow.
 Rule = tuple[bool, str]
+
+
+def _pattern_matches(pattern: str, path: str) -> bool:
+    """Return whether a robots path pattern matches ``path``.
+
+    ``*`` matches any run of characters (including none, and including a run
+    that spans ``/``) and a trailing ``$`` anchors the match to the end of
+    ``path``. Without ``$`` the pattern is a prefix match. An empty pattern
+    never matches.
+
+    The pattern is compiled to a regular expression so any sequence of ``*``
+    backtracks correctly instead of greedily consuming the first occurrence of a
+    later literal chunk. For example ``/a*$`` matches ``/abc``, ``/*$`` matches
+    any path, and ``/a*b$`` matches ``/axbxb``.
+    """
+    if pattern == "":
+        return False
+    anchored = pattern.endswith("$")
+    core = pattern[:-1] if anchored else pattern
+    translated = ".*".join(re.escape(chunk) for chunk in core.split("*"))
+    expression = "^" + translated + ("$" if anchored else "")
+    return re.match(expression, path) is not None
+
+
+def _pattern_specificity(pattern: str) -> int:
+    """Return a pattern's specificity: its literal length, wildcards excluded."""
+    return len(pattern.replace("*", "").replace("$", ""))
 
 
 @dataclass(frozen=True)
@@ -73,19 +105,40 @@ class RobotsRules:
         return cls(tuple(normalized))
 
     def _rules_for(self, user_agent: str) -> tuple[Rule, ...]:
+        """Return the rules that apply to ``user_agent``.
+
+        Specific groups win over the wildcard group, and the longest matching
+        agent token wins among them. Groups sharing that token are combined in
+        file order; the wildcard group is used only when nothing specific
+        matches.
+        """
         ua = (user_agent or "").lower()
-        wildcard: tuple[Rule, ...] = ()
+        best_length = -1
+        selected: list[Rule] = []
+        wildcard: list[Rule] = []
+
         for agents, rules in self.groups:
+            specificity = -1
+            has_wildcard = False
             for agent in agents:
                 if agent == "*":
-                    wildcard = rules
-                    break
-        for agents, rules in self.groups:
-            for agent in agents:
-                if agent and agent != "*" and agent in ua:
-                    # A specific matching group takes precedence over ``*``.
-                    return rules
-        return wildcard
+                    has_wildcard = True
+                elif agent and agent in ua:
+                    specificity = max(specificity, len(agent))
+
+            if specificity >= 0:
+                if specificity > best_length:
+                    best_length = specificity
+                    selected = list(rules)
+                elif specificity == best_length:
+                    selected.extend(rules)
+            elif has_wildcard:
+                # A group's rules count once, even if it names ``*`` too.
+                wildcard.extend(rules)
+
+        if best_length >= 0:
+            return tuple(selected)
+        return tuple(wildcard)
 
     def is_allowed(self, path: str, *, user_agent: str = "") -> bool:
         """Return whether ``path`` may be requested for ``user_agent``."""
@@ -93,17 +146,14 @@ class RobotsRules:
         if not target.startswith("/"):
             target = "/" + target
         winner: tuple[int, bool] | None = None
-        for allow, rule_path in self._rules_for(user_agent):
-            if rule_path == "":
-                # ``Disallow:`` with no path means nothing is disallowed.
+        for allow, pattern in self._rules_for(user_agent):
+            if not _pattern_matches(pattern, target):
                 continue
-            candidate = rule_path if rule_path.startswith("/") else "/" + rule_path
-            if target.startswith(candidate):
-                length = len(candidate)
-                if winner is None or length > winner[0] or (
-                    length == winner[0] and allow
-                ):
-                    winner = (length, allow)
+            length = _pattern_specificity(pattern)
+            if winner is None or length > winner[0] or (
+                length == winner[0] and allow
+            ):
+                winner = (length, allow)
         return True if winner is None else winner[1]
 
 

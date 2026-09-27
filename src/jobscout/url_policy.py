@@ -194,6 +194,122 @@ def is_http_scheme(url: str) -> bool:
     return scheme in _ALLOWED_HTTP_SCHEMES
 
 
+def is_safe_https_url(url: str) -> bool:
+    """Return whether ``url`` is a well-shaped HTTPS URL.
+
+    Requires the ``https`` scheme, a host, no embedded credentials, and either
+    no explicit port or the default HTTPS port. Used to vet discovery targets
+    (for example sitemap children) whose only safe shape is the same one the
+    configured provider endpoints require.
+    """
+    try:
+        scheme, host, netloc, port = _parse(url, name="url")
+    except UrlPolicyError:
+        return False
+    if scheme != "https" or not host:
+        return False
+    if "@" in netloc:
+        return False
+    return port in (None, _HTTPS_PORT)
+
+
+def redirect_target_violation(source_url: str, target_url: str) -> str | None:
+    """Return why following a redirect to ``target_url`` is unsafe, else ``None``.
+
+    The check is strict at *every* hop: the target must keep ``https`` (a
+    same-host downgrade to ``http`` is refused), must not embed credentials, must
+    use the default HTTPS port, must have a host, and its host must satisfy
+    :func:`redirect_allowed` relative to the source. This is the single policy
+    used by the transport redirect handler and by the final-URL sanitizer, so a
+    value that reaches storage can never be one the transport would refuse.
+    """
+    try:
+        scheme, host, netloc, port = _parse(target_url, name="redirect target")
+    except UrlPolicyError as exc:
+        return str(exc)
+    if scheme != "https":
+        return f"non-HTTPS scheme {scheme or 'none'!r}"
+    if "@" in netloc:
+        return "target embeds credentials"
+    if not host:
+        return "target has no hostname"
+    if port not in (None, _HTTPS_PORT):
+        return f"non-default port {port}"
+    try:
+        source_host = urlsplit(str(source_url)).hostname or ""
+    except ValueError:
+        source_host = ""
+    if not redirect_allowed(source_host, host):
+        return f"cross-host redirect from {source_host!r} to {host!r}"
+    return None
+
+
+def _normalized_https_port(port: int | None) -> int:
+    """Return ``443`` for both an omitted port and an explicit ``:443``."""
+    return _HTTPS_PORT if port is None else port
+
+
+def response_url_violation(request_url: str, response_url: str) -> str | None:
+    """Return why a response URL is unsafe relative to its request, else ``None``.
+
+    Applied to the URL a transport's opener actually resolved, which must hold
+    even when no redirect handler ran (for example an injected opener). It
+    requires HTTPS, no embedded credentials, a host allowed relative to the
+    request, and the *same* HTTPS port the request used. A provider request on
+    the default port therefore never accepts a downgraded or non-default-port
+    response, while a caller deliberately configured on a custom HTTPS port (an
+    LLM endpoint) is not silently moved off it.
+    """
+    try:
+        _req_scheme, req_host, _req_netloc, req_port = _parse(
+            request_url, name="request URL"
+        )
+    except UrlPolicyError as exc:
+        return str(exc)
+    try:
+        scheme, host, netloc, port = _parse(response_url, name="response URL")
+    except UrlPolicyError as exc:
+        return str(exc)
+    if scheme != "https":
+        return f"non-HTTPS scheme {scheme or 'none'!r}"
+    if "@" in netloc:
+        return "response URL embeds credentials"
+    if not host:
+        return "response URL has no hostname"
+    if not redirect_allowed(req_host, host):
+        return f"cross-host response from {req_host!r} to {host!r}"
+    if _normalized_https_port(port) != _normalized_https_port(req_port):
+        return (
+            "response changed the HTTPS port from "
+            f"{_normalized_https_port(req_port)} to {_normalized_https_port(port)}"
+        )
+    return None
+
+
+def is_safe_redirect_target(source_url: str, target_url: str) -> bool:
+    """Return whether following a redirect from source to target is allowed."""
+    return redirect_target_violation(source_url, target_url) is None
+
+
+def sanitize_final_url(requested_url: str | None, response_url: str | None) -> str | None:
+    """Return the safe final URL of an allowed redirect, else ``None``.
+
+    The single strict policy shared by every detail adapter and the transport.
+    A value is kept only when it differs from the requested URL and satisfies
+    :func:`redirect_target_violation` (HTTPS only, no embedded credentials,
+    default HTTPS port, host allowed relative to the request). ``None`` is the
+    honest "no redirect was observed" value, so a refused target never reaches
+    ``job_detail_fetches.final_url``.
+    """
+    requested = str(requested_url or "").strip()
+    candidate = str(response_url or "").strip()
+    if not candidate or candidate == requested:
+        return None
+    if redirect_target_violation(requested, candidate) is not None:
+        return None
+    return candidate
+
+
 def redirect_allowed(source_host: str | None, target_host: str | None) -> bool:
     """Return whether a redirect from ``source_host`` to ``target_host`` is safe.
 
@@ -225,8 +341,13 @@ __all__ = [
     "is_getmanfred_host",
     "is_http_scheme",
     "is_linkedin_host",
+    "is_safe_https_url",
+    "is_safe_redirect_target",
     "is_tecnoempleo_host",
     "redirect_allowed",
+    "redirect_target_violation",
+    "response_url_violation",
+    "sanitize_final_url",
     "validate_getmanfred_url",
     "validate_linkedin_url",
     "validate_llm_base_url",

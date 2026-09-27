@@ -30,7 +30,7 @@ from jobscout.collectors.tecnoempleo_details import (
     resolve_detail_url,
 )
 from jobscout.db import count_jobs, get_job, latest_detail_fetch
-from jobscout.models import ContentStatus, SearchRunStatus
+from jobscout.models import ContentStatus, DetailFetchStatus, SearchRunStatus
 from jobscout.pipeline import ingest_collector_result, ingest_detail_results
 
 PAGE_FIXTURE = FIXTURES / "tecnoempleo_search_page.html"
@@ -246,6 +246,53 @@ def test_detail_robots_disallow_fails_closed_before_request(conn, settings) -> N
     assert result.status is SearchRunStatus.FAILED_CLOSED
     assert "robots.txt disallows" in (result.error or "")
     assert client.call_count == 0
+
+
+def test_detail_refetches_robots_before_the_first_offer_request(conn, settings) -> None:
+    jobs = _store_search_offers(conn, settings)
+    backend = next(job for job in jobs if job.source_job_id == "rf-7a491a37220693ec4248")
+    client = FakeHttpClient(
+        [
+            response(200, ROBOTS_ALLOW, headers={"content-type": "text/plain"}),
+            response(
+                200,
+                fixture_text(DETAIL_FIXTURE),
+                headers={"content-type": "text/html"},
+                url=BACKEND_URL,
+            ),
+        ]
+    )
+    result = fetch_tecnoempleo_details(
+        [backend],
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+    )
+    assert result.status is SearchRunStatus.COMPLETED
+    assert client.calls[0]["url"] == settings.tecnoempleo_robots_url
+    assert client.calls[1]["url"] != settings.tecnoempleo_robots_url
+    assert result.items[0].status is DetailFetchStatus.OK
+
+
+def test_sanitize_final_url_uses_the_strict_shared_policy() -> None:
+    from jobscout.collectors.tecnoempleo_details import _sanitize_final_url
+
+    requested = BACKEND_URL
+    allowed = "https://www.tecnoempleo.com/desarrollador-backend-python/grupo-digital/other"
+    assert _sanitize_final_url(requested, allowed) == allowed
+    # No redirect observed.
+    assert _sanitize_final_url(requested, requested) is None
+    assert _sanitize_final_url(requested, "") is None
+    assert _sanitize_final_url(requested, None) is None
+    # HTTPS only (never a plaintext downgrade), no credentials, default port,
+    # allowed host.
+    assert _sanitize_final_url(requested, "http://www.tecnoempleo.com/x") is None
+    assert _sanitize_final_url(requested, "https://www.tecnoempleo.com:8443/x") is None
+    assert _sanitize_final_url(requested, "https://user:pass@www.tecnoempleo.com/x") is None
+    assert _sanitize_final_url(requested, "https://evil.test/x") is None
+    assert _sanitize_final_url(requested, "https://www.tecnoempleo.com.evil.test/x") is None
+    assert _sanitize_final_url(requested, "file:///etc/passwd") is None
 
 
 # ---------------------------------------------------------------------------

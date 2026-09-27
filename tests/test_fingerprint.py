@@ -1,0 +1,89 @@
+"""Shared effective-input fingerprint across heuristic, LLM, and OpenCode."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+
+from jobscout.scoring import ScorerError, effective_fingerprint, fingerprint_resolver
+from jobscout.scoring.heuristic import input_fingerprint as heuristic_fingerprint
+from jobscout.scoring.llm import input_fingerprint as llm_fingerprint
+from jobscout.scoring.opencode import input_fingerprint as opencode_fingerprint
+from jobscout.scoring.profile import profile_from_dict
+
+
+def test_each_scorer_has_its_own_fingerprint(strong_posting, profile, settings, opencode_settings) -> None:
+    heuristic = heuristic_fingerprint(strong_posting, profile)
+    llm = llm_fingerprint(strong_posting, profile, settings.llm_model)
+    opencode = opencode_fingerprint(strong_posting, profile, opencode_settings)
+
+    assert len({heuristic, llm, opencode}) == 3
+
+
+def test_fingerprint_is_stable_for_the_same_input(strong_posting, profile, settings) -> None:
+    first = llm_fingerprint(strong_posting, profile, settings.llm_model)
+    second = llm_fingerprint(strong_posting, profile, settings.llm_model)
+    assert first == second
+
+
+def test_job_content_change_changes_the_fingerprint(strong_posting, profile, settings) -> None:
+    before = llm_fingerprint(strong_posting, profile, settings.llm_model)
+    rewritten = replace(strong_posting, description=(strong_posting.description or "") + " extra")
+    after = llm_fingerprint(rewritten, profile, settings.llm_model)
+    assert before != after
+
+
+def test_profile_change_changes_the_fingerprint(strong_posting, profile, settings) -> None:
+    before = llm_fingerprint(strong_posting, profile, settings.llm_model)
+    changed = profile_from_dict({**profile.to_dict(), "summary": "different summary"})
+    after = llm_fingerprint(strong_posting, changed, settings.llm_model)
+    assert before != after
+
+
+def test_llm_fingerprint_tracks_the_configured_model(strong_posting, profile) -> None:
+    a = llm_fingerprint(strong_posting, profile, "model-a")
+    b = llm_fingerprint(strong_posting, profile, "model-b")
+    assert a != b
+
+
+def test_opencode_fingerprint_tracks_the_effective_prompt_version(
+    strong_posting, profile, opencode_settings
+) -> None:
+    minimal = opencode_settings.with_overrides(opencode_variant="minimal")
+    maximum = opencode_settings.with_overrides(opencode_variant="max")
+    assert opencode_fingerprint(strong_posting, profile, minimal) != opencode_fingerprint(
+        strong_posting, profile, maximum
+    )
+
+    # A variant change is a prompt-version change, never silently the same.
+    assert opencode_fingerprint(strong_posting, profile, minimal) != opencode_fingerprint(
+        strong_posting, profile, opencode_settings.with_overrides(opencode_variant="")
+    )
+
+
+def test_facade_dispatches_to_each_backend(strong_posting, profile, settings, opencode_settings) -> None:
+    assert (
+        effective_fingerprint("heuristic", strong_posting, profile, settings)
+        == heuristic_fingerprint(strong_posting, profile)
+    )
+    assert (
+        effective_fingerprint("llm", strong_posting, profile, settings)
+        == llm_fingerprint(strong_posting, profile, settings.llm_model)
+    )
+    assert (
+        effective_fingerprint("opencode", strong_posting, profile, opencode_settings)
+        == opencode_fingerprint(strong_posting, profile, opencode_settings)
+    )
+
+
+def test_fingerprint_resolver_is_bound_to_scorer_profile_and_settings(
+    strong_posting, profile, settings
+) -> None:
+    resolve = fingerprint_resolver("heuristic", settings, profile)
+    assert resolve(strong_posting) == heuristic_fingerprint(strong_posting, profile)
+
+
+def test_unknown_scorer_is_rejected(strong_posting, profile, settings) -> None:
+    with pytest.raises(ScorerError):
+        effective_fingerprint("nope", strong_posting, profile, settings)

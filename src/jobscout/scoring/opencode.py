@@ -75,7 +75,9 @@ from ..models import (
     ScorerName,
 )
 from ..timeutil import utcnow_iso
-from .llm import build_messages, input_fingerprint, sha256_text
+from .currency import currency_rejection
+from .llm import build_messages, sha256_text
+from .fingerprint import effective_input_fingerprint
 from .profile import Profile
 from .schema import parse_llm_evaluation, success_contract_errors
 
@@ -215,6 +217,24 @@ def effective_prompt_version(settings: Settings) -> str:
     if variant:
         return f"{OPENCODE_PROMPT_VERSION}+{variant}"
     return OPENCODE_PROMPT_VERSION
+
+
+def input_fingerprint(job: Any, profile: Profile, settings: Settings) -> str:
+    """Effective-input fingerprint for the OpenCode CLI scorer.
+
+    OpenCode carries its *own* effective prompt version and model, not the
+    shared HTTP-LLM defaults: the scored offer, the profile snapshot, the
+    ``opencode`` scorer identity, the configured ``opencode_model`` and the
+    variant-bearing :func:`effective_prompt_version` are the inputs that decide
+    whether a stored evaluation is still current.
+    """
+    return effective_input_fingerprint(
+        scorer=SCORER_NAME,
+        model=settings.opencode_model,
+        prompt_version=effective_prompt_version(settings),
+        profile=profile,
+        job=job,
+    )
 
 
 def build_command(
@@ -655,8 +675,23 @@ class OpenCodeScorer:
         Every outcome — CLI failure, parse error, contract error, and success —
         records the same :func:`effective_prompt_version`, so the reasoning
         variant is part of the provenance even when the call did not complete.
+
+        A posting explicitly quoted in a currency outside USD/EUR hard-rejects
+        before the CLI is launched: the deterministic currency policy is enforced
+        here, so the provider is never invoked and model text cannot overturn it.
         """
         recorded_prompt_version = effective_prompt_version(self.settings)
+        rejection = currency_rejection(
+            scorer=SCORER_NAME,
+            model=self.settings.opencode_model,
+            prompt_version=recorded_prompt_version,
+            job=job,
+            profile=profile,
+            job_id=job_id,
+            profile_id=profile_id,
+        )
+        if rejection is not None:
+            return rejection
         try:
             response = self.complete(job, profile)
         except OpenCodeError as exc:
@@ -670,7 +705,7 @@ class OpenCodeScorer:
                 model=self.settings.opencode_model,
                 prompt_version=recorded_prompt_version,
                 profile_id=profile_id,
-                input_fingerprint=input_fingerprint(job, profile),
+                input_fingerprint=input_fingerprint(job, profile, self.settings),
                 rationale="OpenCode evaluation could not be completed.",
             )
 
@@ -691,7 +726,7 @@ class OpenCodeScorer:
                 prompt_version=recorded_prompt_version,
                 profile_id=profile_id,
                 raw_document_id=raw_document_id,
-                input_fingerprint=input_fingerprint(job, profile),
+                input_fingerprint=input_fingerprint(job, profile, self.settings),
                 rationale="OpenCode response could not be validated as structured JSON.",
             )
 
@@ -709,7 +744,7 @@ class OpenCodeScorer:
                 prompt_version=recorded_prompt_version,
                 profile_id=profile_id,
                 raw_document_id=raw_document_id,
-                input_fingerprint=input_fingerprint(job, profile),
+                input_fingerprint=input_fingerprint(job, profile, self.settings),
                 rationale="OpenCode output was structurally valid but not a publishable evaluation.",
             )
         from ..models import DimensionScore
@@ -739,7 +774,7 @@ class OpenCodeScorer:
             prompt_version=recorded_prompt_version,
             profile_id=profile_id,
             raw_document_id=raw_document_id,
-            input_fingerprint=input_fingerprint(job, profile),
+            input_fingerprint=input_fingerprint(job, profile, self.settings),
         )
 
     def _store_raw_response(
@@ -804,6 +839,7 @@ __all__ = [
     "build_command",
     "effective_prompt_version",
     "extract_evaluation_text",
+    "input_fingerprint",
     "resolve_executable",
     "run_command",
     "scrubbed_subprocess_env",

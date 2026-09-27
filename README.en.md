@@ -114,7 +114,7 @@ Prepare the real profile before any sweep:
 | 0 | Prepare the profile | `cp profile.example.yaml profile.yaml` (POSIX) or `Copy-Item profile.example.yaml profile.yaml` (PowerShell), then `JOBSCOUT_PROFILE_PATH=profile.yaml` in `.env` | You set the target role, seniority, skills, dealbreakers, and exclusions. | Human decision |
 | 1 | Controlled sweep | `python -m jobscout keyword-plan`, then `python -m jobscout search-linkedin --keywords "..." --dry-run`; to run it, replace `--dry-run` with `--confirm-network` | Discovers new offers. `keyword-plan` is offline; every live search is an explicit human action. | Semi-automatic: you authorize each query |
 | 2 | Enrich | `python -m jobscout fetch-details --max-items 10 --confirm-network` (or `fetch-getmanfred-details` / `fetch-tecnoempleo-details` per platform, or `--fixture` to stay offline) | Fetches each offer's full description, bounded in volume. | Semi-automatic: you authorize each run |
-| 3 | Score with MiMo | `python -m jobscout score --all --scorer opencode` | The default scorer (OpenCode + MiMo) evaluates only offers that have no evaluation yet. | Scoring is automatic; the apply decision is not |
+| 3 | Score with MiMo | `python -m jobscout score --all --scorer opencode` | The default scorer (OpenCode + MiMo) evaluates only offers whose scoring input changed or that have no evaluation yet. | Scoring is automatic; the apply decision is not |
 | 4 | Generate the dashboard | `python -m jobscout dashboard --top 25` | Writes a local HTML report with offers, scores, link evidence, and preference filters. | Automatic and read-only |
 | 5 | Review offers | Open `reports/jobscout-dashboard.html` | You mark **Aplicar** or **Descartar** in the browser. | Human decision only |
 | 6 | Export/import feedback | Export the JSON from the dashboard, then run `python -m jobscout import-feedback jobscout-feedback.json` | Your decisions move from `localStorage` to the SQLite `job_feedback` table. | Import runs automatically once you invoke it |
@@ -127,23 +127,22 @@ Cycle notes:
 - **It never applies automatically.** There is also no scheduler; local
   notifications are opt-in and manual (`jobscout notify`), and every run is one
   you invoke.
-- `--rescore` **is not a daily step**: it re-evaluates offers that already have a
-  score and is only needed when you change the profile or the prompt. For new
-  offers, the normal cycle is `score --all --scorer opencode`, which evaluates
-  exactly the offers that have no score yet.
+- `--rescore` **is not a daily step**: it forces a fresh pass over *every*
+  active offer. Normal `score --all --scorer opencode` is **input-aware**: it
+  evaluates exactly the offers whose current effective input has no successful
+  evaluation yet, so an unchanged offer is skipped but a changed profile, model,
+  prompt/policy, or description is picked up automatically.
 - `fetch-details` does not re-score on its own; stage 3 closes the enrichment.
-- Every evaluation is versioned: it stores the scorer's `prompt_version` and the
-  profile `input_fingerprint`, so a policy change is distinguishable without
-  rewriting history. For the OpenCode scorer the `prompt_version` also carries
-  the effective reasoning variant as a `<version>+<variant>` suffix (default
-  `+minimal`), so a `minimal` pass and a `max` pass are distinguishable after
-  the fact. An explicitly empty `JOBSCOUT_OPENCODE_VARIANT=` keeps the bare
-  historical string.
-- Re-evaluation is **not input-aware yet**: `score --all` skips any offer that
-  already has a successful evaluation from that scorer, even when the profile or
-  the description changed. Use `--rescore` to force a fresh pass over every
-  active offer; skipping unchanged-input re-evaluation remains a documented,
-  deliberate follow-up rather than current behaviour.
+- Every evaluation is versioned with a single **effective-input fingerprint**
+  over the scorer identity, the model, the effective prompt/policy version, the
+  profile (including preserved unknown keys), and the offer's scored content. A
+  successful evaluation is reused only while that fingerprint is unchanged, so a
+  policy or content change is distinguishable without rewriting history and an
+  older success can never mask a changed input. For the OpenCode scorer the
+  fingerprint and `prompt_version` also carry the effective reasoning variant as
+  a `<version>+<variant>` suffix (default `+minimal`), so a `minimal` pass and a
+  `max` pass are distinguishable after the fact. An explicitly empty
+  `JOBSCOUT_OPENCODE_VARIANT=` keeps the bare historical string.
 
 ### Seniority and technology criterion (prompt v5)
 
@@ -371,11 +370,11 @@ subcommand), and `--version`.
 |---------|---------|
 | `init-db` | Create or verify the schema. Idempotent. |
 | `ingest-fixture PATH [--source S] [--label L]` | Normalize, deduplicate, and store a JSON fixture (offline). |
-| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Bounded public search. Disabled without `--confirm-network`. |
-| `search-getmanfred [--keywords K] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Public GetManfred sitemap inventory. `--keywords` applies a **local** title/slug filter (no fan-out, no private endpoint). No ranking. Disabled without `--confirm-network`. |
+| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--robots PATH] [--dry-run \| --confirm-network]` | Bounded public search. Re-reads `robots.txt` before the first request and fails closed when the path is disallowed. Disabled without `--confirm-network`. |
+| `search-getmanfred [--keywords K] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--robots PATH] [--dry-run \| --confirm-network]` | Public GetManfred sitemap inventory. Re-reads `robots.txt` before the first request. `--keywords` applies a **local** title/slug filter (no fan-out, no private endpoint). No ranking. Disabled without `--confirm-network`. |
 | `search-tecnoempleo --keywords K [--location L] [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Bounded Tecnoempleo public server-rendered search. Enforces `robots.txt` at run time. Disabled without `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | List the keyword families and the exact command per query (no network, no database). |
-| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich LinkedIn jobs with the full description. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence. |
+| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--robots PATH] [--label L]` | Enrich LinkedIn jobs with the full description. Re-reads `robots.txt` before the first request; a `--fixture` run is offline and skips it. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence. |
 | `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enrich Tecnoempleo offers from their public detail page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
 | `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enrich GetManfred offers from the recognized `JobPosting` JSON-LD on their public page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score. |
@@ -408,7 +407,21 @@ python -m jobscout search-tecnoempleo --keywords "cloud security" --max-pages 2 
 `search-getmanfred` is an **inventory**, not a search: it does no fan-out, and
 records every observed position as `position_kind = none` with rank `0`. The title
 is derived from the public URL slug and the company is left unknown because the
-sitemap does not expose it. Postings stay `partial`.
+sitemap does not expose it. Postings stay `partial`. Like every live collector it
+re-reads `robots.txt` before the first request and fails closed when a path is
+disallowed. When the configured URL is a sitemap index, a child is queued only if
+it is HTTPS on a `getmanfred.com` host, on the default port, without credentials,
+and on a plain sitemap `.xml` path. The path is validated after a single safe URL
+decode, so an encoded or double-encoded `..` (and any backslash) is rejected. Any
+other child is skipped, never fetched, and an index that yields no safe child
+fails closed instead of recording an empty inventory. `--max-documents` counts
+**documents** (the root sitemap plus each discovered child), so following a
+sitemap index needs more than one; a budget spent on the index with no child
+fetched fails closed as an incomplete inventory instead of a successful empty one.
+
+`search-linkedin` re-reads `robots.txt` before the first request and fails closed
+when the guest search path is disallowed (or when the document cannot be read),
+so a policy change stops the run instead of assuming permission.
 
 GetManfred exposes no keyword search endpoint. `--keywords` applies the term
 **locally** to the sitemap in a single download: only offers whose normalized
@@ -467,9 +480,10 @@ python -m jobscout fetch-details --refresh --stale-days 14 --dry-run            
 ```
 
 Every `fetch-details` selection route — the default, `--all`, `--refresh`, and an
-explicit `--job-id` — is restricted to LinkedIn offers (`source = linkedin`). A
-non-LinkedIn id is reported and never planned, so a GetManfred or Tecnoempleo
-numeric id can never be read inside LinkedIn's id space.
+explicit `--job-id` — is scoped to the **LinkedIn provider variant**, not the
+canonical job's first-seen provider. A non-LinkedIn id is reported and never
+planned, so a GetManfred or Tecnoempleo numeric id can never be read inside
+LinkedIn's id space.
 
 `--refresh` is mutually exclusive with `--job-id` and `--all`. It only considers
 active offers that already have fetch history and whose latest attempt is one of:
@@ -489,6 +503,16 @@ writes a row. A real refresh keeps the same network gates as the rest of
 
 `fetch-details` does not re-score on its own: run `score --all --rescore` after
 enriching.
+
+Provider identity is stored per offer in the `job_variants` table (schema v6).
+The canonical `jobs` row stays the cross-provider deduplicated parent, while each
+provider variant keeps its own external id, listing URL, and availability/detail
+state. A second provider observing the same role adds a variant; it never
+overwrites the first provider's identity. A definitive `404`/`410` deactivates
+only that variant, and the canonical offer stays active while any other variant
+is active. An existing database is upgraded in place: every legacy job gets
+exactly one variant built from its own persisted evidence, and an ambiguous or
+incomplete legacy identity is flagged `needs_review` rather than guessed.
 
 Tecnoempleo detail enrichment:
 
@@ -612,7 +636,18 @@ score is auditable after the fact.
 Deterministic and dependency-free. Dimensions: `must_have_skills`, `skills`
 (nice-to-have), `seniority`, `location`, `language`, `recency`, and
 `compensation`. Weights come from the profile and are renormalized over the
-dimensions that apply.
+dimensions that apply. Profile loading is strict: boolean fields accept only a
+real `true`/`false`, weights must be finite and non-negative, and
+`salary_currency` must be `USD` or `EUR`.
+
+Compensation is compared **only within one currency**. An offer quoted only in
+another explicit currency (for example GBP) is a hard blocker; an ambiguous or
+missing currency and a missing pay period are unknown (neutral) and never
+compared; USD and EUR are never converted into each other. Only an explicitly
+annual amount is normalized to the monthly floor (`year / 12`). Recency honours
+`max_posting_age_days`: a known date older than the limit takes the stale
+penalty, `null` disables the limit (the graduated tiers still apply), and a
+missing date is neutral — never scored as stale.
 
 ### OpenAI-compatible LLM
 
@@ -722,8 +757,11 @@ These guarantees are enforced by the code, not just documented:
   `*.linkedin.com` host**; the LLM base URL must be HTTPS. `file:`, `ftp:`,
   `data:`, `http:`, lookalike hosts, and embedded credentials are rejected at
   startup.
-- Redirects are followed only to the same host (or under the LinkedIn parent
-  domain); a cross-host redirect fails closed and is never retried.
+- Every redirect hop must stay HTTPS on an allowed host, use the default HTTPS
+  port, and carry no embedded credentials. A same-host downgrade to `http://`, a
+  non-default port, a URL with `user:pass@`, or a cross-host target fails closed
+  and is never retried. The final-URL sanitizer applies the same policy before a
+  value is persisted.
 - Only transient failures are retried (timeouts, 5xx). 401/403/429 and unexpected
   statuses **fail closed immediately**.
 - Raw payloads are stored only when they are under `JOBSCOUT_RAW_MAX_BYTES` and

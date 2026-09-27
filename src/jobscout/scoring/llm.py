@@ -51,6 +51,8 @@ from ..models import (
 )
 from ..normalize import normalize_text
 from ..timeutil import utcnow_iso
+from .currency import currency_rejection
+from .fingerprint import effective_input_fingerprint
 from .profile import Profile, profile_summary_for_prompt
 from .schema import PROMPT_VERSION, parse_llm_evaluation, success_contract_errors
 
@@ -306,7 +308,23 @@ class OpenAICompatibleScorer:
         ``status != ok`` instead of raising, so a batch run can continue; the
         error text is preserved for the operator. ``now`` is accepted for
         interface parity with the heuristic scorer and is not used.
+
+        A posting explicitly quoted in a currency outside USD/EUR hard-rejects
+        before any HTTP call: the deterministic currency policy is enforced here,
+        so a provider is never asked to score it and model text cannot overturn
+        the rejection.
         """
+        rejection = currency_rejection(
+            scorer=SCORER_NAME,
+            model=self.settings.llm_model,
+            prompt_version=PROMPT_VERSION,
+            job=job,
+            profile=profile,
+            job_id=job_id,
+            profile_id=profile_id,
+        )
+        if rejection is not None:
+            return rejection
         try:
             response = self.complete(build_messages(job, profile))
         except LLMError as exc:
@@ -320,7 +338,7 @@ class OpenAICompatibleScorer:
                 model=self.settings.llm_model,
                 prompt_version=PROMPT_VERSION,
                 profile_id=profile_id,
-                input_fingerprint=_input_fingerprint(job, profile),
+                input_fingerprint=input_fingerprint(job, profile, self.settings.llm_model),
                 rationale="LLM evaluation could not be completed.",
             )
 
@@ -341,7 +359,7 @@ class OpenAICompatibleScorer:
                 prompt_version=PROMPT_VERSION,
                 profile_id=profile_id,
                 raw_document_id=raw_document_id,
-                input_fingerprint=_input_fingerprint(job, profile),
+                input_fingerprint=input_fingerprint(job, profile, self.settings.llm_model),
                 rationale="LLM response could not be validated as structured JSON.",
             )
 
@@ -359,7 +377,7 @@ class OpenAICompatibleScorer:
                 prompt_version=PROMPT_VERSION,
                 profile_id=profile_id,
                 raw_document_id=raw_document_id,
-                input_fingerprint=_input_fingerprint(job, profile),
+                input_fingerprint=input_fingerprint(job, profile, self.settings.llm_model),
                 rationale="LLM response was structurally valid but not a publishable evaluation.",
             )
         from ..models import DimensionScore
@@ -389,7 +407,7 @@ class OpenAICompatibleScorer:
             prompt_version=PROMPT_VERSION,
             profile_id=profile_id,
             raw_document_id=raw_document_id,
-            input_fingerprint=_input_fingerprint(job, profile),
+            input_fingerprint=input_fingerprint(job, profile, self.settings.llm_model),
         )
 
     def _store_raw_response(
@@ -447,24 +465,23 @@ def _sha256(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
-def _input_fingerprint(job: Any, profile: Profile) -> str:
-    import hashlib
+def input_fingerprint(job: Any, profile: Profile, model: str | None = None) -> str:
+    """Effective-input fingerprint for the OpenAI-compatible LLM scorer.
 
-    material = "|".join(
-        [
-            profile.fingerprint(),
-            str(getattr(job, "fingerprint", "")),
-            str(getattr(job, "content_hash", "")),
-            PROMPT_VERSION,
-        ]
+    The configured model and the prompt version are part of the effective
+    inputs, so changing either invalidates a previously stored evaluation.
+    """
+    return effective_input_fingerprint(
+        scorer=SCORER_NAME,
+        model=model or "",
+        prompt_version=PROMPT_VERSION,
+        profile=profile,
+        job=job,
     )
-    return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
-# Public aliases shared with the OpenCode CLI scorer so both backends compute
-# identical provenance for the same (job, profile, prompt version) input.
+# Kept public for the OpenCode CLI scorer, which reuses the same text hashing.
 sha256_text = _sha256
-input_fingerprint = _input_fingerprint
 
 
 __all__ = [

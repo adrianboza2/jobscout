@@ -129,8 +129,12 @@ Implemented:
 
 - (done) provider-agnostic ingestion (`provider` is no longer hardcoded to
   LinkedIn), preserving LinkedIn and fixture behavior;
-- (done) additive schema v5 provenance: `search_runs.cycle_id` and
-  `search_run_items.position_kind` (nullable, historical rows untouched);
+- (done) additive provenance migrations: schema v5 added `search_runs.cycle_id`
+  and `search_run_items.position_kind` (nullable, historical rows untouched);
+  schema v6 added the provider-variant layer (`job_variants` plus a nullable
+  `job_detail_fetches.variant_id`), so one canonical deduplicated offer keeps
+  each provider's own external id, listing URL, and availability/detail state
+  without overwriting the first provider's identity;
 - (done) provider-scoped keyword analytics keyed by `provider|keyword|cycle`, so
   the same term is never merged across platforms or cycles;
 - (done) GetManfred public sitemap inventory adapter (`search-getmanfred`): no

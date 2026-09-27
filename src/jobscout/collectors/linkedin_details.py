@@ -31,24 +31,21 @@ import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Callable, Sequence
-from urllib.parse import urlsplit
 
 from ..config import (
     HARD_MAX_ITEMS,
     Settings,
-    is_safe_to_store,
     validate_bounded_int,
 )
 from ..models import (
     ContentStatus,
     DetailFetchStatus,
     RawDocument,
-    RawDocumentKind,
     SearchRunStatus,
 )
 from ..normalize import content_hash, extract_linkedin_job_id, html_to_text, normalize_text
 from ..timeutil import utcnow_iso
-from ..url_policy import is_http_scheme
+from ..url_policy import sanitize_final_url as _shared_sanitize_final_url
 from .base import (
     TRUNCATION_HEADER,
     AccessDeniedError,
@@ -60,9 +57,12 @@ from .base import (
     NotFoundError,
     RateLimitedError,
     UrllibHttpClient,
+    fetch_robots,
     fetch_with_policy,
+    record_detail_response,
 )
 from .ratelimit import BackoffPolicy, RequestPacer
+from .robots import check_robots
 
 #: Class markers that identify the description container in guest detail HTML.
 DESCRIPTION_CLASS_MARKERS = (
@@ -252,29 +252,14 @@ def build_detail_url(template: str, source_job_id: str) -> str:
 def sanitize_final_url(requested_url: str | None, response_url: str | None) -> str | None:
     """Return the safe final URL of an allowed redirect, else ``None``.
 
-    Only a genuine, safely shaped redirect target is kept. The value is dropped
-    when the response URL is missing, identical to the requested URL (no redirect
-    happened), uses a non-HTTP(S) scheme, or embeds credentials
-    (``https://user:pass@host``). The host policy itself was already enforced by
-    the transport's redirect handler; this function only rejects values that must
-    never reach the ``job_detail_fetches.final_url`` column.
-
-    ``None`` is the honest "no redirect was observed" value, so callers persist
-    ``NULL`` instead of echoing the requested URL as if it were a redirect.
+    Thin alias for the shared strict policy
+    :func:`jobscout.url_policy.sanitize_final_url`: the target must be HTTPS (no
+    same-host downgrade), must not embed credentials, must use the default HTTPS
+    port, and must satisfy the host relation to the requested URL. ``None`` is
+    the honest "no redirect was observed" value, so a value the transport would
+    refuse can never reach the ``job_detail_fetches.final_url`` column.
     """
-    requested = str(requested_url or "").strip()
-    candidate = str(response_url or "").strip()
-    if not candidate or candidate == requested:
-        return None
-    if not is_http_scheme(candidate):
-        return None
-    try:
-        netloc = urlsplit(candidate).netloc
-    except ValueError:
-        return None
-    if "@" in netloc:
-        return None
-    return candidate
+    return _shared_sanitize_final_url(requested_url, response_url)
 
 
 def plan_detail_targets(
@@ -436,32 +421,18 @@ def _record_detail_response(
 ) -> None:
     """Attach a size-bounded raw document for a response.
 
-    ``store_body=False`` records provenance metadata only, so a response that is
-    already known to be oversized never has its body persisted.
+    Thin alias for the shared :func:`jobscout.collectors.base.record_detail_response`;
+    ``store_body=False`` records provenance metadata only.
     """
-    if response is None:
-        return
-    body = response.body or ""
-    if store_body:
-        safe, reason = is_safe_to_store(body, max_bytes=max_bytes)
-    else:
-        safe, reason = False, "response exceeded the detail download limit"
-    document = RawDocument(
-        kind=RawDocumentKind.JOB_DETAIL,
+    record_detail_response(
+        result,
+        response,
+        url,
         source="linkedin",
-        url=url,
-        status_code=response.status_code,
-        content_type=response.headers.get("content-type"),
-        sha256=hashlib.sha256(body.encode("utf-8", errors="replace")).hexdigest(),
-        byte_size=len(body.encode("utf-8", errors="replace")),
-        fetched_at=response.fetched_at,
-        stored_at=utcnow_iso(),
-        truncated=not safe,
-        notes=None if safe else f"body not stored: {reason}",
-        body=body if safe else None,
+        max_bytes=max_bytes,
+        item=item,
+        store_body=store_body,
     )
-    item.raw_document_index = len(result.raw_documents)
-    result.raw_documents.append(document)
 
 
 def fetch_linkedin_details(
@@ -474,13 +445,16 @@ def fetch_linkedin_details(
     client: HttpClient | None = None,
     sleep: Callable[[float], None] | None = None,
     on_attempt: Callable[[AttemptLog], None] | None = None,
+    robots_text: str | None = None,
 ) -> DetailResult:
     """Fetch detail pages for a bounded selection of stored jobs.
 
     Without ``network_enabled=True`` this raises
     :class:`CollectorDisabledError`; with ``dry_run=True`` it returns the planned
     URLs and performs no I/O at all. ``client`` is injectable so tests and the
-    offline ``--fixture`` path never touch the network.
+    offline ``--fixture`` path never touch the network. ``robots_text`` may be
+    injected so offline tests skip the robots request; a live run fetches and
+    enforces ``robots.txt`` before the first detail request.
     """
     config = DetailFetchConfig(
         max_items=max_items if max_items is not None else settings.detail_max_items
@@ -525,6 +499,32 @@ def fetch_linkedin_details(
         jitter_seconds=settings.request_jitter_seconds,
         sleep=sleep or _time.sleep,
     )
+
+    if planned:
+        if robots_text is None:
+            ok, fetched_robots, robots_note = fetch_robots(
+                transport,
+                settings.linkedin_robots_url,
+                policy=policy,
+                pacer=pacer,
+                sleep=sleep,
+            )
+            if not ok:
+                result.status = SearchRunStatus.FAILED_CLOSED
+                result.error = robots_note
+                result.notes = "could not establish robots.txt permission; run aborted"
+                return result
+            robots_text = fetched_robots
+
+        for url in planned:
+            allowed, reason = check_robots(
+                robots_text, url, user_agent=settings.user_agent
+            )
+            if not allowed:
+                result.status = SearchRunStatus.FAILED_CLOSED
+                result.error = f"refusing disallowed path for {url}: {reason}"
+                result.notes = "robots.txt disallows the detail path; run aborted"
+                return result
 
     for target in targets:
         job = target.job

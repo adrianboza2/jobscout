@@ -71,6 +71,7 @@ from .base import (
     NotFoundError,
     RateLimitedError,
     UrllibHttpClient,
+    fetch_robots,
     fetch_with_policy,
 )
 from .ratelimit import BackoffPolicy, RequestPacer
@@ -578,28 +579,6 @@ def postings_from_html(
 # ---------------------------------------------------------------------------
 
 
-def _fetch_robots(
-    robots_url: str,
-    *,
-    transport: HttpClient,
-    policy: BackoffPolicy,
-    pacer: RequestPacer,
-    sleep: Callable[[float], None] | None,
-) -> tuple[bool, str, str]:
-    """Return ``(ok, robots_text, note)``. A 404 means "no restrictions"."""
-    try:
-        response = fetch_with_policy(
-            transport, robots_url, policy=policy, pacer=pacer, sleep=sleep
-        )
-    except NotFoundError:
-        return True, "", "robots.txt not found; treating as allow-all"
-    except (AccessDeniedError, RateLimitedError) as exc:
-        return False, "", f"robots.txt refused access: {exc}"
-    except CollectorError as exc:
-        return False, "", f"robots.txt could not be read: {exc}"
-    return True, response.body or "", "robots.txt read"
-
-
 def search_tecnoempleo(
     config: TecnoempleoSearchConfig,
     *,
@@ -658,9 +637,9 @@ def search_tecnoempleo(
     robots_note = "robots.txt supplied by caller; not fetched"
 
     if robots_text is None:
-        ok, fetched_robots, robots_note = _fetch_robots(
+        ok, fetched_robots, robots_note = fetch_robots(
+            transport,
             config.robots_url,
-            transport=transport,
             policy=policy,
             pacer=pacer,
             sleep=sleep,

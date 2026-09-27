@@ -132,7 +132,46 @@ def test_non_http_redirect_is_refused() -> None:
     handler = build_redirect_handler()
     with pytest.raises(UnsafeUrlError) as excinfo:
         _redirect(handler, "https://www.linkedin.com/jobs", "file:///etc/passwd")
-    assert "non-HTTP" in str(excinfo.value)
+    assert "non-HTTPS" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "target",
+    (
+        # Same-host downgrade to plaintext HTTP must be refused.
+        "http://www.linkedin.com/jobs",
+        # Any other non-HTTPS scheme is refused too.
+        "ftp://www.linkedin.com/jobs",
+        "file:///etc/passwd",
+    ),
+)
+def test_redirect_downgrade_is_refused(target: str) -> None:
+    handler = build_redirect_handler()
+    with pytest.raises(UnsafeUrlError) as excinfo:
+        _redirect(handler, "https://www.linkedin.com/jobs", target)
+    assert "non-HTTPS" in str(excinfo.value)
+
+
+def test_redirect_to_non_default_port_is_refused() -> None:
+    handler = build_redirect_handler()
+    with pytest.raises(UnsafeUrlError) as excinfo:
+        _redirect(
+            handler,
+            "https://www.linkedin.com/jobs",
+            "https://www.linkedin.com:8443/jobs",
+        )
+    assert "port" in str(excinfo.value)
+
+
+def test_redirect_with_credentials_is_refused() -> None:
+    handler = build_redirect_handler()
+    with pytest.raises(UnsafeUrlError) as excinfo:
+        _redirect(
+            handler,
+            "https://www.linkedin.com/jobs",
+            "https://user:pass@www.linkedin.com/jobs",
+        )
+    assert "credentials" in str(excinfo.value)
 
 
 def test_llm_redirect_is_same_host_only() -> None:
@@ -227,6 +266,81 @@ def test_small_success_body_is_not_marked_truncated() -> None:
 
     assert result.body == "<html>ok</html>"
     assert TRUNCATION_HEADER not in result.headers
+
+
+# ---------------------------------------------------------------------------
+# The resolved response URL is validated even without a redirect handler
+# ---------------------------------------------------------------------------
+
+
+def test_injected_opener_same_host_response_url_is_accepted() -> None:
+    opener = FakeOpener(
+        FakeRawResponse(b"ok", "https://www.linkedin.com/jobs/other")
+    )
+    client = make_client(opener=opener)
+    result = client.fetch_once("https://www.linkedin.com/jobs")
+
+    assert result.status_code == 200
+    assert result.url == "https://www.linkedin.com/jobs/other"
+
+
+@pytest.mark.parametrize(
+    "final_url,needle",
+    (
+        # A same-host downgrade to plaintext HTTP is refused.
+        ("http://www.linkedin.com/jobs", "non-HTTPS"),
+        ("file:///etc/passwd", "non-HTTPS"),
+        # A non-default port is refused.
+        ("https://www.linkedin.com:8443/jobs", "port"),
+        # Embedded credentials are refused.
+        ("https://user:pass@www.linkedin.com/jobs", "credentials"),
+        ("https://@www.linkedin.com/jobs", "credentials"),
+        # Cross-host and lookalike hosts are refused.
+        ("https://evil.test/jobs", "cross-host"),
+        ("https://linkedin.com.evil.test/jobs", "cross-host"),
+        # A different provider's host is refused even within the allow-list set.
+        ("https://www.getmanfred.com/jobs", "cross-host"),
+    ),
+)
+def test_injected_opener_unsafe_response_url_is_refused(
+    final_url: str, needle: str
+) -> None:
+    opener = FakeOpener(FakeRawResponse(b"ok", final_url))
+    client = make_client(opener=opener)
+    with pytest.raises(UnsafeUrlError) as excinfo:
+        client.fetch_once("https://www.linkedin.com/jobs")
+    assert needle in str(excinfo.value)
+
+
+def test_injected_opener_unsafe_response_url_is_not_retried() -> None:
+    opener = FakeOpener(FakeRawResponse(b"ok", "https://evil.test/steal"))
+    client = make_client(opener=opener)
+    with pytest.raises(UnsafeUrlError):
+        fetch_with_policy(
+            client,
+            "https://www.linkedin.com/jobs",
+            policy=BackoffPolicy(max_retries=5, jitter_seconds=0.0),
+            sleep=lambda _seconds: None,
+        )
+    assert len(opener.requests) == 1
+
+
+def test_injected_opener_custom_https_port_is_allowed() -> None:
+    # The transport is shared with the LLM scorer, whose endpoint may use a
+    # custom HTTPS port; the response must keep that port, not be forced to 443.
+    opener = FakeOpener(FakeRawResponse(b"{}", "https://llm.internal:8443/v1/chat"))
+    client = make_client(opener=opener)
+    result = client.fetch_once("https://llm.internal:8443/v1/chat")
+
+    assert result.status_code == 200
+    assert result.url == "https://llm.internal:8443/v1/chat"
+
+
+def test_injected_opener_port_change_is_refused() -> None:
+    opener = FakeOpener(FakeRawResponse(b"{}", "https://llm.internal/v1/chat"))
+    client = make_client(opener=opener)
+    with pytest.raises(UnsafeUrlError):
+        client.fetch_once("https://llm.internal:8443/v1/chat")
 
 
 # ---------------------------------------------------------------------------
