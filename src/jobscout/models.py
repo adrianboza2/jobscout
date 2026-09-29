@@ -253,6 +253,42 @@ class Job:
 
 
 @dataclass
+class JobVariant:
+    """One provider's view of a canonical :class:`Job`.
+
+    The ``jobs`` row keeps the canonical, deduplicated identity while a variant
+    keeps the provider-specific listing identity (``source`` + external id and
+    URL) plus its own availability and detail-fetch state. A second provider
+    observing the same canonical role adds a variant instead of overwriting the
+    first provider's identity.
+    """
+
+    id: int | None = None
+    job_id: int = 0
+    source: str = ""
+    source_job_id: str | None = None
+    url: str | None = None
+    first_seen_at: str = ""
+    last_seen_at: str = ""
+    content_status: ContentStatus = ContentStatus.UNKNOWN
+    content_hash: str = ""
+    detail_status: str | None = None
+    detail_fetched_at: str | None = None
+    description_chars: int = 0
+    is_active: bool = True
+    #: ``resolved`` when the provider identity is complete; ``needs_review``
+    #: when legacy evidence was ambiguous or incomplete and no link was guessed.
+    review_state: str = "resolved"
+    raw_document_id: int | None = None
+    notes: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload = asdict(self)
+        payload["content_status"] = str(self.content_status)
+        return payload
+
+
+@dataclass
 class RawDocument:
     """A verbatim fetch kept for provenance and reproducibility."""
 
@@ -307,6 +343,9 @@ class JobDetailFetch:
     raw_document_id: int | None = None
     error: str | None = None
     notes: str | None = None
+    #: The provider-scoped variant this attempt belongs to, when known. Appended
+    #: last so the field stays additive; ``None`` on rows that predate variants.
+    variant_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)

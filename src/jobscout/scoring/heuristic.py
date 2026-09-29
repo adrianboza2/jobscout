@@ -11,7 +11,6 @@ a recommendation.
 
 from __future__ import annotations
 
-import hashlib
 import re
 from typing import Any, Protocol
 
@@ -24,13 +23,41 @@ from ..models import (
 )
 from ..normalize import normalize_company, normalize_text, slugify
 from ..timeutil import age_days, utcnow
+from .currency import salary_currencies
+from .fingerprint import effective_input_fingerprint
 from .profile import Profile
-from .schema import PROMPT_VERSION
 
 SCORER_NAME = ScorerName.HEURISTIC
 APPLY_THRESHOLD = 75.0
 CONSIDER_THRESHOLD = 55.0
 MAX_UNKNOWNS_FOR_CONFIDENT_ADVICE = 3
+
+#: Producer identity for a heuristic evaluation. Kept stable so persisted rows
+#: and the fallback marker (``heuristic-v1+fallback``) stay comparable.
+HEURISTIC_MODEL = "heuristic-v1"
+#: Version of the deterministic scoring policy. Bump it whenever a scoring rule
+#: changes (thresholds, dimensions, semantics) so the effective-input fingerprint
+#: invalidates evaluations produced by the previous policy.
+HEURISTIC_POLICY_VERSION = "heuristic-policy-v1"
+#: Recency score for a posting known to be older than the profile limit (or the
+#: 60-day floor when the limit is disabled).
+STALE_RECENCY_SCORE = 25.0
+#: Recency score for an unknown posting date. Neutral on purpose: a missing date
+#: proves neither freshness nor staleness, so it is never scored as stale.
+UNKNOWN_DATE_RECENCY_SCORE = 50.0
+
+#: Salary period cues. Only explicit data is honored: an unlabeled number is
+#: never assumed to be a comparable amount. The currency policy itself (supported
+#: vs unsupported, ``$``/``R$`` handling) lives in :mod:`jobscout.scoring.currency`
+#: so the heuristic, the HTTP LLM, and OpenCode share one rule.
+_MONTH_PERIOD_RE = re.compile(
+    r"(?i)(?:per\s+month|/\s*month|monthly|a\s+month|por\s+mes|/mes|mensual)"
+)
+_YEAR_PERIOD_RE = re.compile(
+    r"(?i)(?:per\s+(?:year|annum)|/\s*(?:year|yr)|annual|annually|yearly|"
+    r"por\s+a[nñ]o|anual)"
+)
+_AMOUNT_RE = re.compile(r"(\d[\d,\.]*)\s*([kKmM])?")
 
 _ONSITE_PATTERNS = (
     r"\bon[-\s]?site\b",
@@ -169,11 +196,32 @@ def _language_fit(
 
 
 def _recency_fit(
-    posted_at: str | None, *, now: Any
+    posted_at: str | None, *, now: Any, max_age_days: int | None
 ) -> tuple[float, str, list[str]]:
+    """Score freshness, honoring the profile's ``max_posting_age_days``.
+
+    Conservative semantics for the two edge cases:
+
+    * unknown date -> neutral (never scored as stale; a missing date proves
+      nothing);
+    * a known date older than the limit -> the stale penalty, regardless of the
+      graduated tiers, so ``max_posting_age_days`` is actually effective;
+    * ``max_age_days is None`` disables the limit and keeps only the graduated
+      freshness tiers.
+    """
     days = age_days(posted_at, now=now)
     if days is None:
-        return 50.0, "Posting date is unknown.", ["posting date is unknown"]
+        return (
+            UNKNOWN_DATE_RECENCY_SCORE,
+            "Posting date is unknown.",
+            ["posting date is unknown"],
+        )
+    if max_age_days is not None and days > max_age_days:
+        return (
+            STALE_RECENCY_SCORE,
+            f"Posted {days:.1f} days ago, older than the profile's {max_age_days}-day limit.",
+            ["posting is stale (older than the profile's max_posting_age_days)"],
+        )
     if days <= 7:
         return 100.0, f"Posted {days:.1f} day(s) ago.", []
     if days <= 14:
@@ -183,31 +231,134 @@ def _recency_fit(
     if days <= 60:
         return 50.0, f"Posted {days:.1f} days ago.", []
     return (
-        25.0,
+        STALE_RECENCY_SCORE,
         f"Posted {days:.1f} days ago; likely stale.",
         ["posting may be stale (older than 60 days)"],
     )
 
 
+def _salary_amounts(salary_text: str) -> list[float]:
+    """Extract the numeric amounts a posting states, with explicit K/M units.
+
+    Only the digits (and an optional explicit ``K``/``M`` magnitude suffix) are
+    read; nothing is inferred from a missing unit.
+    """
+    values: list[float] = []
+    for match in _AMOUNT_RE.finditer(salary_text):
+        raw = match.group(1).replace(",", "")
+        try:
+            value = float(raw)
+        except ValueError:  # pragma: no cover - the regex only matches digits
+            continue
+        magnitude = (match.group(2) or "").lower()
+        if magnitude == "k":
+            value *= 1_000
+        elif magnitude == "m":
+            value *= 1_000_000
+        if value > 0:
+            values.append(value)
+    return values
+
+
+def _salary_currencies(salary_text: str) -> tuple[set[str], set[str]]:
+    """Return the explicitly signalled ``(supported, unsupported)`` currencies.
+
+    Thin alias for :func:`jobscout.scoring.currency.salary_currencies`, the single
+    policy shared with the HTTP LLM and OpenCode scorers.
+    """
+    return salary_currencies(salary_text)
+
+
+def _salary_period(salary_text: str) -> str | None:
+    """Return ``"month"``/``"year"`` only when the period is explicitly stated."""
+    if _MONTH_PERIOD_RE.search(salary_text):
+        return "month"
+    if _YEAR_PERIOD_RE.search(salary_text):
+        return "year"
+    return None
+
+
 def _compensation_fit(
     profile: Profile, salary_text: str | None
-) -> tuple[float | None, str, list[str], list[str]]:
-    if profile.min_salary is None:
-        return None, "", [], []
+) -> tuple[float | None, str, list[str], list[str], list[str]]:
+    """Compare an advertised salary to the profile floor, same currency only.
+
+    Returns ``(score, rationale, gaps, unknowns, blockers)``. Never compares
+    across currencies: a posting in a different supported currency, in an
+    ambiguous/unknown currency, or without an explicit period is treated as an
+    unknown (neutral) compensation signal with an explicit reason, not as a
+    comparable amount. A posting whose only explicit currency is outside the
+    supported set (USD/EUR) is a hard blocker: it is a known, non-comparable
+    amount. Only an explicitly annual amount is normalized to monthly (the
+    profile floor's unit) using the known 12-month year.
+    """
+    if profile.min_salary is None and not salary_text:
+        return None, "", [], [], []
     if not salary_text:
-        return 50.0, "No salary information in the posting.", [], ["salary is not disclosed"]
-    numbers = [float(value.replace(",", "")) for value in re.findall(r"\d[\d,\.]*", salary_text)]
-    numbers = [value for value in numbers if value > 0]
-    if not numbers:
+        return 50.0, "No salary information in the posting.", [], ["salary is not disclosed"], []
+
+    # Detect the currency before reading any amount, so an explicit unsupported
+    # currency hard-rejects even when the number is unparseable. This is the same
+    # rule the HTTP LLM and OpenCode scorers enforce before their model calls.
+    supported, unsupported = _salary_currencies(salary_text)
+    if unsupported and not supported:
+        codes = ", ".join(sorted(unsupported))
+        return (
+            None,
+            f"Salary is quoted in {codes}, which is not an accepted currency.",
+            [],
+            [
+                f"salary is quoted in {codes}, which is not comparable to the "
+                f"{profile.salary_currency} profile minimum"
+            ],
+            [
+                f"salary is quoted in an unsupported currency ({codes}); only "
+                "USD and EUR are accepted"
+            ],
+        )
+    if profile.min_salary is None:
+        return None, "", [], [], []
+
+    amounts = _salary_amounts(salary_text)
+    if not amounts:
         return 50.0, "Salary text could not be interpreted.", [], [
             f"salary text not comparable to {profile.salary_currency} {profile.min_salary:g}"
-        ]
-    best = max(numbers)
+        ], []
+
+    if len(supported) > 1 or (supported and unsupported):
+        return 50.0, "Salary currency is unknown or ambiguous.", [], [
+            "salary currency is unknown or ambiguous; it is not treated as a "
+            f"comparable {profile.salary_currency} amount"
+        ], []
+
+    currency = next(iter(supported), None)
+    if currency is None:
+        return 50.0, "Salary currency is unknown or ambiguous.", [], [
+            "salary currency is unknown or ambiguous; it is not treated as a "
+            f"comparable {profile.salary_currency} amount"
+        ], []
+    if currency != profile.salary_currency:
+        return 50.0, f"Salary is quoted in {currency}, not {profile.salary_currency}.", [], [
+            f"salary is in {currency} but the profile minimum is "
+            f"{profile.salary_currency}; no FX conversion is applied"
+        ], []
+
+    period = _salary_period(salary_text)
+    if period is None:
+        return 50.0, "Salary period is not stated.", [], [
+            "salary period is not stated; it is not compared to the monthly "
+            f"{profile.salary_currency} profile minimum"
+        ], []
+
+    monthly = [value / 12.0 if period == "year" else value for value in amounts]
+    best = max(monthly)
     if best >= profile.min_salary:
-        return 100.0, f"Advertised pay ({best:g}) meets the profile minimum.", [], []
+        return 100.0, f"Advertised monthly pay ({best:g} {currency}) meets the profile minimum.", [], [], []
     return (
         20.0,
-        f"Advertised pay ({best:g}) is below the profile minimum ({profile.min_salary:g}).",
+        f"Advertised monthly pay ({best:g} {currency}) is below the profile "
+        f"minimum ({profile.min_salary:g} {currency}).",
+        [],
         [],
         [],
     )
@@ -341,7 +492,9 @@ def score_job(
         unknowns.extend(language_unknowns)
 
     recency_score, recency_rationale, recency_unknowns = _recency_fit(
-        getattr(job, "posted_at", None), now=reference
+        getattr(job, "posted_at", None),
+        now=reference,
+        max_age_days=profile.max_posting_age_days,
     )
     dimensions.append(
         DimensionScore(
@@ -354,9 +507,10 @@ def score_job(
     )
     unknowns.extend(recency_unknowns)
 
-    compensation_score, compensation_rationale, compensation_gaps, compensation_unknowns = _compensation_fit(
+    compensation_score, compensation_rationale, compensation_gaps, compensation_unknowns, compensation_blockers = _compensation_fit(
         profile, getattr(job, "salary", None)
     )
+    blockers.extend(compensation_blockers)
     if compensation_score is not None:
         dimensions.append(
             DimensionScore(
@@ -428,13 +582,6 @@ def score_job(
         unknowns=sorted(set(unknowns)),
     )
 
-    job_fingerprint = getattr(job, "fingerprint", "") or hashlib.sha256(
-        combined_raw.encode("utf-8")
-    ).hexdigest()
-    input_fingerprint = hashlib.sha256(
-        f"{profile.fingerprint()}|{job_fingerprint}|{getattr(job, 'content_hash', '')}".encode("utf-8")
-    ).hexdigest()
-
     return Evaluation(
         job_id=int(job_id or 0),
         scorer=SCORER_NAME,
@@ -447,10 +594,21 @@ def score_job(
         gaps=_dedupe_preserve_order(gaps),
         unknowns=sorted(set(unknowns)),
         rationale=rationale,
-        model="heuristic-v1",
-        prompt_version=PROMPT_VERSION,
+        model=HEURISTIC_MODEL,
+        prompt_version=HEURISTIC_POLICY_VERSION,
         profile_id=profile_id,
-        input_fingerprint=input_fingerprint,
+        input_fingerprint=input_fingerprint(job, profile),
+    )
+
+
+def input_fingerprint(job: Any, profile: Profile) -> str:
+    """Effective-input fingerprint for the deterministic heuristic scorer."""
+    return effective_input_fingerprint(
+        scorer=SCORER_NAME,
+        model=HEURISTIC_MODEL,
+        prompt_version=HEURISTIC_POLICY_VERSION,
+        profile=profile,
+        job=job,
     )
 
 
@@ -489,7 +647,12 @@ def _build_rationale(
 __all__ = [
     "APPLY_THRESHOLD",
     "CONSIDER_THRESHOLD",
+    "HEURISTIC_MODEL",
+    "HEURISTIC_POLICY_VERSION",
     "SCORER_NAME",
+    "STALE_RECENCY_SCORE",
     "ScorableJob",
+    "UNKNOWN_DATE_RECENCY_SCORE",
+    "input_fingerprint",
     "score_job",
 ]

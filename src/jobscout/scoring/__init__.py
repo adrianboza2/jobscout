@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from ..config import Settings
 from ..db import insert_evaluation, upsert_profile
@@ -10,12 +10,16 @@ from ..models import (
     Evaluation,
     EvaluationStatus,
     ProfileSnapshot,
+    Recommendation,
     ScorerName,
     evaluation_contract_errors,
 )
+from .currency import currency_blocker
 from .heuristic import SCORER_NAME as HEURISTIC_NAME
+from .heuristic import input_fingerprint as heuristic_input_fingerprint
 from .heuristic import score_job as score_job_heuristic
 from .llm import LLMError, LLMNotConfiguredError, LLMRequestError, OpenAICompatibleScorer
+from .llm import input_fingerprint as llm_input_fingerprint
 from .opencode import (
     OpenCodeError,
     OpenCodeExecutionError,
@@ -23,6 +27,7 @@ from .opencode import (
     OpenCodeScorer,
     OpenCodeTimeoutError,
 )
+from .opencode import input_fingerprint as opencode_input_fingerprint
 from .profile import Profile, build_snapshot, load_profile
 from .schema import PROMPT_VERSION, ParseOutcome, parse_llm_evaluation
 
@@ -68,6 +73,43 @@ def get_scorer(name: str, settings: Settings, **kwargs: Any) -> Any:
     if normalized == ScorerName.OPENCODE.value:
         return OpenCodeScorer(settings, **kwargs)
     raise ScorerError(f"unknown scorer '{name}'; expected one of: {', '.join(SCORERS)}")
+
+
+def effective_fingerprint(
+    scorer_name: str, job: Any, profile: Profile, settings: Settings
+) -> str:
+    """Effective-input fingerprint for ``scorer_name`` and this exact input.
+
+    This is the single dispatch point shared by scoring and by input-aware
+    selection (``jobs_needing_evaluation``), so the fingerprint a scorer
+    persists and the fingerprint the selector compares can never drift apart.
+    Each backend contributes its own scorer identity, model, and effective
+    prompt/policy version.
+    """
+    normalized = (scorer_name or "").strip().lower()
+    if normalized == ScorerName.HEURISTIC.value:
+        return heuristic_input_fingerprint(job, profile)
+    if normalized == ScorerName.LLM.value:
+        return llm_input_fingerprint(job, profile, settings.llm_model)
+    if normalized == ScorerName.OPENCODE.value:
+        return opencode_input_fingerprint(job, profile, settings)
+    raise ScorerError(f"unknown scorer '{scorer_name}'; expected one of: {', '.join(SCORERS)}")
+
+
+def fingerprint_resolver(
+    scorer_name: str, settings: Settings, profile: Profile
+) -> Callable[[Any], str]:
+    """Return ``job -> fingerprint`` bound to one scorer/profile/settings.
+
+    Used by the CLI to make normal selection input-aware: an offer is selected
+    only when no successful evaluation carries its current effective
+    fingerprint. ``--rescore`` deliberately bypasses this.
+    """
+
+    def resolve(job: Any) -> str:
+        return effective_fingerprint(scorer_name, job, profile, settings)
+
+    return resolve
 
 
 #: Total attempts allowed while a scorer response is contract-invalid (malformed
@@ -202,6 +244,31 @@ def evaluate_job(
             profile_id=stored_snapshot.id,
             now=now,
         )
+        # The fallback keeps the requested scorer identity so the offer counts as
+        # evaluated for that backend. Recompute the fingerprint from that same
+        # identity, otherwise input-aware selection would never match the
+        # heuristic-derived fingerprint and would re-run the offer forever.
+        evaluation.input_fingerprint = effective_fingerprint(
+            scorer_name, job, profile, settings
+        )
+
+    # Defense in depth: the real scorers already reject an unsupported currency
+    # before calling a provider, but a scorer that returned a positive verdict
+    # anyway must not be able to publish it. An unsupported currency is an
+    # absolute policy rejection, never overturned by model text.
+    blocker = currency_blocker(getattr(job, "salary", None))
+    if (
+        blocker is not None
+        and str(evaluation.status) == EvaluationStatus.OK.value
+        and str(evaluation.recommendation) != Recommendation.SKIP.value
+    ):
+        evaluation.recommendation = Recommendation.SKIP
+        if blocker not in evaluation.blockers:
+            evaluation.blockers = list(evaluation.blockers) + [blocker]
+        evaluation.rationale = (
+            evaluation.rationale.rstrip()
+            + " [currency policy: unsupported salary currency forces skip]"
+        ).strip()
 
     evaluation = _ensure_contract(evaluation)
     if evaluation.profile_id is None:
@@ -227,7 +294,9 @@ __all__ = [
     "SCORERS",
     "ScorerError",
     "build_snapshot",
+    "effective_fingerprint",
     "evaluate_job",
+    "fingerprint_resolver",
     "get_scorer",
     "load_profile",
     "parse_llm_evaluation",
