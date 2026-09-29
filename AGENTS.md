@@ -74,3 +74,13 @@ do not push them. Do not push at all unless the user asks.
   docstrings, no speculative abstractions.
 - Conventional commit subjects, no AI attribution. Code + tests + docs go in the same commit.
   Do not commit unless asked.
+
+## Collection policy (deliberate deviations — these override the contract above where they conflict)
+
+- LinkedIn: the adapter must not consult `robots.txt` before searching or before fetching
+  details. This is an explicit owner decision (2026-09-28), taken with its cost — the site may
+  answer 403/429 and the IP may be blocked. Do not re-add a robots gate to the LinkedIn
+  collector, do not make it configurable "for safety", and do not treat its absence as a bug to
+  fix: an audit finding is not a reason to change it. LinkedIn requests stay bounded by the same
+  pacing and item caps as every other provider.
+- Tecnoempleo and GetManfred keep their current robots handling. Do not touch it.
