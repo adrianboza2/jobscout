@@ -18,14 +18,19 @@ from .config import Settings, is_safe_to_store
 from .db import (
     create_search_run,
     deactivate_job,
+    deactivate_job_variant,
+    ensure_job_variant,
     finish_search_run,
     get_job,
     insert_detail_fetch,
     insert_raw_document,
     latest_successful_detail_fetch_source,
     record_run_item,
+    resolve_variant_id,
     store_posting,
+    sync_job_active,
     update_job_content,
+    update_job_variant_detail,
 )
 from .models import (
     ContentStatus,
@@ -531,6 +536,28 @@ def ingest_detail_results(
             outcome.notes = (outcome.notes or "") + f" job #{item.job_id} disappeared"
             continue
 
+        # Resolve the provider variant this attempt belongs to, creating it from
+        # the item's own identity if the job predates variants. This is the
+        # provider-scoped row that detail/availability provenance is attached to;
+        # the canonical job stays the deduplicated parent.
+        variant_id = resolve_variant_id(
+            conn,
+            job_id=int(job.id),
+            source=provider,
+            source_job_id=item.source_job_id,
+            url=item.url,
+        )
+        if variant_id is None:
+            variant_id = ensure_job_variant(
+                conn,
+                int(job.id),
+                source=provider,
+                source_job_id=item.source_job_id,
+                url=item.url,
+                timestamp=timestamp,
+                raw_document_id=item.raw_document_id,
+            )
+
         description, content_status, produced_hash = _merge_detail_description(
             job,
             item,
@@ -556,6 +583,23 @@ def ingest_detail_results(
             )
             outcome.changed += 1
 
+        if item.status is DetailFetchStatus.OK:
+            variant_content_status: ContentStatus | None = ContentStatus.OK
+        elif item.status is DetailFetchStatus.PARTIAL and item.description:
+            variant_content_status = ContentStatus.PARTIAL
+        else:
+            variant_content_status = None
+        update_job_variant_detail(
+            conn,
+            variant_id,
+            status=str(item.status),
+            content_status=variant_content_status,
+            content_hash=produced_hash or None,
+            description_chars=len(item.description or ""),
+            fetched_at=item.fetched_at,
+            last_seen_at=timestamp,
+        )
+
         insert_detail_fetch(
             conn,
             JobDetailFetch(
@@ -579,16 +623,22 @@ def ingest_detail_results(
                 fetched_at=item.fetched_at,
                 stored_at=timestamp,
                 raw_document_id=item.raw_document_id,
+                variant_id=variant_id,
                 error=item.error,
                 notes=item.notes,
             ),
         )
 
-        # A definitive 404/410 proves the posting is gone: hide it from the
-        # default listings without deleting its history. Only FAILED results
-        # carrying that machine-readable status qualify, so transient or
-        # access failures never change a job's lifecycle.
-        if item.is_definitive_missing and deactivate_job(conn, int(job.id)):
+        # A definitive 404/410 proves this provider's listing is gone: deactivate
+        # the variant. The canonical job stays active while any other provider
+        # variant is still active, so one provider's disappearance does not hide
+        # a live listing elsewhere. Only FAILED results carrying that
+        # machine-readable status qualify.
+        if item.is_definitive_missing and variant_id is not None:
+            deactivate_job_variant(conn, variant_id)
+            if sync_job_active(conn, int(job.id)):
+                outcome.deactivated += 1
+        elif item.is_definitive_missing and deactivate_job(conn, int(job.id)):
             outcome.deactivated += 1
 
         if item.status is DetailFetchStatus.OK:

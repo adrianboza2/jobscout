@@ -61,6 +61,7 @@ from jobscout.scoring.profile import build_snapshot
 
 REQUIRED_TABLES = {
     "jobs",
+    "job_variants",
     "search_runs",
     "search_run_items",
     "raw_documents",
@@ -210,12 +211,15 @@ def test_init_db_rejects_newer_schema(conn) -> None:
         init_db(conn)
 
 
-def test_new_database_has_nullable_final_url_column(conn) -> None:
-    assert SCHEMA_VERSION == 5
+def test_new_database_has_nullable_migration_columns(conn) -> None:
+    assert SCHEMA_VERSION == 6
     columns = _columns(conn, "job_detail_fetches")
     assert "final_url" in columns
     # Nullable: a fresh install never invents a redirect target.
     assert columns["final_url"] == 0
+    # The variant link is additive and nullable; a fresh row may omit it.
+    assert "variant_id" in columns
+    assert columns["variant_id"] == 0
 
 
 def test_migration_v4_adds_final_url_without_losing_history(tmp_path: Path) -> None:
@@ -581,6 +585,94 @@ def test_jobs_needing_evaluation_respects_scorer(conn, stored_job) -> None:
     assert jobs_needing_evaluation(conn, scorer="heuristic") == []
     assert [job.id for job in jobs_needing_evaluation(conn, scorer="llm")] == [stored_job.id]
     assert [job.id for job in all_active_jobs(conn)] == [stored_job.id]
+
+
+def test_jobs_needing_evaluation_is_input_aware(conn, stored_job) -> None:
+    insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=stored_job.id,
+            scorer=ScorerName.HEURISTIC,
+            overall_score=50,
+            recommendation=Recommendation.CONSIDER,
+            input_fingerprint="current",
+        ),
+    )
+
+    # The stored success matches the current input: nothing to do.
+    assert (
+        jobs_needing_evaluation(
+            conn, scorer="heuristic", fingerprint_for=lambda job: "current"
+        )
+        == []
+    )
+    # A different scorer never satisfies the heuristic selection.
+    assert [
+        job.id
+        for job in jobs_needing_evaluation(
+            conn, scorer="llm", fingerprint_for=lambda job: "current"
+        )
+    ] == [stored_job.id]
+
+
+def test_changed_input_is_not_masked_by_an_older_success(conn, stored_job) -> None:
+    from jobscout.models import EvaluationStatus
+
+    insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=stored_job.id,
+            scorer=ScorerName.HEURISTIC,
+            overall_score=50,
+            recommendation=Recommendation.CONSIDER,
+            input_fingerprint="old-input",
+        ),
+    )
+    # A newer attempt for the changed input failed; the old success must not
+    # hide the fact that the current input is still unevaluated.
+    insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=stored_job.id,
+            scorer=ScorerName.HEURISTIC,
+            status=EvaluationStatus.ERROR,
+            error="transport",
+            input_fingerprint="new-input",
+        ),
+    )
+
+    assert [
+        job.id
+        for job in jobs_needing_evaluation(
+            conn, scorer="heuristic", fingerprint_for=lambda job: "new-input"
+        )
+    ] == [stored_job.id]
+    assert (
+        jobs_needing_evaluation(
+            conn, scorer="heuristic", fingerprint_for=lambda job: "old-input"
+        )
+        == []
+    )
+
+
+def test_unknown_provenance_is_reevaluated(conn, stored_job) -> None:
+    # Historical rows carry an empty fingerprint: they are not trusted as a
+    # match for a real current input.
+    insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=stored_job.id,
+            scorer=ScorerName.HEURISTIC,
+            overall_score=50,
+            recommendation=Recommendation.CONSIDER,
+        ),
+    )
+    assert [
+        job.id
+        for job in jobs_needing_evaluation(
+            conn, scorer="heuristic", fingerprint_for=lambda job: "expected"
+        )
+    ] == [stored_job.id]
 
 
 def test_foreign_keys_cascade_on_job_delete(conn, stored_job) -> None:
