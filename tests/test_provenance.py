@@ -1,12 +1,13 @@
-"""Provider/cycle/position provenance and analytics separation tests.
+"""Provider/cycle/position provenance and analytics comparability tests.
 
 These tests pin three contracts from the multi-platform work unit:
 
 1. ingestion accepts an explicit ``provider`` and never hardcodes LinkedIn;
 2. ``cycle_id`` and ``position_kind`` round-trip through SQLite;
-3. dashboard keyword analytics separate ``(provider, keyword, cycle)`` series so
-   the same literal keyword from two platforms (or two cycles) is never merged,
-   while the existing LinkedIn behavior is unchanged.
+3. dashboard keyword analytics aggregate by ``(provider, keyword)``: a cycle is
+   provenance, not identity, so the same literal keyword from two cycles of one
+   platform is one series, while the same keyword on two platforms stays two.
+   Offer provenance still exposes each observation's real ``cycle_id``.
 """
 
 from __future__ import annotations
@@ -251,26 +252,85 @@ def test_analytics_separate_same_keyword_across_providers(conn) -> None:
     assert offers["linkedin"]["keywords"][0]["position_kind"] == "search_rank"
 
 
-def test_analytics_separate_cycles_for_same_provider_and_keyword(conn) -> None:
-    _seed_provider_run(
+def test_analytics_merge_cycles_for_same_provider_and_keyword(conn) -> None:
+    """A cycle is provenance, not identity: one row and key per provider/keyword."""
+    _, cycle_1_jobs = _seed_provider_run(
         conn,
         provider="linkedin",
         keyword="platform engineer",
         cycle_id="cycle-1",
         postings=[_posting("linkedin", "1", "Platform Engineer", "Acme")],
     )
-    _seed_provider_run(
+    cycle_2_run, cycle_2_jobs = _seed_provider_run(
         conn,
         provider="linkedin",
         keyword="platform engineer",
         cycle_id="cycle-2",
         postings=[_posting("linkedin", "2", "Platform Engineer 2", "Beta")],
     )
+    # One posting observed in both cycles must remain one scored observation.
+    record_run_item(
+        conn,
+        SearchRunItem(
+            run_id=cycle_2_run,
+            job_id=cycle_1_jobs[0],
+            decision=DuplicateKind.PROBABLE_DUPLICATE,
+            rank_in_run=2,
+            position_kind="search_rank",
+            created_at=NOW,
+        ),
+    )
+    insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=cycle_1_jobs[0],
+            scorer=ScorerName.HEURISTIC,
+            overall_score=80.0,
+            recommendation=Recommendation.APPLY,
+            created_at=NOW,
+        ),
+    )
+    # The same literal keyword on another provider must stay a distinct series.
+    _, getmanfred_jobs = _seed_provider_run(
+        conn,
+        provider="getmanfred",
+        keyword="platform engineer",
+        cycle_id=None,
+        postings=[_posting("getmanfred", "g1", "Platform Engineer", "Gamma")],
+        position_kind="none",
+    )
+
     payload = build_payload(conn, top=10, now=None)
-    series = {item["cycle_id"]: item for item in payload["keywords"]}
-    assert set(series) == {"cycle-1", "cycle-2"}
-    assert all(item["unique_jobs"] == 1 for item in series.values())
-    assert series["cycle-1"]["source_key"] != series["cycle-2"]["source_key"]
+
+    series = {(item["provider"], item["keyword"]): item for item in payload["keywords"]}
+    assert set(series) == {
+        ("linkedin", "platform engineer"),
+        ("getmanfred", "platform engineer"),
+    }
+    linkedin = series[("linkedin", "platform engineer")]
+    # Both LinkedIn cycles collapse into one row, one shared filter key, and no
+    # per-cycle identity on the metric.
+    assert linkedin["source_key"] == "linkedin|platform engineer"
+    assert linkedin["unique_jobs"] == 2
+    assert linkedin["sightings"] == 3
+    assert linkedin["scored_jobs"] == 1
+    assert linkedin["avg_score"] == 80.0
+    assert "cycle_id" not in linkedin
+    assert (
+        series[("getmanfred", "platform engineer")]["source_key"]
+        == "getmanfred|platform engineer"
+    )
+
+    # Offer provenance keeps the real cycle ID of every observation.
+    offers = {offer["id"]: offer for offer in payload["offers"]}
+    assert offers[cycle_1_jobs[0]]["keywords"][0]["cycle_id"] == "cycle-1"
+    assert offers[cycle_1_jobs[0]]["keywords"][1]["cycle_id"] == "cycle-2"
+    assert offers[cycle_2_jobs[0]]["keywords"][0]["cycle_id"] == "cycle-2"
+    assert offers[getmanfred_jobs[0]]["keywords"][0]["cycle_id"] is None
+    assert (
+        offers[cycle_1_jobs[0]]["keywords"][0]["source_key"]
+        == "linkedin|platform engineer"
+    )
 
 
 def test_linkedin_regression_provenance_and_rank(conn, settings) -> None:

@@ -371,19 +371,20 @@ def _fetch_active_jobs(
     ).fetchall()
 
 
-def _source_key(provider: Any, keyword: Any, cycle_id: Any) -> str:
-    """Composite identity of a keyword provenance series.
+def _source_key(provider: Any, keyword: Any) -> str:
+    """Composite identity of a keyword analytics series.
 
-    Two platforms (or two search cycles) that used the same literal keyword are
-    different series and must never be aggregated together, so the series key is
-    ``provider|keyword|cycle`` (empty parts included).
+    Two platforms that used the same literal keyword are different series, but a
+    search cycle is provenance rather than identity: the same provider/keyword
+    observed in several cycles is one series, so the key is ``provider|keyword``
+    (empty parts included).
     """
-    return f"{provider or ''}|{keyword or ''}|{cycle_id or ''}"
+    return f"{provider or ''}|{keyword or ''}"
 
 
-def _keyword_source_label(keyword: str, provider: str, cycle_id: str | None) -> str:
-    """Display label that keeps the provider/cycle visible beside the keyword."""
-    suffix = " \u00b7 ".join(part for part in (provider, cycle_id) if part)
+def _keyword_source_label(keyword: str, provider: str) -> str:
+    """Display label that keeps the provider visible beside the keyword."""
+    suffix = provider or ""
     return f"{keyword} \u00b7 {suffix}" if suffix else keyword
 
 
@@ -394,8 +395,9 @@ def _fetch_job_keywords(
 
     Result order is *evidence*, not truth: the observed rank is kept so the
     reader can see where a posting surfaced, never as a quality signal. Each
-    entry is scoped to its provider and cycle so the same literal keyword from
-    two platforms is never merged into one provenance series.
+    entry keeps the provider and the actual ``cycle_id`` of the run that observed
+    it; the shared ``source_key`` is ``provider|keyword`` so the dashboard filter
+    matches every offer the provider surfaced for that keyword.
     """
     if not job_ids:
         return {}
@@ -434,7 +436,7 @@ def _fetch_job_keywords(
                 "decision": str(row["decision"]),
                 "provider": provider,
                 "cycle_id": cycle_id,
-                "source_key": _source_key(provider, keyword, cycle_id),
+                "source_key": _source_key(provider, keyword),
                 "seen_at": row["seen_at"],
             }
         )
@@ -523,12 +525,16 @@ def _fetch_keyword_stats(
     ``posted_at`` and falling back to ``first_seen_at``. ``unknown_age_jobs``
     counts jobs where neither date is usable, so a keyword is never credited with
     freshness it cannot prove.
+
+    All three queries ignore synthetic smoke cycles: a run whose trimmed,
+    case-folded ``cycle_id`` starts with ``smoke`` is test data, not a search
+    result, and must not shape the metrics. Runs with a null or regular cycle ID
+    stay in. The exclusion is applied per query, not by deleting rows.
     """
     sighting_rows = conn.execute(
         """
         SELECT r.provider AS provider,
                r.query AS keyword,
-               COALESCE(r.cycle_id, '') AS cycle_key,
                COUNT(*) AS sightings,
                COUNT(DISTINCT i.job_id) AS unique_jobs,
                SUM(CASE WHEN i.decision <> 'new' THEN 1 ELSE 0 END) AS duplicate_sightings
@@ -536,9 +542,10 @@ def _fetch_keyword_stats(
         JOIN search_runs r ON r.id = i.run_id
         JOIN jobs j ON j.id = i.job_id
         WHERE r.query IS NOT NULL AND TRIM(r.query) <> ''
+          AND LOWER(TRIM(COALESCE(r.cycle_id, ''))) NOT LIKE 'smoke%'
           AND j.is_active = 1
-        GROUP BY r.provider, r.query, COALESCE(r.cycle_id, '')
-        ORDER BY r.provider, r.query, cycle_key
+        GROUP BY r.provider, r.query
+        ORDER BY r.provider, r.query
         """
     ).fetchall()
 
@@ -546,19 +553,18 @@ def _fetch_keyword_stats(
         """
         SELECT r.provider AS provider,
                r.query AS keyword,
-               COALESCE(r.cycle_id, '') AS cycle_key,
                COUNT(DISTINCT i.job_id) AS all_jobs,
                COUNT(DISTINCT CASE WHEN j.is_active = 0 THEN i.job_id END) AS inactive_jobs
         FROM search_run_items i
         JOIN search_runs r ON r.id = i.run_id
         JOIN jobs j ON j.id = i.job_id
         WHERE r.query IS NOT NULL AND TRIM(r.query) <> ''
-        GROUP BY r.provider, r.query, COALESCE(r.cycle_id, '')
+          AND LOWER(TRIM(COALESCE(r.cycle_id, ''))) NOT LIKE 'smoke%'
+        GROUP BY r.provider, r.query
         """
     ).fetchall()
     inactive = {
-        _source_key(row["provider"], row["keyword"], row["cycle_key"]): row
-        for row in inactive_rows
+        _source_key(row["provider"], row["keyword"]): row for row in inactive_rows
     }
 
     observation_rows = conn.execute(
@@ -566,17 +572,16 @@ def _fetch_keyword_stats(
         WITH keyword_jobs AS (
             SELECT DISTINCT r.provider AS provider,
                             r.query AS keyword,
-                            COALESCE(r.cycle_id, '') AS cycle_key,
                             i.job_id AS job_id
             FROM search_run_items i
             JOIN search_runs r ON r.id = i.run_id
             JOIN jobs j ON j.id = i.job_id
             WHERE r.query IS NOT NULL AND TRIM(r.query) <> ''
+              AND LOWER(TRIM(COALESCE(r.cycle_id, ''))) NOT LIKE 'smoke%'
               AND j.is_active = 1
         )
         SELECT kj.provider AS provider,
                kj.keyword AS keyword,
-               kj.cycle_key AS cycle_key,
                j.posted_at AS posted_at,
                j.first_seen_at AS first_seen_at,
                e.overall_score AS score,
@@ -586,22 +591,21 @@ def _fetch_keyword_stats(
         JOIN jobs j ON j.id = kj.job_id
         LEFT JOIN latest_evaluations e ON e.job_id = kj.job_id
         LEFT JOIN job_feedback f ON f.job_id = kj.job_id
-        ORDER BY kj.provider, kj.keyword, kj.cycle_key, kj.job_id
+        ORDER BY kj.provider, kj.keyword, kj.job_id
         """
     ).fetchall()
 
     observations: dict[str, list[sqlite3.Row]] = {}
     for row in observation_rows:
         observations.setdefault(
-            _source_key(row["provider"], row["keyword"], row["cycle_key"]), []
+            _source_key(row["provider"], row["keyword"]), []
         ).append(row)
 
     stats: list[dict[str, Any]] = []
     for row in sighting_rows:
         provider = str(row["provider"] or "")
         keyword = str(row["keyword"])
-        cycle_id = str(row["cycle_key"]) or None
-        source_key = _source_key(provider, keyword, row["cycle_key"])
+        source_key = _source_key(provider, keyword)
         rows_for_keyword = observations.get(source_key, [])
 
         scores = sorted(
@@ -647,9 +651,8 @@ def _fetch_keyword_stats(
             {
                 "keyword": keyword,
                 "provider": provider,
-                "cycle_id": cycle_id,
                 "source_key": source_key,
-                "label": _keyword_source_label(keyword, provider, cycle_id),
+                "label": _keyword_source_label(keyword, provider),
                 "sightings": sightings,
                 "unique_jobs": unique_jobs,
                 "duplicate_sightings": duplicate_sightings,
@@ -688,7 +691,7 @@ def _top_keywords(
     with no scored job is absent from quality, one with no apply/consider is
     absent from model yield, and one with no imported human decision is absent
     from human approval. An empty list is the honest answer, never a placeholder
-    row. Series are sorted by provider/keyword/cycle so two platforms that used
+    row. Series are sorted by provider/keyword so two platforms that used
     the same literal keyword stay separate and deterministic.
     """
     quality = sorted(
@@ -698,7 +701,6 @@ def _top_keywords(
             -item["unique_jobs"],
             item["provider"],
             item["keyword"],
-            item["cycle_id"] or "",
         ),
     )[:limit]
     yield_ranked = sorted(
@@ -708,7 +710,6 @@ def _top_keywords(
             -(float(item["avg_score"]) if item["avg_score"] is not None else 0.0),
             item["provider"],
             item["keyword"],
-            item["cycle_id"] or "",
         ),
     )[:limit]
     human = sorted(
@@ -722,7 +723,6 @@ def _top_keywords(
             -item["human_reviewed"],
             item["provider"],
             item["keyword"],
-            item["cycle_id"] or "",
         ),
     )[:limit]
     return quality, yield_ranked, human
@@ -1999,8 +1999,9 @@ _SCRIPT = r"""
     }
     if (filters.keyword) {
       var hit = offer.keywords.some(function (entry) {
-        // The filter value is the provider|keyword|cycle series key, so the same
-        // literal keyword from two platforms is never selected together.
+        // The filter value is the provider|keyword series key, so the same
+        // literal keyword from two platforms is never selected together, while
+        // every cycle of one platform's keyword matches.
         return (entry.source_key || entry.keyword) === filters.keyword;
       });
       if (!hit) { return false; }
@@ -2518,8 +2519,8 @@ _SCRIPT = r"""
   function populateKeywordFilter() {
     var select = document.getElementById("filter-keyword");
     payload.keywords.forEach(function (item) {
-      // The option text keeps the platform/cycle visible; its value is the
-      // provider|keyword|cycle series key used by the filter predicate.
+      // The option text keeps the platform visible; its value is the
+      // provider|keyword series key used by the filter predicate.
       var option = el("option", null, item.label || item.keyword);
       option.value = item.source_key || item.keyword;
       select.appendChild(option);

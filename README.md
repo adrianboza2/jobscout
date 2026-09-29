@@ -451,8 +451,14 @@ el parser sigue siendo conservador y falla cerrado ante HTML no reconocible.
 Convención de procedencia: `provider` (plataforma), `query` (palabra clave),
 `cycle_id` (ciclo de búsqueda comparable) y `position_kind`
 (`search_rank` = posición real en la búsqueda; `none` = inventario sin orden). La
-analítica de palabras clave del tablero separa por `provider|keyword|cycle`, así
-que el mismo término en LinkedIn, GetManfred y Tecnoempleo nunca se mezcla.
+analítica de palabras clave del tablero identifica cada serie por
+`provider|keyword`: el ciclo es procedencia, no identidad, así que las ofertas del
+mismo `provider`/`keyword` observadas en varios ciclos se agregan en una sola
+fila y clave de filtro compartida, y la procedencia por oferta conserva su
+`cycle_id` real. El mismo término en LinkedIn, GetManfred y Tecnoempleo nunca se
+mezcla. Los ciclos cuyo ID empieza con `smoke` (recortado, sin distinguir
+mayúsculas) se excluyen de la tabla de analítica; no se borran filas ni la
+procedencia por oferta.
 
 InfoJobs queda **bloqueado**: `https://www.infojobs.net/candidate/my-infojobs.xhtml`
 es una página privada autenticada y solo podrá añadirse tras una autorización de

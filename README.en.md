@@ -447,9 +447,13 @@ remains conservative and fails closed when the HTML is not recognizable.
 
 Provenance convention: `provider` (platform), `query` (keyword), `cycle_id`
 (comparable search cycle), and `position_kind` (`search_rank` = real search
-position; `none` = inventory with no order). The dashboard keyword analytics are
-keyed by `provider|keyword|cycle`, so the same term on LinkedIn, GetManfred, and
-Tecnoempleo is never merged.
+position; `none` = inventory with no order). The dashboard keyword analytics
+identify each series by `provider|keyword`: the cycle is provenance, not identity,
+so offers for the same `provider`/`keyword` seen across several cycles aggregate
+into one row and a shared filter key, while per-offer provenance keeps its actual
+`cycle_id`. The same term on LinkedIn, GetManfred, and Tecnoempleo is never
+merged. Cycles whose ID starts with `smoke` (trimmed, case-insensitive) are
+excluded from the analytics table; no rows or per-offer provenance are deleted.
 
 InfoJobs stays **blocked**: `https://www.infojobs.net/candidate/my-infojobs.xhtml`
 is a private, authenticated page and may only be added after an official API

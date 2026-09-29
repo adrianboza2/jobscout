@@ -115,7 +115,12 @@ def _score(job_id: int, score: float, recommendation: str, **overrides) -> Evalu
     return Evaluation(**payload)
 
 
-def _run(conn: sqlite3.Connection, keyword: str, provider: str = "linkedin") -> SearchRun:
+def _run(
+    conn: sqlite3.Connection,
+    keyword: str,
+    provider: str = "linkedin",
+    cycle_id: str | None = None,
+) -> SearchRun:
     return create_search_run(
         conn,
         SearchRun(
@@ -123,6 +128,7 @@ def _run(conn: sqlite3.Connection, keyword: str, provider: str = "linkedin") -> 
             label=f"{provider}:{keyword}",
             query=keyword,
             location="Buenos Aires",
+            cycle_id=cycle_id,
             params={"max_pages": 1, "fixture_path": PROFILE_PATH_TOKEN},
             status=SearchRunStatus.COMPLETED,
             started_at="2026-09-15T10:00:00Z",
@@ -2307,6 +2313,105 @@ def test_inactive_jobs_are_excluded_from_keyword_analytics(db_file: Path) -> Non
     assert after["summary"]["active_jobs"] == 2
     # The offers list is consistent with the analytics: both drop the job.
     assert all(offer["title"] != "Platform Engineer" for offer in after["offers"])
+
+
+def test_keyword_analytics_exclude_smoke_cycles(tmp_path: Path) -> None:
+    """Smoke cycles contribute to no keyword metric, regular cycles still do.
+
+    Every analytics query independently excludes the smoke prefix: sightings,
+    the inactive-job totals, and the observation inputs that feed score and
+    freshness. A regular cycle whose ID merely *contains* ``smoke`` stays in.
+    """
+    path = tmp_path / "smoke-cycles.sqlite3"
+    conn = connect(path)
+    try:
+        init_db(conn)
+        regular, _ = store_posting(
+            conn, _posting(source_job_id="1000000001"), now="2026-09-15T10:00:00Z"
+        )
+        regular_unscored, _ = store_posting(
+            conn,
+            _posting(source_job_id="1000000002", title="Regular Unscored"),
+            now="2026-09-15T10:00:00Z",
+        )
+        substring, _ = store_posting(
+            conn,
+            _posting(source_job_id="1000000003", title="Contains Smoke"),
+            now="2026-09-15T10:00:00Z",
+        )
+        null_cycle, _ = store_posting(
+            conn,
+            _posting(source_job_id="1000000004", title="Null Cycle"),
+            now="2026-09-15T10:00:00Z",
+        )
+        smoke_scored, _ = store_posting(
+            conn,
+            _posting(source_job_id="2000000001", title="Smoke Scored"),
+            now="2026-09-15T10:00:00Z",
+        )
+        smoke_inactive, _ = store_posting(
+            conn,
+            _posting(source_job_id="2000000002", title="Smoke Inactive"),
+            now="2026-09-15T10:00:00Z",
+        )
+        smoke_only, _ = store_posting(
+            conn,
+            _posting(source_job_id="2000000003", title="Smoke Only Keyword"),
+            now="2026-09-15T10:00:00Z",
+        )
+
+        regular_run = _run(conn, "python", cycle_id="cycle-1")
+        _observe(conn, regular_run.id, regular.id, rank=1)
+        _observe(conn, regular_run.id, regular_unscored.id, rank=2)
+        substring_run = _run(conn, "python", cycle_id="cycle-smoke")
+        _observe(conn, substring_run.id, substring.id, rank=1)
+        null_run = _run(conn, "python", cycle_id=None)
+        _observe(conn, null_run.id, null_cycle.id, rank=1)
+
+        # Reproduce the four reported smoke cycles across seven runs.
+        smoke_runs = (
+            ("smoke-20260928-2231", "python", smoke_scored.id),
+            ("smoke-20260928-2231", "python", smoke_scored.id),
+            ("smoke-20260928-2232", "python", smoke_inactive.id),
+            ("smoke-20260928-2232", "python", smoke_inactive.id),
+            ("smoke-20260929-1130", "python", smoke_scored.id),
+            ("smoke-prueba", "smoke keyword", smoke_only.id),
+            ("smoke-prueba", "smoke keyword", smoke_only.id),
+        )
+        for cycle_id, keyword, job_id in smoke_runs:
+            smoke_run = _run(conn, keyword, cycle_id=cycle_id)
+            _observe(conn, smoke_run.id, job_id, rank=1)
+
+        insert_evaluation(conn, _score(regular.id, 80.0, Recommendation.APPLY))
+        insert_evaluation(conn, _score(substring.id, 40.0, Recommendation.APPLY))
+        insert_evaluation(conn, _score(null_cycle.id, 60.0, Recommendation.CONSIDER))
+        # A smoke-only score would move avg_score and scored_jobs if it leaked in.
+        insert_evaluation(conn, _score(smoke_scored.id, 10.0, Recommendation.APPLY))
+        insert_evaluation(conn, _score(smoke_only.id, 90.0, Recommendation.APPLY))
+        with conn:
+            conn.execute("UPDATE jobs SET is_active = 0 WHERE id = ?", (smoke_inactive.id,))
+    finally:
+        conn.close()
+
+    payload = _payload(path)
+    stats = {item["keyword"]: item for item in payload["keywords"]}
+
+    # All four smoke cycles / seven runs stay out of the table. A smoke-only
+    # keyword row does not exist at all.
+    assert list(stats) == ["python"]
+    assert all("smoke" not in json.dumps(item).lower() for item in payload["keywords"])
+
+    keyword = stats["python"]
+    assert keyword["source_key"] == "linkedin|python"
+    # regular(2) + cycle-smoke(1) + null cycle(1); the two smoke runs are gone.
+    assert keyword["sightings"] == 4
+    assert keyword["unique_jobs"] == 4
+    # (80 + 40 + 60) / 3: the smoke-only 10 is not observed.
+    assert keyword["scored_jobs"] == 3
+    assert keyword["avg_score"] == 60.0
+    # The smoke-only inactive offer is absent from the inactive totals.
+    assert keyword["inactive_jobs"] == 0
+    assert keyword["inactive_rate"] == 0.0
 
 
 def test_keyword_analytics_are_empty_without_provenance(tmp_path: Path) -> None:
