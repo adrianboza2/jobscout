@@ -42,6 +42,19 @@ Still manual and open:
   activating a new live query (the catalog is the review gate);
 - no batch/live fan-out: one explicit `search-linkedin --confirm-network` per
   query, by design.
+- (open) drop the cycle date from the keyword identity and filter the smoke cycles out
+  of the analytics. Today `_source_key()` keys on `provider|keyword|cycle_key`, so the
+  same term is split across cycles, and the probe cycles (`smoke-*`, `smoke-prueba` — 7
+  runs so far) inject `Junior DevOps Engineer`, a term nobody searches for, into the
+  table with the same weight as an approved query. The identity should be
+  `provider|keyword` (provider and term are the identity, the cycle is only provenance)
+  and the smoke/test cycles should be excluded from the keyword table instead of being
+  dated apart.
+- (open, after the previous) prune the bottom of the catalog with thresholds read from
+  the metrics that already exist: deactivate the worst-scoring 25% of offers, and work
+  out which threshold values (average score, top-five/top-ten share, duplicate rate,
+  human approval rate) cut the worst 25% of keywords with the least collateral loss.
+  No new metrics, and no keyword removed on fewer than three comparable cycles.
 
 Current high-value query families include:
 
