@@ -115,7 +115,7 @@ Prepare the real profile before any sweep:
 | 1 | Controlled sweep | `python -m jobscout keyword-plan`, then `python -m jobscout search-linkedin --keywords "..." --dry-run`; to run it, replace `--dry-run` with `--confirm-network` | Discovers new offers. `keyword-plan` is offline; every live search is an explicit human action. | Semi-automatic: you authorize each query |
 | 2 | Enrich | `python -m jobscout fetch-details --max-items 10 --confirm-network` (or `fetch-getmanfred-details` / `fetch-tecnoempleo-details` per platform, or `--fixture` to stay offline) | Fetches each offer's full description, bounded in volume. | Semi-automatic: you authorize each run |
 | 3 | Score with MiMo | `python -m jobscout score --all --scorer opencode` | The default scorer (OpenCode + MiMo) evaluates only offers that have no evaluation yet. | Scoring is automatic; the apply decision is not |
-| 4 | Generate the dashboard | `python -m jobscout dashboard --top 25` | Writes a local HTML report with offers, scores, link evidence, and preference filters. | Automatic and read-only |
+| 4 | Generate the dashboard | `python -m jobscout dashboard` | Writes a local HTML report with every active offer, scores, link evidence, and preference filters. | Automatic and read-only |
 | 5 | Review offers | Open `reports/jobscout-dashboard.html` | You mark **Aplicar** or **Descartar** in the browser. | Human decision only |
 | 6 | Export/import feedback | Export the JSON from the dashboard, then run `python -m jobscout import-feedback jobscout-feedback.json` | Your decisions move from `localStorage` to the SQLite `job_feedback` table. | Import runs automatically once you invoke it |
 | 7 | Calibrate | `python -m jobscout calibrate --scorer opencode` | Compares the model recommendation with your imported human decision. Read-only; it adjusts nothing. | Automatic and read-only |
@@ -181,19 +181,21 @@ English so the report never drifts from the database.
 
 ```bash
 # POSIX
-python -m jobscout dashboard --output reports/jobscout-dashboard.html --top 25
+python -m jobscout dashboard --output reports/jobscout-dashboard.html
 xdg-open reports/jobscout-dashboard.html   # Linux
 open reports/jobscout-dashboard.html       # macOS
 ```
 
 ```powershell
 # Windows PowerShell
-python -m jobscout dashboard --output reports\jobscout-dashboard.html --top 25
+python -m jobscout dashboard --output reports\jobscout-dashboard.html
 Start-Process reports\jobscout-dashboard.html
 ```
 
-- Default output path: `reports/jobscout-dashboard.html` (git-ignored). Default
-  `--top`: `25`. Forward slashes also work on Windows:
+- Default output path: `reports/jobscout-dashboard.html` (git-ignored). By default
+  the report embeds **every active offer**; `--top N` bounds it to the best `N`
+  and keeps the same explicit cap as before. Deactivated offers stay in SQLite but
+  are excluded by `is_active = 1`. Forward slashes also work on Windows:
   `--output reports/dashboard.html`.
 - The report never embeds the job description, raw payloads, the profile,
   contact data, API keys, or absolute local paths.
@@ -272,6 +274,14 @@ human convention), and runs from different platforms or cycles are not guarantee
 to be comparable. Today there is therefore **no** "new in the latest cycle" view:
 it cannot be computed trustworthily and is not approximated. The only isolation
 predicate is the absence of a `job_feedback` row.
+
+### No title-based seniority filter
+
+A filter that hid offers by title keywords (`senior`, `sr`, `lead`, `architect`,
+and similar) was tried and **deliberately removed**: the heuristic produced both
+false negatives (real noise slipped through) and false positives (good offers
+were hidden). The dashboard shows every active offer again; seniority judgement
+stays with the evaluator's prompt, not the title.
 
 Once feedback is imported, `calibrate` produces the evidence of how well the
 model agrees with you:
@@ -385,6 +395,7 @@ subcommand), and `--version`.
 | `dashboard [--output PATH] [--top N]` | Write a self-contained local HTML report (read-only, offline). |
 | `import-feedback PATH [--project-id ID]` | Store a dashboard feedback export in SQLite (offline, idempotent). |
 | `calibrate [--scorer heuristic\|llm\|opencode]` | Compare each job's latest valid evaluation with imported human feedback (read-only, offline). |
+| `prune [--apply]` | Plan the worst quarter of scored offers and provider-specific keyword series (read-only preview; `--apply` deactivates only the selected offers). |
 
 Exit codes: `0` success, `1` error, `2` refusal (collector disabled, access
 denied, or a request that was intentionally not performed).
@@ -596,6 +607,48 @@ on Linux or `terminal-notifier` on macOS) discovered with `shutil.which`; when
 none exists it falls back to stdout. **There is no scheduler, daemon, cron,
 background service, automatic run, remote delivery, or application.**
 
+### Catalog pruning (offline, preview by default)
+
+`prune` is a deterministic, offline plan for the worst quarter of the catalog. It
+uses only metrics jobscout already stores, adds no composite score, and changes
+nothing unless you ask it to.
+
+```bash
+# Preview: read-only, never creates or writes the database
+python -m jobscout prune
+python -m jobscout prune --json
+
+# Explicit action: deactivate only the offers the plan selected
+python -m jobscout prune --apply
+```
+
+What the plan reports:
+
+| Part | Rule |
+|------|------|
+| Offer cut | Active offers with a successful `latest_evaluations.overall_score`, ranked ascending, `floor(25% x count)` selected, ties broken by ascending job id. Unscored and inactive offers are never selected. |
+| Keyword candidates | Per **provider** series (`provider` + literal query) ranked by ascending `avg_score`, `floor(25% x eligible series)` per provider, ties broken by query. A provider with fewer than four eligible series is not pruned. |
+| Unique-offer cost | For each worst-quarter series, `unique_offers` counts the active offers **no other query of the same provider** surfaced, and `unique_good_offers` counts those scoring at least `45`. |
+| Context columns | `avg_score`, `top5_avg_score`, `top10_avg_score`, `duplicate_rate`, and `human_apply_rate`, shown as-is. A missing human approval rate reads as unavailable, never `0`. |
+
+Safety guarantees:
+
+- **Preview is non-mutating.** The default opens the existing database read-only
+  (SQLite `mode=ro` plus `PRAGMA query_only`) and writes no row; a missing
+  database is a clear error, not a new file.
+- **`--apply` is bounded and history-preserving.** It deactivates exactly the
+  selected offers through the existing `deactivate_job` path, so evaluations,
+  feedback, and fetch records stay. It never deletes a row and never creates a
+  database.
+- **Provider identity is preserved.** Cutting `query|tecnoempleo` can never touch
+  `query|linkedin`.
+- **Never cost a good offer (owner rule).** A series that alone surfaced an offer
+  scoring `>= 45` is not proposed: it moves to `held_back_keywords` (text and
+  JSON) with its measured `unique_offers`/`unique_good_offers` and the reason.
+- **Recommendation only.** Keyword candidates are never applied: the keyword
+  catalog is not mutated and no future query is suppressed automatically. No
+  cycle-count gate exists.
+
 ## Scoring
 
 All three scorers return the same explainable shape: `overall_score` (0-100),
@@ -662,8 +715,9 @@ families of queries, with no generation and no expansion past that list. The
 `Junior DevOps Engineer`, `Platform Engineer`); the `security` families add Cloud
 Security and DevSecOps coverage (`Cloud Security Engineer`, `Junior Cloud Security
 Engineer`, `DevSecOps Engineer`, `Junior DevSecOps Engineer`, `Azure Cloud
-Security`, `Azure DevSecOps`, IAM, and security infrastructure). Each family
-declares at most `HARD_MAX_QUERIES_PER_FAMILY` queries.
+Security`, `Azure Security Engineer`, `Azure DevSecOps`, and security
+infrastructure). Each family declares at most `HARD_MAX_QUERIES_PER_FAMILY`
+queries.
 
 ```bash
 python -m jobscout keyword-plan                          # every family, offline
@@ -677,6 +731,40 @@ search means replacing `--dry-run` with `--confirm-network`, always an explicit
 human action. `JOBSCOUT_KEYWORD_FAMILIES` chooses which families are listed when
 `--family` is omitted; an unknown id fails at startup.
 
+### Retired searches (owner rule, 2026-09-30)
+
+A `(provider, query)` pair is retired only when cutting it would cost **no good
+offer**. The cost is the active offers that no other query of the same provider
+surfaced; a cost offer is *good* when it scores at least `45`. Seven pairs meet
+that test and can no longer be planned or run, not even in `--dry-run`:
+
+| Provider | Retired queries |
+|----------|-----------------|
+| Tecnoempleo | `Platform Engineer`, `Azure Security Engineer`, `IAM Engineer`, `Junior Cloud Security Engineer`, `Security Infrastructure Engineer` |
+| LinkedIn | `Identity and Access Management Engineer`, `IAM Engineer` |
+
+- **Restored.** `Cloud Security Engineer|linkedin` (0 unique offers) and
+  `Platform Engineer|linkedin` (30 unique, 4 good) are active again; the audit
+  showed retiring `Platform Engineer` would cost good offers.
+- **Kept active.** `Cloud Security Engineer|tecnoempleo` (7 unique, 2 good),
+  `Identity and Access Management Engineer|tecnoempleo` (8 unique, 2 good), and
+  `devops|tecnoempleo` (18 unique, 2 good) are **not** retired: each would cost
+  good offers.
+- The durable registry lives in `RETIRED_SEARCHES` (`src/jobscout/keywords.py`)
+  with provider, query, date, and reason, and each provider's search-config
+  constructor enforces it (direct callers, CLI, and `--dry-run`).
+- Matching is **full normalized equality** (case, whitespace, and diacritics
+  folded), never a substring: `Senior Platform Engineer` stays allowed.
+- The same literal stays available on any provider not listed; that is why
+  `Azure Security Engineer` remains in the LinkedIn catalog.
+- Search history and dashboard analytics are preserved: no row is deleted, and
+  retired pairs are only omitted as `prune` candidates.
+- In the dashboard, retired series are excluded from the keyword table and the
+  three ranking lists by default, but stay embedded and flagged as `retired`
+  (with date and reason) in the history. `summary.keywords` still counts every
+  analyzed series, retired ones included, and the summary note reports how many
+  are retired. Per-offer provenance is unchanged.
+
 Per-keyword provenance (which search surfaced each job, and at what position) is
 stored in SQLite, and the dashboard aggregates it:
 
@@ -688,7 +776,9 @@ stored in SQLite, and the dashboard aggregates it:
 4. Generate the dashboard and open the **keyword performance** section: one row
    per keyword with *Apariciones*, *Ofertas únicas*, *Tasa duplicados*, *Puntaje
    promedio*, *Top 5*, *Top 10*, *Con puntaje*, *Aplicar*, *Considerar*,
-   *Revisadas*, *Tasa aplicar (humano)*, *Frescura*, and *No activas*.
+   *Revisadas*, *Tasa aplicar (humano)*, *Frescura*, and *No activas*. Retired
+   series are not shown; if every series is retired, the table falls back to its
+   empty state instead of rendering broken.
 5. Prioritize the keywords with the best average score, more model
    apply/consider, and the best human approval rate; drop the ones that only add
    duplicate sightings or no longer surface active postings.
@@ -835,8 +925,9 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
 - `JOBSCOUT_OPENCODE_COMMAND` must be an absolute path or a `PATH`-resolvable
   name; a relative path is refused.
 - Salary parsing is heuristic and only used when the profile defines a minimum.
-- The dashboard embeds only the top `--top` offers, but keyword analytics are
-  computed over the whole database.
+- The dashboard embeds every active offer by default; `--top N` bounds the report
+  to the best `N`, but keyword analytics are computed over the whole database.
+  Deactivated offers stay saved but are not shown.
 - `keyword-plan` does not run searches: it prints the bounded plan and one command
   per query. There is no batch mode that fires several live searches at once; each
   query is an explicit `search-linkedin` run with `--confirm-network`.

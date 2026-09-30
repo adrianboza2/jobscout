@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .db import connect_readonly, latest_detail_fetches_for_jobs
+from .keywords import retired_search
 from .models import (
     ACTIVE_FEEDBACK_DECISIONS,
     LEGACY_FEEDBACK_DECISIONS,
@@ -59,12 +60,17 @@ from .timeutil import parse_datetime, utcnow, utcnow_iso
 #: is never published by accident.
 DEFAULT_OUTPUT = Path("reports/jobscout-dashboard.html")
 
-#: Default number of ranked offers embedded in the report.
-DEFAULT_TOP = 25
+#: Default number of ranked offers embedded in the report. ``None`` means every
+#: active offer: the report is a local, read-only inventory, so the default must
+#: not silently hide active offers behind an implicit cap. Deactivated offers
+#: stay in SQLite but are excluded by the ``is_active = 1`` query.
+DEFAULT_TOP: int | None = None
 
-#: Hard cap on ``--top``. The whole payload is embedded in one HTML file, so an
-#: unbounded value would let a typo build a report large enough to freeze a
-#: browser. Raising it is a deliberate, reviewable change.
+#: Hard cap on an explicit ``--top``. The whole payload is embedded in one HTML
+#: file, so an unbounded *explicit* value would let a typo build a report large
+#: enough to freeze a browser. It deliberately does not apply to the default,
+#: which includes every active offer. Raising it is a deliberate, reviewable
+#: change.
 MAX_TOP = 1000
 
 #: Payload schema written into the HTML and used to shape the localStorage key.
@@ -229,13 +235,15 @@ def project_key(db_path: str | Path) -> str:
     return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
 
 
-def _validate_top(top: int) -> int:
-    """Return ``top`` as an int, or fail with a user-facing error.
+def _validate_top(top: int | None) -> int | None:
+    """Return ``top`` as a bounded int, or ``None`` for "every active offer".
 
-    A non-positive value cannot be expressed as a SQL ``LIMIT`` and a huge value
-    would produce an unusable report, so both are refused before any file is
-    touched.
+    An explicit non-positive value cannot be expressed as a SQL ``LIMIT`` and a
+    huge one would produce an unusable report, so both are refused before any
+    file is touched. ``None`` is the all-offers default and stays unbounded.
     """
+    if top is None:
+        return None
     try:
         value = int(top)
     except (TypeError, ValueError) as exc:
@@ -316,13 +324,16 @@ def _concisify(text: str | None) -> str:
 
 
 def _fetch_active_jobs(
-    conn: sqlite3.Connection, *, top: int
+    conn: sqlite3.Connection, *, top: int | None
 ) -> list[sqlite3.Row]:
     """Active jobs ranked by latest successful score, then freshness.
 
     The ``latest_evaluations`` view is the same source of truth ``rank`` and
-    ``list`` use, so the dashboard never disagrees with the CLI.
+    ``list`` use, so the dashboard never disagrees with the CLI. ``top`` is
+    ``None`` for the all-active-offers default; SQLite treats a negative
+    ``LIMIT`` as "no upper bound", so the same statement serves both cases.
     """
+    limit = -1 if top is None else int(top)
     return conn.execute(
         """
         SELECT j.id AS id,
@@ -367,7 +378,7 @@ def _fetch_active_jobs(
                  j.id DESC
         LIMIT ?
         """,
-        (int(top),),
+        (limit,),
     ).fetchall()
 
 
@@ -646,6 +657,10 @@ def _fetch_keyword_stats(
         human_reject = decisions.count("reject")
         duplicate_sightings = int(row["duplicate_sightings"] or 0)
         sightings = int(row["sightings"] or 0)
+        # A retired pair is still stored history, but it is no longer an active
+        # search. The flag lets the payload and the renderer keep active and
+        # retired series apart without deleting the analytics row.
+        retirement = retired_search(provider, keyword)
 
         stats.append(
             {
@@ -653,6 +668,9 @@ def _fetch_keyword_stats(
                 "provider": provider,
                 "source_key": source_key,
                 "label": _keyword_source_label(keyword, provider),
+                "retired": retirement is not None,
+                "retired_on": retirement.retired_on if retirement else None,
+                "retired_reason": retirement.reason if retirement else None,
                 "sightings": sightings,
                 "unique_jobs": unique_jobs,
                 "duplicate_sightings": duplicate_sightings,
@@ -693,7 +711,11 @@ def _top_keywords(
     from human approval. An empty list is the honest answer, never a placeholder
     row. Series are sorted by provider/keyword so two platforms that used
     the same literal keyword stay separate and deterministic.
+
+    Retired series are excluded before ranking, so they never occupy a slot and a
+    still-active series can be promoted into the list.
     """
+    stats = [item for item in stats if not item.get("retired")]
     quality = sorted(
         (item for item in stats if item["scored_jobs"] > 0 and item["avg_score"] is not None),
         key=lambda item: (
@@ -729,7 +751,11 @@ def _top_keywords(
 
 
 def _summary(
-    conn: sqlite3.Connection, offers: Sequence[dict[str, Any]], *, keyword_count: int
+    conn: sqlite3.Connection,
+    offers: Sequence[dict[str, Any]],
+    *,
+    keyword_count: int,
+    retired_keyword_count: int = 0,
 ) -> dict[str, Any]:
     scored = [offer for offer in offers if offer["score"] is not None]
     counts = {name: 0 for name in RECOMMENDATION_ORDER}
@@ -767,6 +793,9 @@ def _summary(
         # Imported human decisions, a different signal from the model
         # recommendation and the only source of the human rate columns.
         "human_reviewed_jobs": human_reviewed_jobs,
+        # ``keywords`` counts every analyzed series; this split lets the UI
+        # explain how many of them are retired and excluded from the table.
+        "retired_keywords": retired_keyword_count,
     }
 
 
@@ -805,15 +834,17 @@ def _warnings(summary: dict[str, Any], *, keyword_count: int) -> list[str]:
 def build_payload(
     conn: sqlite3.Connection,
     *,
-    top: int = DEFAULT_TOP,
+    top: int | None = DEFAULT_TOP,
     project_id: str = "",
     database_label: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the serializable dashboard payload from the database.
 
-    Only report-safe fields are included. ``database_label`` is an optional
-    human label (a filename, never an absolute path) shown in the header.
+    ``top=None`` (the default) embeds every active offer; an explicit positive
+    integer bounds the embedded offers. Only report-safe fields are included.
+    ``database_label`` is an optional human label (a filename, never an absolute
+    path) shown in the header.
     """
     top = _validate_top(top)
     reference = now or utcnow()
@@ -907,8 +938,17 @@ def build_payload(
         )
 
     keyword_stats = _fetch_keyword_stats(conn, now=reference)
-    top_quality, top_yield, top_human = _top_keywords(keyword_stats)
-    summary = _summary(conn, offers, keyword_count=len(keyword_stats))
+    # The analytics table, the origin filter, and the top lists show only active
+    # searches by default; retired series stay in the payload, marked, as history.
+    active_keyword_stats = [item for item in keyword_stats if not item["retired"]]
+    retired_keyword_stats = [item for item in keyword_stats if item["retired"]]
+    top_quality, top_yield, top_human = _top_keywords(active_keyword_stats)
+    summary = _summary(
+        conn,
+        offers,
+        keyword_count=len(keyword_stats),
+        retired_keyword_count=len(retired_keyword_stats),
+    )
 
     return {
         "schema": DASHBOARD_SCHEMA,
@@ -916,11 +956,12 @@ def build_payload(
         "project_id": project_id,
         "database_label": database_label,
         "generated_at": utcnow_iso(),
-        "limits": {"top": int(top)},
+        "limits": {"top": top},
         "summary": summary,
         "warnings": _warnings(summary, keyword_count=len(keyword_stats)),
         "offers": offers,
-        "keywords": keyword_stats,
+        "keywords": active_keyword_stats,
+        "retired_keywords": retired_keyword_stats,
         "top_quality": top_quality,
         "top_yield": top_yield,
         "top_human": top_human,
@@ -2348,8 +2389,8 @@ _SCRIPT = r"""
     var matchesList = payload.offers.filter(matches).sort(compare);
     matchesList.forEach(function (offer) { container.appendChild(renderCard(offer)); });
     document.getElementById("empty-state").hidden = matchesList.length !== 0;
-    document.getElementById("offer-count").textContent =
-      "Mostrando " + matchesList.length + " de " + payload.offers.length + " ofertas";
+    document.getElementById("offer-count").textContent = "Mostrando " +
+      matchesList.length + " de " + payload.offers.length + " ofertas";
   }
 
   // Only the inputs that narrow the list; ordering is already reported by the
@@ -2513,6 +2554,7 @@ _SCRIPT = r"""
       " \u00b7 Preferencia: " + (preferences.fail || 0) + " excluida(s), " +
       (preferences.flag || 0) + " por revisar" +
       " \u00b7 Palabras clave analizadas: " + summary.keywords +
+      " (" + (summary.retired_keywords || 0) + " retiradas)" +
       " \u00b7 Feedback humano importado: " + (summary.human_reviewed_jobs || 0);
   }
 
@@ -2829,16 +2871,17 @@ def generate_dashboard(
     db_path: str | Path,
     output: str | Path = DEFAULT_OUTPUT,
     *,
-    top: int = DEFAULT_TOP,
+    top: int | None = DEFAULT_TOP,
 ) -> DashboardSummary:
     """Read the database and write the self-contained HTML report.
 
-    Only the output's parent directory is created. The database is never opened
-    for writing, so an unreadable or missing database raises
-    :class:`DashboardError` before any file is produced. An empty output path, an
-    out-of-range ``top``, and an output that resolves onto the database are all
-    refused up front, and any filesystem failure while writing becomes a
-    :class:`DashboardError` instead of a raw ``OSError``.
+    ``top=None`` (the default) embeds every active offer. Only the output's
+    parent directory is created. The database is never opened for writing, so an
+    unreadable or missing database raises :class:`DashboardError` before any file
+    is produced. An empty output path, an out-of-range explicit ``top``, and an
+    output that resolves onto the database are all refused up front, and any
+    filesystem failure while writing becomes a :class:`DashboardError` instead
+    of a raw ``OSError``.
     """
     if output is None or not str(output).strip():
         raise DashboardError("the output path must not be empty")
@@ -2873,7 +2916,9 @@ def generate_dashboard(
         output=target,
         offers=len(payload["offers"]),
         scored=int(payload["summary"]["scored"]),
-        keywords=len(payload["keywords"]),
+        # The CLI reports every analyzed series (retired included), matching
+        # ``payload['summary']['keywords']``; the table itself shows active ones.
+        keywords=int(payload["summary"]["keywords"]),
         bytes_written=len(document.encode("utf-8")),
         warnings=list(payload["warnings"]),
     )

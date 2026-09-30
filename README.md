@@ -113,7 +113,7 @@ Prepara el perfil real antes de cualquier barrido:
 | 1 | Barrido controlado | `python -m jobscout keyword-plan` y luego `python -m jobscout search-linkedin --keywords "..." --dry-run`; para ejecutarlo, cambia `--dry-run` por `--confirm-network` | Descubre ofertas nuevas. `keyword-plan` es offline; cada búsqueda real es un acto humano explícito. | Semiautomático: autorizas cada consulta |
 | 2 | Enriquecer | `python -m jobscout fetch-details --max-items 10 --confirm-network` (o `fetch-getmanfred-details` / `fetch-tecnoempleo-details` según la plataforma, o `--fixture` para trabajar offline) | Trae la descripción completa de cada oferta, acotado en volumen. Solo sube a `ok` cuando reconoce el detalle. | Semiautomático: autorizas cada corrida |
 | 3 | Puntuar con MiMo | `python -m jobscout score --all --scorer opencode` | El puntuador predeterminado (OpenCode + MiMo) evalúa solo las ofertas que aún no tienen evaluación. | El puntaje es automático; la decisión de postular no |
-| 4 | Generar dashboard | `python -m jobscout dashboard --top 25` | Escribe un HTML local con ofertas, puntajes, evidencia del enlace y filtros de preferencia. | Automático y de solo lectura |
+| 4 | Generar dashboard | `python -m jobscout dashboard` | Escribe un HTML local con todas las ofertas activas, puntajes, evidencia del enlace y filtros de preferencia. | Automático y de solo lectura |
 | 5 | Revisar ofertas | Abre `reports/jobscout-dashboard.html` | Tú marcas **Aplicar** o **Descartar** en el navegador. | Decisión humana exclusivamente |
 | 6 | Exportar/importar feedback | Exporta el JSON desde el tablero y ejecuta `python -m jobscout import-feedback jobscout-feedback.json` | Tus decisiones pasan de `localStorage` a la tabla `job_feedback` de SQLite. | Importar es automático una vez que lo invocas |
 | 7 | Calibrar | `python -m jobscout calibrate --scorer opencode` | Compara la recomendación del modelo con tu decisión humana importada. Solo lectura; no ajusta nada. | Automático y de solo lectura |
@@ -182,19 +182,22 @@ de datos.
 
 ```bash
 # POSIX
-python -m jobscout dashboard --output reports/jobscout-dashboard.html --top 25
+python -m jobscout dashboard --output reports/jobscout-dashboard.html
 xdg-open reports/jobscout-dashboard.html   # Linux
 open reports/jobscout-dashboard.html       # macOS
 ```
 
 ```powershell
 # Windows PowerShell
-python -m jobscout dashboard --output reports\jobscout-dashboard.html --top 25
+python -m jobscout dashboard --output reports\jobscout-dashboard.html
 Start-Process reports\jobscout-dashboard.html
 ```
 
 - Ruta de salida predeterminada: `reports/jobscout-dashboard.html` (ignorada por
-  Git). `--top` predeterminado: `25`. Las barras inclinadas también funcionan en
+  Git). Por defecto el informe embebe **todas las ofertas activas**; `--top N`
+  limita el informe a las `N` mejores y sigue teniendo el mismo tope explícito de
+  siempre. Las ofertas desactivadas siguen guardadas en SQLite pero quedan fuera
+  por `is_active = 1`. Las barras inclinadas también funcionan en
   Windows: `--output reports/dashboard.html`.
 - El informe nunca embebe la descripción de la oferta, payloads crudos, el
   perfil, datos de contacto, claves de API ni rutas locales absolutas.
@@ -274,6 +277,14 @@ contador de "pendientes" que la base no pueda respaldar.
 comparables de forma garantizada. Por eso hoy **no** existe una vista de "nuevas
 en el último ciclo": no se puede calcular de forma confiable y no se aproxima. La
 única condición de aislamiento es la ausencia de una fila en `job_feedback`.
+
+### Sin filtro de seniority por título
+
+Se probó un filtro que ocultaba ofertas por palabras del título (`senior`, `sr`,
+`lead`, `architect`, etc.) y se **eliminó a propósito**: la heurística producía
+falsos negativos (dejaba pasar ruido) y falsos positivos (ocultaba ofertas
+buenas). El dashboard vuelve a mostrar todas las ofertas activas; el juicio de
+seniority sigue en el prompt del evaluador, no en el título.
 
 Una vez importado el feedback, `calibrate` produce la evidencia de qué tan bien
 coincide el modelo contigo:
@@ -385,6 +396,7 @@ subcomando) y `--version`.
 | `dashboard [--output PATH] [--top N]` | Escribe un informe HTML local autocontenido (solo lectura, sin red). |
 | `import-feedback PATH [--project-id ID]` | Guarda una exportación de feedback del tablero en SQLite (sin red, idempotente). |
 | `calibrate [--scorer heuristic\|llm\|opencode]` | Compara la última evaluación válida de cada oferta con el feedback humano importado (solo lectura, sin red). |
+| `prune [--apply]` | Planea el peor cuarto de ofertas con puntaje y series de palabras clave por proveedor (vista previa de solo lectura; `--apply` desactiva solo las ofertas seleccionadas). |
 
 Códigos de salida: `0` éxito, `1` error, `2` rechazo (collector deshabilitado,
 acceso denegado o solicitud que no se realizó a propósito).
@@ -606,6 +618,49 @@ solo un notificador local ya instalado (`notify-send` en Linux o
 vuelve a stdout. **No hay programador, daemon, cron, servicio en segundo plano,
 ejecución automática, entrega remota ni postulación.**
 
+### Poda de catálogo (sin red, vista previa por defecto)
+
+`prune` es un plan determinista y sin red para el peor cuarto del catálogo. Usa
+solo métricas que jobscout ya guarda, no agrega ningún puntaje compuesto y no
+cambia nada salvo que se lo pidas explícitamente.
+
+```bash
+# Vista previa: solo lectura, nunca crea ni escribe la base
+python -m jobscout prune
+python -m jobscout prune --json
+
+# Acción explícita: desactiva solo las ofertas que el plan seleccionó
+python -m jobscout prune --apply
+```
+
+Qué reporta el plan:
+
+| Parte | Regla |
+|-------|-------|
+| Corte de ofertas | Ofertas activas con `latest_evaluations.overall_score` exitoso, ordenadas de forma ascendente; se seleccionan `floor(25% x cantidad)`, con desempate por id de oferta ascendente. Las ofertas sin puntaje y las inactivas nunca se seleccionan. |
+| Candidatos de palabras clave | Series por **proveedor** (`provider` + consulta literal) ordenadas por `avg_score` ascendente; `floor(25% x series elegibles)` por proveedor, con desempate por consulta. Un proveedor con menos de cuatro series elegibles no se poda. |
+| Costo de ofertas únicas | Para cada serie del peor cuarto, `unique_offers` cuenta las ofertas activas que **ninguna otra consulta del mismo proveedor** trajo, y `unique_good_offers` cuenta las que puntúan al menos `45`. |
+| Columnas de contexto | `avg_score`, `top5_avg_score`, `top10_avg_score`, `duplicate_rate` y `human_apply_rate`, tal como están. Una tasa de aprobación humana ausente se muestra como no disponible, nunca `0`. |
+
+Garantías de seguridad:
+
+- **La vista previa no muta nada.** La ejecución por defecto abre la base
+  existente en modo lectura (SQLite `mode=ro` más `PRAGMA query_only`) y no
+  escribe ninguna fila; una base ausente es un error claro, no un archivo nuevo.
+- **`--apply` es acotado y conserva el historial.** Desactiva exactamente las
+  ofertas seleccionadas mediante el camino existente `deactivate_job`, así que
+  las evaluaciones, el feedback y los registros de consulta se mantienen. Nunca
+  borra una fila ni crea una base.
+- **La identidad por proveedor se preserva.** Cortar `query|tecnoempleo` nunca
+  puede tocar `query|linkedin`.
+- **Nunca costar una buena oferta (regla del propietario).** Una serie que por sí
+  sola trajo una oferta con puntaje `>= 45` no se propone: pasa a
+  `held_back_keywords` (texto y JSON) con sus `unique_offers`/`unique_good_offers`
+  medidos y el motivo.
+- **Solo recomendación.** Los candidatos de palabras clave nunca se aplican: el
+  catálogo no se muta y ninguna consulta futura se suprime automáticamente. No
+  existe ninguna compuerta por cantidad de ciclos.
+
 ## Puntuación
 
 Los tres puntuadores devuelven la misma forma explicable: `overall_score` (0-100),
@@ -670,11 +725,11 @@ La cobertura de búsqueda vive en un catálogo explícito
 (`src/jobscout/keywords.py`): familias acotadas de consultas, sin generación
 automática ni expansión más allá de esa lista. Las familias `baseline` son las que
 ya funcionaban (`Junior Cloud Engineer`, `Junior DevOps Engineer`, `Platform
-Engineer`); las familias `security` agregan cobertura de Cloud Security y
-DevSecOps (`Cloud Security Engineer`, `Junior Cloud Security Engineer`, `DevSecOps
-Engineer`, `Junior DevSecOps Engineer`, `Azure Cloud Security`, `Azure DevSecOps`,
-IAM y seguridad de infraestructura). Cada familia declara como máximo
-`HARD_MAX_QUERIES_PER_FAMILY` consultas.
+Engineer`); las familias `security` agregan cobertura de Cloud Security y DevSecOps
+(`Cloud Security Engineer`, `Junior Cloud Security Engineer`, `DevSecOps Engineer`,
+`Junior DevSecOps Engineer`, `Azure Cloud Security`, `Azure Security Engineer`,
+`Azure DevSecOps`, y seguridad de infraestructura). Cada familia declara como
+máximo `HARD_MAX_QUERIES_PER_FAMILY` consultas.
 
 ```bash
 python -m jobscout keyword-plan                          # todas las familias, sin red
@@ -688,6 +743,42 @@ búsqueda real es reemplazar `--dry-run` por `--confirm-network`, siempre una
 acción humana explícita. `JOBSCOUT_KEYWORD_FAMILIES` fija qué familias se listan
 cuando no pasas `--family`; un id desconocido falla al iniciar.
 
+### Búsquedas retiradas (regla del propietario, 2026-09-30)
+
+Un par `(proveedor, consulta)` se retira solo cuando cortarlo no costaría **ninguna
+buena oferta**. El costo son las ofertas activas que ninguna otra consulta del
+mismo proveedor trajo; una oferta del costo es *buena* cuando puntúa al menos `45`.
+Siete pares cumplen esa prueba y ya no se pueden planificar ni ejecutar, ni
+siquiera en `--dry-run`:
+
+| Proveedor | Consultas retiradas |
+|-----------|---------------------|
+| Tecnoempleo | `Platform Engineer`, `Azure Security Engineer`, `IAM Engineer`, `Junior Cloud Security Engineer`, `Security Infrastructure Engineer` |
+| LinkedIn | `Identity and Access Management Engineer`, `IAM Engineer` |
+
+- **Restauradas.** `Cloud Security Engineer|linkedin` (0 ofertas únicas) y
+  `Platform Engineer|linkedin` (30 únicas, 4 buenas) vuelven a estar activas; la
+  auditoría mostró que retirar `Platform Engineer` costaría buenas ofertas.
+- **Se mantienen activas.** `Cloud Security Engineer|tecnoempleo` (7 únicas, 2
+  buenas), `Identity and Access Management Engineer|tecnoempleo` (8 únicas, 2
+  buenas) y `devops|tecnoempleo` (18 únicas, 2 buenas) **no** se retiran: cada uno
+  costaría buenas ofertas.
+- El registro durable vive en `RETIRED_SEARCHES` (`src/jobscout/keywords.py`) con
+  proveedor, consulta, fecha y motivo, y el mismo par queda bloqueado en el
+  constructor de la búsqueda de cada collector (llamadores directos, CLI y
+  `--dry-run`).
+- La coincidencia es **igualdad total normalizada** (mayúsculas, espacios y
+  acentos plegados), nunca subcadena: `Senior Platform Engineer` sigue permitido.
+- El mismo literal sigue disponible en cualquier proveedor no listado; por eso
+  `Azure Security Engineer` permanece en el catálogo de LinkedIn.
+- El historial de búsquedas y la analítica del tablero se conservan: no se borra
+  ninguna fila, y los pares retirados solo se omiten como candidatos de `prune`.
+- En el tablero, las series retiradas quedan fuera de la tabla de palabras clave
+  y de las tres listas de ranking por defecto, pero siguen embebidas y marcadas
+  como `retired` (con fecha y motivo) en el historial; `summary.keywords` sigue
+  contando todas las series analizadas, retiradas incluidas, y la nota del resumen
+  indica cuántas quedaron retiradas. La procedencia por oferta no cambia.
+
 La procedencia de cada palabra clave (qué búsqueda trajo cada oferta y en qué
 posición) se guarda en SQLite, y el tablero la agrega:
 
@@ -699,7 +790,9 @@ posición) se guarda en SQLite, y el tablero la agrega:
 4. Genera el tablero y abre la sección de **rendimiento de palabras clave**: una
    fila por palabra clave con *Apariciones*, *Ofertas únicas*, *Tasa duplicados*,
    *Puntaje promedio*, *Top 5*, *Top 10*, *Con puntaje*, *Aplicar*, *Considerar*,
-   *Revisadas*, *Tasa aplicar (humano)*, *Frescura* y *No activas*.
+   *Revisadas*, *Tasa aplicar (humano)*, *Frescura* y *No activas*. Las series
+   retiradas no se muestran; si todas las series están retiradas, la tabla muestra
+   su estado vacío en lugar de quedar rota.
 5. Prioriza las palabras clave con mejor puntaje promedio, más aplicar/considerar
    del modelo y mejor tasa de aprobación humana; descarta las que solo aportan
    apariciones duplicadas o ya no producen ofertas activas.
@@ -854,8 +947,9 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
   `PATH`; una ruta relativa se rechaza.
 - El parseo de salario es heurístico y solo se usa cuando el perfil define un
   mínimo.
-- El tablero embebe solo las `--top` mejores ofertas, pero la analítica de
-  palabras clave se calcula sobre toda la base.
+- El tablero embebe por defecto todas las ofertas activas; `--top N` limita el
+  informe a las `N` mejores, pero la analítica de palabras clave se calcula sobre
+  toda la base. Las ofertas desactivadas siguen guardadas pero no se muestran.
 - `keyword-plan` no ejecuta búsquedas: imprime el plan acotado y el comando por
   consulta. No existe una corrida por lote que dispare varias búsquedas en vivo;
   cada query es un `search-linkedin` explícito con `--confirm-network`.

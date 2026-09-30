@@ -35,6 +35,7 @@ from ..config import (
     is_safe_to_store,
     validate_bounded_int,
 )
+from ..keywords import retired_search
 from ..models import (
     ContentStatus,
     PositionKind,
@@ -99,6 +100,13 @@ class LinkedInSearchConfig:
     def __post_init__(self) -> None:
         if not self.keywords or not self.keywords.strip():
             raise ValueError("keywords are required for a LinkedIn search")
+        retired = retired_search("linkedin", self.keywords)
+        if retired is not None:
+            raise ValueError(
+                f"query {self.keywords.strip()!r} is retired for linkedin on "
+                f"{retired.retired_on} ({retired.reason}); the same query stays "
+                "available on other providers and its search history is preserved"
+            )
         # Absolute hard caps: enforced here (library), in ``Settings`` (config),
         # and surfaced to the CLI, so no caller can exceed the ceiling.
         validate_bounded_int(self.max_pages, name="max_pages", hard_max=HARD_MAX_PAGES)

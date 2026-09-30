@@ -78,6 +78,61 @@ def test_search_config_enforces_absolute_hard_caps() -> None:
         LinkedInSearchConfig(keywords="x", max_items=HARD_MAX_ITEMS + 1)
 
 
+RETIRED_LINKEDIN_QUERIES = (
+    "Identity and Access Management Engineer",
+    "IAM Engineer",
+)
+
+
+def test_retired_linkedin_queries_fail_closed_at_the_config_choke_point() -> None:
+    for query in RETIRED_LINKEDIN_QUERIES:
+        with pytest.raises(ValueError) as excinfo:
+            LinkedInSearchConfig(keywords=query)
+        message = str(excinfo.value)
+        assert query in message
+        assert "retired" in message.lower()
+        assert "2026-09-29" in message
+    # Normalization folds case/whitespace before the equality check.
+    with pytest.raises(ValueError):
+        LinkedInSearchConfig(keywords="  iam   ENGINEER ")
+
+
+def test_retirement_allows_longer_and_other_provider_queries() -> None:
+    # A longer query that merely contains a retired literal is still allowed.
+    assert LinkedInSearchConfig(keywords="Senior Platform Engineer").keywords
+    assert LinkedInSearchConfig(keywords="Cloud Security Architect").keywords
+    # CP-8 restored these two exact literals on LinkedIn.
+    assert LinkedInSearchConfig(keywords="Cloud Security Engineer").keywords
+    assert LinkedInSearchConfig(keywords="Platform Engineer").keywords
+
+
+def test_retired_linkedin_query_fails_a_dry_run_with_a_clear_message(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    no_network(monkeypatch)
+    from jobscout.cli import EXIT_ERROR, main
+
+    for query in RETIRED_LINKEDIN_QUERIES:
+        assert (
+            main(
+                [
+                    "--db",
+                    str(tmp_path / "linkedin.sqlite3"),
+                    "search-linkedin",
+                    "--keywords",
+                    query,
+                    "--dry-run",
+                ]
+            )
+            == EXIT_ERROR
+        )
+        err = capsys.readouterr().err
+        assert "retired" in err.lower()
+        assert query in err
+    # A dry run never creates the database.
+    assert not (tmp_path / "linkedin.sqlite3").exists()
+
+
 def test_parse_job_cards_extracts_fields() -> None:
     cards = parse_job_cards(fixture_text("linkedin_search_page.html"), fetched_at="2026-09-15T12:00:00Z")
     assert len(cards) == 3

@@ -23,8 +23,11 @@ Adding or changing a query:
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
+
+from .normalize import normalize_text
 
 #: Absolute upper bound on the queries one family may declare. A family is a
 #: reviewable unit; a runaway list would silently multiply live requests.
@@ -117,8 +120,6 @@ KEYWORD_FAMILIES: tuple[KeywordFamily, ...] = (
         focus="Identity/access management and security-infrastructure roles.",
         group=GROUP_SECURITY,
         queries=(
-            "IAM Engineer",
-            "Identity and Access Management Engineer",
             "Security Infrastructure Engineer",
         ),
     ),
@@ -153,6 +154,128 @@ def _validate_catalog() -> None:
 _validate_catalog()
 
 _BY_ID: dict[str, KeywordFamily] = {family.id: family for family in KEYWORD_FAMILIES}
+
+
+@dataclass(frozen=True)
+class RetiredSearch:
+    """A ``(provider, query)`` pair retired by a recorded human decision."""
+
+    provider: str
+    query: str
+    retired_on: str
+    reason: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "provider": self.provider,
+            "query": self.query,
+            "retired_on": self.retired_on,
+            "reason": self.reason,
+        }
+
+
+#: Provider-keyed retirement history. A retired pair is refused by the matching
+#: provider's search config and omitted from ``prune`` candidates; the same
+#: literal stays available on every other provider, and the database history
+#: (``search_runs``/analytics) is never deleted.
+#:
+#: Owner rule (2026-09-30): a pair is only retired when cutting it would cost no
+#: good offer (``latest_evaluations.overall_score >= 45``). ``Cloud Security
+#: Engineer|linkedin`` and ``Platform Engineer|linkedin`` were restored because
+#: they cost zero unique offers and four good offers respectively; ``Cloud
+#: Security Engineer|tecnoempleo`` and ``Identity and Access Management
+#: Engineer|tecnoempleo`` stay active for the same reason (two good offers each).
+RETIRED_SEARCHES: tuple[RetiredSearch, ...] = (
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="Platform Engineer",
+        retired_on="2026-09-29",
+        reason=(
+            "user decision after repeated Tecnoempleo listings and a low current "
+            "mean score (30.28), with no human approval data"
+        ),
+    ),
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="Azure Security Engineer",
+        retired_on="2026-09-29",
+        reason=(
+            "user decision after repeated Tecnoempleo listings and a low current "
+            "mean score (30.51), with no human approval data"
+        ),
+    ),
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="IAM Engineer",
+        retired_on="2026-09-29",
+        reason=(
+            "user decision after repeated Tecnoempleo listings and a low current "
+            "mean score (31.04), with no human approval data"
+        ),
+    ),
+    RetiredSearch(
+        provider="linkedin",
+        query="Identity and Access Management Engineer",
+        retired_on="2026-09-29",
+        reason=(
+            "user decision after pruning analysis: repeated LinkedIn listings "
+            "with a low mean score (3 unique offers, 0 good)"
+        ),
+    ),
+    RetiredSearch(
+        provider="linkedin",
+        query="IAM Engineer",
+        retired_on="2026-09-29",
+        reason=(
+            "user decision after pruning analysis: repeated LinkedIn listings "
+            "with a low mean score (5 unique offers, 1 good accepted earlier)"
+        ),
+    ),
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="Junior Cloud Security Engineer",
+        retired_on="2026-09-30",
+        reason=(
+            "unique-offer audit: 0 unique active offers, so cutting it costs no "
+            "good offer"
+        ),
+    ),
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="Security Infrastructure Engineer",
+        retired_on="2026-09-30",
+        reason=(
+            "unique-offer audit: 2 unique active offers, none good "
+            "(score >= 45), so cutting it costs no good offer"
+        ),
+    ),
+)
+
+
+def _fold_query(value: str) -> str:
+    """Fold a query for exact equality: case, whitespace, and diacritics."""
+    normalized = unicodedata.normalize("NFKD", normalize_text(value))
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    return ascii_text.casefold()
+
+
+def retired_search(provider: str, query: str) -> RetiredSearch | None:
+    """Return the retirement record for an exact ``(provider, query)``, else ``None``.
+
+    Matching is full normalized equality only: case, whitespace, and diacritics
+    are folded, and a longer query that merely contains a retired literal
+    (``Senior Platform Engineer``) stays allowed.
+    """
+    provider_key = normalize_text(provider).casefold()
+    query_key = _fold_query(query)
+    for entry in RETIRED_SEARCHES:
+        if (
+            normalize_text(entry.provider).casefold() == provider_key
+            and _fold_query(entry.query) == query_key
+        ):
+            return entry
+    return None
+
 
 
 def family_ids() -> tuple[str, ...]:
@@ -235,11 +358,14 @@ __all__ = [
     "GROUP_SECURITY",
     "HARD_MAX_QUERIES_PER_FAMILY",
     "KEYWORD_FAMILIES",
+    "RETIRED_SEARCHES",
     "KeywordFamily",
+    "RetiredSearch",
     "UnknownKeywordFamily",
     "family_ids",
     "get_family",
     "planned_queries",
     "resolve_families",
+    "retired_search",
     "search_command",
 ]

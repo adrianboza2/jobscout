@@ -180,11 +180,11 @@ def test_keyword_provenance_is_stored_without_mixing_platforms(conn, settings) -
     """A GetManfred offer keeps its matched keyword and never joins a LinkedIn series."""
     from jobscout.collectors.linkedin import LinkedInSearchConfig, search_linkedin
 
-    # One GetManfred offer matched by the approved "Platform Engineer" keyword.
+    # One GetManfred offer matched by the approved "Cloud Engineer" keyword.
     gm_client = FakeHttpClient(
         [response(200, fixture_text(MIXED_FIXTURE), headers={"content-type": "application/xml"})]
     )
-    gm_config = GetManfredSitemapConfig(keywords="Platform Engineer", max_items=10)
+    gm_config = GetManfredSitemapConfig(keywords="Cloud Engineer", max_items=10)
     gm_result = search_getmanfred(
         gm_config, settings=settings, network_enabled=True, client=gm_client, sleep=lambda _: None
     )
@@ -196,7 +196,7 @@ def test_keyword_provenance_is_stored_without_mixing_platforms(conn, settings) -
     li_client = FakeHttpClient(
         [response(200, fixture_text("linkedin_search_page_drift.html"), headers={"content-type": "text/html"})]
     )
-    li_config = LinkedInSearchConfig(keywords="Platform Engineer", max_pages=1, max_items=10)
+    li_config = LinkedInSearchConfig(keywords="Cloud Engineer", max_pages=1, max_items=10)
     li_result = search_linkedin(
         li_config, settings=settings, network_enabled=True, client=li_client, sleep=lambda _: None
     )
@@ -208,8 +208,8 @@ def test_keyword_provenance_is_stored_without_mixing_platforms(conn, settings) -
 
     payload = build_payload(conn, top=10, now=None)
     series = {(item["provider"], item["keyword"]) for item in payload["keywords"]}
-    assert ("getmanfred", "Platform Engineer") in series
-    assert ("linkedin", "Platform Engineer") in series
+    assert ("getmanfred", "Cloud Engineer") in series
+    assert ("linkedin", "Cloud Engineer") in series
     # Every stored keyword observation is scoped to its provider; none is None.
     for offer in payload["offers"]:
         for keyword in offer["keywords"]:
@@ -218,7 +218,7 @@ def test_keyword_provenance_is_stored_without_mixing_platforms(conn, settings) -
     gm_offer = next(
         offer for offer in payload["offers"] if offer["source"] == "getmanfred"
     )
-    assert gm_offer["keywords"][0]["keyword"] == "Platform Engineer"
+    assert gm_offer["keywords"][0]["keyword"] == "Cloud Engineer"
 
 
 def test_postings_from_sitemap_keep_contract() -> None:

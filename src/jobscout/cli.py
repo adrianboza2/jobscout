@@ -12,6 +12,7 @@ Commands
 ``keyword-plan``     list the bounded keyword families and the command per query (offline)
 ``import-feedback``  store a dashboard feedback export in SQLite (offline, local)
 ``calibrate``        compare the latest valid evaluations with imported human feedback (offline)
+``prune``            plan the worst quarter of offers and keyword series (offline, read-only)
 
 Exit codes: ``0`` success, ``1`` error, ``2`` refusal (collector disabled,
 access denied, or an unsafe request that was intentionally not performed).
@@ -66,7 +67,6 @@ from .collectors.tecnoempleo_details import (
 from .config import ConfigError, HARD_MAX_ITEMS, Settings, validate_bounded_int
 from .dashboard import (
     DEFAULT_OUTPUT as DASHBOARD_DEFAULT_OUTPUT,
-    DEFAULT_TOP as DASHBOARD_DEFAULT_TOP,
     DashboardError,
     generate_dashboard,
     project_key,
@@ -113,6 +113,7 @@ from .notify import (
 )
 from .pipeline import ingest_collector_result, ingest_detail_results, ingest_fixture
 from .preference import PreferenceAssessment, PreferenceOutcome, assess_preference
+from .pruning import apply_offer_plan, build_plan
 from .scoring import SCORERS, evaluate_job, fingerprint_resolver, load_profile
 from .scoring.profile import ProfileError
 from .timeutil import iso_days_ago
@@ -652,7 +653,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--top",
         type=int,
         default=None,
-        help=f"maximum offers to embed, best scored first (default: {DASHBOARD_DEFAULT_TOP})",
+        help=(
+            "maximum offers to embed, best scored first "
+            "(default: every active offer)"
+        ),
     )
     dashboard_parser.set_defaults(handler=cmd_dashboard)
 
@@ -721,6 +725,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     notify_parser.set_defaults(handler=cmd_notify)
 
+    prune_parser = add_common(
+        subparsers.add_parser(
+            "prune",
+            help=(
+                "plan the worst quarter of scored offers and provider-specific "
+                "keyword series (offline, read-only preview by default)"
+            ),
+        )
+    )
+    prune_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "deactivate the offers the plan selected; without it the command "
+            "only prints the candidates and writes nothing"
+        ),
+    )
+    prune_parser.set_defaults(handler=cmd_prune)
+
     return parser
 
 
@@ -783,7 +806,7 @@ def cmd_search_linkedin(args: argparse.Namespace, settings: Settings) -> int:
             max_pages=args.max_pages if args.max_pages is not None else settings.max_pages,
             max_items=args.max_items if args.max_items is not None else settings.max_items,
         )
-    except ConfigError as exc:
+    except (ConfigError, ValueError) as exc:
         _write_line(f"invalid search options: {exc}", stream=sys.stderr)
         return EXIT_ERROR
 
@@ -1835,10 +1858,10 @@ def cmd_dashboard(args: argparse.Namespace, settings: Settings) -> int:
     ``--output ""`` is rejected rather than silently redirected to the default,
     and an output that resolves to the database is refused.
     """
-    # ``None`` means "not passed"; an explicit empty string is preserved so the
-    # generator can reject it instead of quietly using the default.
+    # ``None`` means "not passed": the dashboard default is every active offer,
+    # and an explicit ``--top`` is preserved as the bounded override.
     output = DASHBOARD_DEFAULT_OUTPUT if args.output is None else args.output
-    top = args.top if args.top is not None else DASHBOARD_DEFAULT_TOP
+    top = args.top
     try:
         summary = generate_dashboard(settings.db_path, output, top=top)
     except DashboardError as exc:
@@ -2028,6 +2051,77 @@ def cmd_notify(args: argparse.Namespace, settings: Settings) -> int:
             "delivered": False,
             "detail": "preview only",
         }
+    _emit(payload, as_json=as_json, text=text)
+    return EXIT_OK
+
+
+def cmd_prune(args: argparse.Namespace, settings: Settings) -> int:
+    """Plan catalog pruning offline, or deactivate only the selected offers.
+
+    The default preview opens an existing database read-only and never creates
+    one, so it cannot write a row. ``--apply`` reopens the database through the
+    normal writable path but still refuses to create a missing file; it applies
+    exactly the offers the plan selected and keeps all history through the
+    existing deactivation path. Keyword candidates are a report only: the
+    keyword catalog is never mutated, and candidates stay separate per provider.
+    """
+    db_path = Path(settings.db_path)
+    missing_message = (
+        f"no database found at {db_path}; run 'jobscout init-db', ingest a "
+        "fixture or a search, and score some jobs before pruning"
+    )
+    as_json = getattr(args, "as_json", False)
+    apply = bool(getattr(args, "apply", False))
+
+    if not apply:
+        conn = _open_existing_readonly(db_path)
+        if conn is None:
+            if str(db_path) == ":memory:" or not db_path.is_file():
+                _write_line(missing_message, stream=sys.stderr)
+            else:
+                _write_line(
+                    f"database at {db_path} could not be opened read-only",
+                    stream=sys.stderr,
+                )
+            return EXIT_ERROR
+        try:
+            try:
+                plan = build_plan(conn)
+            except sqlite3.Error as exc:
+                _write_line(
+                    f"pruning error: database at {db_path} could not be read: {exc}",
+                    stream=sys.stderr,
+                )
+                return EXIT_ERROR
+        finally:
+            conn.close()
+        payload = plan.to_dict()
+        payload["applied"] = False
+        payload["changed"] = 0
+        _emit(payload, as_json=as_json, text=plan.to_text())
+        return EXIT_OK
+
+    if str(db_path) != ":memory:" and not db_path.is_file():
+        _write_line(missing_message, stream=sys.stderr)
+        return EXIT_ERROR
+    conn = connect(db_path)
+    try:
+        try:
+            plan = build_plan(conn)
+            changed = apply_offer_plan(conn, plan)
+        except sqlite3.Error as exc:
+            _write_line(
+                f"pruning error: database at {db_path} could not be updated: {exc}",
+                stream=sys.stderr,
+            )
+            return EXIT_ERROR
+    finally:
+        conn.close()
+
+    payload = plan.to_dict()
+    payload["applied"] = True
+    payload["changed"] = changed
+    text = plan.to_text() + f"\napplied: deactivated {changed} offer(s)"
     _emit(payload, as_json=as_json, text=text)
     return EXIT_OK
 

@@ -11,6 +11,7 @@ import pytest
 
 from conftest import FakeHttpClient, FIXTURES, fixture_text, no_network, response
 
+from jobscout.cli import EXIT_ERROR, main
 from jobscout.collectors.base import CollectorDisabledError
 from jobscout.collectors.tecnoempleo import (
     CARD_DESCRIPTION_MAX_CHARS,
@@ -53,6 +54,69 @@ def test_config_requires_keywords_and_validates_host_and_caps() -> None:
         TecnoempleoSearchConfig(keywords="x", search_url="https://evil.test/ofertas-trabajo/")
     with pytest.raises(ValueError):
         TecnoempleoSearchConfig(keywords="x", max_pages=0)
+
+
+RETIRED_TECNO_QUERIES = (
+    "Platform Engineer",
+    "Azure Security Engineer",
+    "IAM Engineer",
+    "Junior Cloud Security Engineer",
+    "Security Infrastructure Engineer",
+)
+#: The CP-8 additions carry the 2026-09-30 decision date.
+CP8_RETIRED_TECNO_QUERIES = (
+    "Junior Cloud Security Engineer",
+    "Security Infrastructure Engineer",
+)
+
+
+def test_retired_tecno_queries_fail_closed_at_the_config_choke_point() -> None:
+    for query in RETIRED_TECNO_QUERIES:
+        with pytest.raises(ValueError) as excinfo:
+            TecnoempleoSearchConfig(keywords=query)
+        message = str(excinfo.value)
+        assert query in message
+        assert "retired" in message.lower()
+        expected_on = "2026-09-30" if query in CP8_RETIRED_TECNO_QUERIES else "2026-09-29"
+        assert expected_on in message
+    # Normalization folds case/whitespace before the equality check.
+    with pytest.raises(ValueError):
+        TecnoempleoSearchConfig(keywords="  platform   ENGINEER ")
+
+
+def test_retirement_allows_longer_and_other_provider_queries() -> None:
+    # A longer query that merely contains a retired literal is still allowed.
+    assert TecnoempleoSearchConfig(keywords="Senior Platform Engineer").keywords
+    assert TecnoempleoSearchConfig(keywords="Platform Engineering").keywords
+    # CP-8 kept these Tecnoempleo literals active: each costs a good offer.
+    assert TecnoempleoSearchConfig(keywords="Cloud Security Engineer").keywords
+    assert TecnoempleoSearchConfig(keywords="Identity and Access Management Engineer").keywords
+    assert TecnoempleoSearchConfig(keywords="devops").keywords
+
+
+def test_retired_tecno_query_fails_a_dry_run_with_a_clear_message(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    no_network(monkeypatch)
+    for query in RETIRED_TECNO_QUERIES:
+        assert (
+            main(
+                [
+                    "--db",
+                    str(tmp_path / "tecno.sqlite3"),
+                    "search-tecnoempleo",
+                    "--keywords",
+                    query,
+                    "--dry-run",
+                ]
+            )
+            == EXIT_ERROR
+        )
+        err = capsys.readouterr().err
+        assert "retired" in err.lower()
+        assert query in err
+    # A dry run never creates the database.
+    assert not (tmp_path / "tecno.sqlite3").exists()
 
 
 def test_parse_offer_links_filters_non_offers_and_cross_host() -> None:

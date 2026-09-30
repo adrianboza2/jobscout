@@ -253,18 +253,23 @@ def test_analytics_separate_same_keyword_across_providers(conn) -> None:
 
 
 def test_analytics_merge_cycles_for_same_provider_and_keyword(conn) -> None:
-    """A cycle is provenance, not identity: one row and key per provider/keyword."""
+    """A cycle is provenance, not identity: one row and key per provider/keyword.
+
+    ``iam engineer`` is retired on LinkedIn, so the merged LinkedIn row moves to
+    the retired series while the same literal on GetManfred stays active: the
+    merge is untouched and retirement stays provider-scoped.
+    """
     _, cycle_1_jobs = _seed_provider_run(
         conn,
         provider="linkedin",
-        keyword="platform engineer",
+        keyword="iam engineer",
         cycle_id="cycle-1",
         postings=[_posting("linkedin", "1", "Platform Engineer", "Acme")],
     )
     cycle_2_run, cycle_2_jobs = _seed_provider_run(
         conn,
         provider="linkedin",
-        keyword="platform engineer",
+        keyword="iam engineer",
         cycle_id="cycle-2",
         postings=[_posting("linkedin", "2", "Platform Engineer 2", "Beta")],
     )
@@ -294,7 +299,7 @@ def test_analytics_merge_cycles_for_same_provider_and_keyword(conn) -> None:
     _, getmanfred_jobs = _seed_provider_run(
         conn,
         provider="getmanfred",
-        keyword="platform engineer",
+        keyword="iam engineer",
         cycle_id=None,
         postings=[_posting("getmanfred", "g1", "Platform Engineer", "Gamma")],
         position_kind="none",
@@ -303,23 +308,27 @@ def test_analytics_merge_cycles_for_same_provider_and_keyword(conn) -> None:
     payload = build_payload(conn, top=10, now=None)
 
     series = {(item["provider"], item["keyword"]): item for item in payload["keywords"]}
-    assert set(series) == {
-        ("linkedin", "platform engineer"),
-        ("getmanfred", "platform engineer"),
+    retired = {
+        (item["provider"], item["keyword"]): item
+        for item in payload["retired_keywords"]
     }
-    linkedin = series[("linkedin", "platform engineer")]
+    assert set(series) == {("getmanfred", "iam engineer")}
+    assert set(retired) == {("linkedin", "iam engineer")}
+    linkedin = retired[("linkedin", "iam engineer")]
     # Both LinkedIn cycles collapse into one row, one shared filter key, and no
-    # per-cycle identity on the metric.
-    assert linkedin["source_key"] == "linkedin|platform engineer"
+    # per-cycle identity on the metric, even though the series is retired.
+    assert linkedin["source_key"] == "linkedin|iam engineer"
     assert linkedin["unique_jobs"] == 2
     assert linkedin["sightings"] == 3
     assert linkedin["scored_jobs"] == 1
     assert linkedin["avg_score"] == 80.0
+    assert linkedin["retired"] is True
     assert "cycle_id" not in linkedin
     assert (
-        series[("getmanfred", "platform engineer")]["source_key"]
-        == "getmanfred|platform engineer"
+        series[("getmanfred", "iam engineer")]["source_key"]
+        == "getmanfred|iam engineer"
     )
+    assert series[("getmanfred", "iam engineer")]["retired"] is False
 
     # Offer provenance keeps the real cycle ID of every observation.
     offers = {offer["id"]: offer for offer in payload["offers"]}
@@ -329,7 +338,7 @@ def test_analytics_merge_cycles_for_same_provider_and_keyword(conn) -> None:
     assert offers[getmanfred_jobs[0]]["keywords"][0]["cycle_id"] is None
     assert (
         offers[cycle_1_jobs[0]]["keywords"][0]["source_key"]
-        == "linkedin|platform engineer"
+        == "linkedin|iam engineer"
     )
 
 

@@ -20,23 +20,25 @@ from jobscout.keywords import (
     GROUP_SECURITY,
     HARD_MAX_QUERIES_PER_FAMILY,
     KEYWORD_FAMILIES,
+    RETIRED_SEARCHES,
     UnknownKeywordFamily,
     family_ids,
     get_family,
     planned_queries,
     resolve_families,
+    retired_search,
     search_command,
 )
 
-#: Queries the security coverage work explicitly promised.
+#: Queries the security coverage work promised that stay active after the
+#: 2026-09-29 LinkedIn retirement (`Cloud Security Engineer` and `IAM Engineer`
+#: were removed from the LinkedIn catalog by that owner decision).
 REQUIRED_SECURITY_QUERIES = (
-    "Cloud Security Engineer",
     "Junior Cloud Security Engineer",
     "DevSecOps Engineer",
     "Junior DevSecOps Engineer",
     "Azure Cloud Security",
     "Azure DevSecOps",
-    "IAM Engineer",
     "Security Infrastructure Engineer",
 )
 
@@ -74,7 +76,10 @@ def test_catalog_covers_the_requested_security_queries() -> None:
         if family.group == GROUP_SECURITY
         for query in family.queries
     }
-    assert security_queries == set(REQUIRED_SECURITY_QUERIES) | {"Azure Security Engineer", "Identity and Access Management Engineer"}
+    assert security_queries == set(REQUIRED_SECURITY_QUERIES) | {
+        "Azure Security Engineer",
+        "Cloud Security Engineer",
+    }
 
 
 def test_catalog_keeps_the_baseline_families() -> None:
@@ -129,6 +134,96 @@ def test_planned_queries_include_family_provenance_and_a_command() -> None:
     ]
     assert all(item["family"] == "cloud-security" for item in planned)
     assert all("--dry-run" in item["command"] for item in planned)
+
+
+# ---------------------------------------------------------------------------
+# Retired searches (provider-keyed history)
+# ---------------------------------------------------------------------------
+
+
+RETIRED_TECNO_QUERIES = (
+    "Platform Engineer",
+    "Azure Security Engineer",
+    "IAM Engineer",
+    "Junior Cloud Security Engineer",
+    "Security Infrastructure Engineer",
+)
+RETIRED_LINKEDIN_QUERIES = (
+    "Identity and Access Management Engineer",
+    "IAM Engineer",
+)
+#: The exact owner-authorized retirement set, provider by provider.
+RETIRED_PAIRS = (
+    *(("tecnoempleo", query) for query in RETIRED_TECNO_QUERIES),
+    *(("linkedin", query) for query in RETIRED_LINKEDIN_QUERIES),
+)
+#: New CP-8 retirements carry the 2026-09-30 decision date.
+CP8_RETIRED_PAIRS = (
+    ("tecnoempleo", "Junior Cloud Security Engineer"),
+    ("tecnoempleo", "Security Infrastructure Engineer"),
+)
+
+
+def test_retirement_registry_records_provider_query_date_and_reason() -> None:
+    assert len(RETIRED_SEARCHES) == 7
+    observed = {(entry.provider, entry.query) for entry in RETIRED_SEARCHES}
+    assert observed == set(RETIRED_PAIRS)
+    for entry in RETIRED_SEARCHES:
+        assert entry.reason.strip()
+        assert entry.provider in {"tecnoempleo", "linkedin"}
+        expected_on = "2026-09-30" if (entry.provider, entry.query) in CP8_RETIRED_PAIRS else "2026-09-29"
+        assert entry.retired_on == expected_on
+
+
+def test_retired_search_matches_only_the_exact_normalized_pair() -> None:
+    for provider, query in RETIRED_PAIRS:
+        match = retired_search(provider, query)
+        assert match is not None
+        assert (match.provider, match.query) == (provider, query)
+
+
+def test_retired_search_folds_case_whitespace_and_diacritics() -> None:
+    match = retired_search("  TecnoEmpleo  ", "  platform   ENGINEER ")
+    assert match is not None and match.query == "Platform Engineer"
+    match = retired_search("LinkedIn", "  identity   and   access   management   engineer ")
+    assert match is not None and match.query == "Identity and Access Management Engineer"
+    # Diacritics fold through the project normalizer.
+    assert retired_search("tecnoempleo", "IAM Engine\u00e9r") is not None
+    assert retired_search("linkedin", "IAM Engine\u00e9r") is not None
+
+
+def test_retired_search_never_substring_matches() -> None:
+    assert retired_search("tecnoempleo", "Senior Platform Engineer") is None
+    assert retired_search("tecnoempleo", "Platform Engineering") is None
+    assert retired_search("linkedin", "Senior Platform Engineer") is None
+    assert retired_search("linkedin", "Cloud Security Architect") is None
+
+
+def test_retired_search_is_provider_scoped() -> None:
+    # A provider that never retired a literal keeps it. Some literals are retired
+    # on both listed providers, so those are asserted per-pair above; here every
+    # pair stays clear on the providers that did not retire it.
+    for provider in ("getmanfred", "infojobs"):
+        for _, query in RETIRED_PAIRS:
+            assert retired_search(provider, query) is None, (provider, query)
+    # Provider-exclusive retirements do not leak to the other listed provider.
+    assert retired_search("linkedin", "Azure Security Engineer") is None
+    assert retired_search("linkedin", "Junior Cloud Security Engineer") is None
+    # CP-8 kept these Tecnoempleo literals active (they cost good offers).
+    assert retired_search("tecnoempleo", "Cloud Security Engineer") is None
+    assert retired_search("tecnoempleo", "Identity and Access Management Engineer") is None
+
+
+def test_active_catalog_restores_the_kept_linkedin_queries() -> None:
+    # CP-8 restored these two LinkedIn terms: the audit showed they cost good
+    # offers (Platform Engineer) or zero unique offers (Cloud Security Engineer).
+    active = set(_all_queries())
+    assert "Cloud Security Engineer" in active
+    assert "Platform Engineer" in active
+    assert active.isdisjoint(RETIRED_LINKEDIN_QUERIES)
+    # ``Azure Security Engineer`` is Tecnoempleo-only and stays in the LinkedIn
+    # catalog.
+    assert "Azure Security Engineer" in active
 
 
 # ---------------------------------------------------------------------------

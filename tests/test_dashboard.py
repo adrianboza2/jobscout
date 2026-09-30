@@ -8,6 +8,7 @@ outright to prove the report never touches the network.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import re
 import sqlite3
@@ -256,6 +257,54 @@ def _seed_dashboard_db(path: Path) -> dict[str, int]:
     return {"job1": int(job1.id), "job2": int(job2.id), "job3": int(job3.id)}
 
 
+#: The pairs the owner retired (2026-09-29 decision plus the CP-8 additions),
+#: provider-keyed. Kept local to the test module on purpose: the dashboard tests
+#: must fail if the production registry changes, not silently follow it.
+RETIRED_KEYWORD_PAIRS: tuple[tuple[str, str], ...] = (
+    ("tecnoempleo", "Platform Engineer"),
+    ("tecnoempleo", "Azure Security Engineer"),
+    ("tecnoempleo", "IAM Engineer"),
+    ("tecnoempleo", "Junior Cloud Security Engineer"),
+    ("tecnoempleo", "Security Infrastructure Engineer"),
+    ("linkedin", "Identity and Access Management Engineer"),
+    ("linkedin", "IAM Engineer"),
+)
+
+#: CP-8 retirements carry the later decision date.
+RETIRED_ON_BY_PAIR: dict[tuple[str, str], str] = {
+    **{pair: "2026-09-29" for pair in RETIRED_KEYWORD_PAIRS},
+    ("tecnoempleo", "Junior Cloud Security Engineer"): "2026-09-30",
+    ("tecnoempleo", "Security Infrastructure Engineer"): "2026-09-30",
+}
+
+_SERIES_JOB_SEQ = itertools.count(1)
+
+
+def _seed_keyword_series(
+    conn: sqlite3.Connection,
+    *,
+    provider: str,
+    keyword: str,
+    scores: tuple[float, ...] = (50.0,),
+) -> None:
+    """One run for ``(provider, keyword)`` and one scored posting per score."""
+    run = _run(conn, keyword, provider=provider)
+    for index, score in enumerate(scores):
+        serial = next(_SERIES_JOB_SEQ)
+        job, _ = store_posting(
+            conn,
+            _posting(
+                source=provider,
+                source_job_id=f"series-{serial}",
+                url=f"https://example.test/jobs/series-{serial}",
+                title=f"Role {serial}",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+        _observe(conn, run.id, job.id, rank=index + 1)
+        insert_evaluation(conn, _score(job.id, score, Recommendation.APPLY))
+
+
 @pytest.fixture
 def db_file(tmp_path: Path) -> Path:
     path = tmp_path / "dash" / "dashboard.sqlite3"
@@ -263,7 +312,52 @@ def db_file(tmp_path: Path) -> Path:
     return path
 
 
-def _payload(db_file: Path, *, top: int = DEFAULT_TOP) -> dict:
+def _seed_many_active_offers(path: Path, count: int, *, inactive: int = 0) -> None:
+    """Insert ``count`` active offers directly, plus ``inactive`` deactivated ones.
+
+    A bulk insert keeps a >1000-row fixture fast while exercising the same
+    dashboard read path; the dashboard only needs identity plus ``is_active``.
+    """
+    rows = [
+        (
+            f"fp-active-{index}",
+            f"dk-active-{index}",
+            "linkedin",
+            "2026-09-15T10:00:00Z",
+            "2026-09-15T10:00:00Z",
+            1,
+        )
+        for index in range(count)
+    ]
+    rows += [
+        (
+            f"fp-inactive-{index}",
+            f"dk-inactive-{index}",
+            "linkedin",
+            "2026-09-15T10:00:00Z",
+            "2026-09-15T10:00:00Z",
+            0,
+        )
+        for index in range(inactive)
+    ]
+    conn = connect(path)
+    try:
+        init_db(conn)
+        conn.executemany(
+            """
+            INSERT INTO jobs (
+                fingerprint, dedupe_key, source, first_seen_at, last_seen_at, is_active
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+
+def _payload(db_file: Path, *, top: int | None = DEFAULT_TOP) -> dict:
     conn = open_readonly_database(db_file)
     try:
         return build_payload(
@@ -587,6 +681,57 @@ def test_top_at_the_maximum_is_accepted(db_file: Path) -> None:
 
     assert output.is_file()
     assert summary.offers == 3
+
+
+def test_default_dashboard_includes_every_active_offer_and_no_top_limit(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "many.sqlite3"
+    _seed_many_active_offers(path, 30, inactive=3)
+
+    payload = _payload(path)
+
+    assert len(payload["offers"]) == 30
+    assert payload["summary"]["jobs_shown"] == 30
+    assert payload["summary"]["active_jobs"] == 30
+    assert payload["limits"]["top"] is None
+
+
+def test_default_dashboard_has_no_hidden_max_above_the_explicit_cap(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "huge.sqlite3"
+    _seed_many_active_offers(path, MAX_TOP + 1)
+
+    payload = _payload(path)
+
+    assert len(payload["offers"]) == MAX_TOP + 1
+    assert payload["limits"]["top"] is None
+
+
+def test_explicit_top_still_bounds_the_all_offers_default(tmp_path: Path) -> None:
+    path = tmp_path / "many.sqlite3"
+    _seed_many_active_offers(path, 30)
+
+    payload = _payload(path, top=5)
+
+    assert len(payload["offers"]) == 5
+    assert payload["limits"]["top"] == 5
+
+
+def test_default_scope_omits_the_top_limit_label(tmp_path: Path) -> None:
+    path = tmp_path / "many.sqlite3"
+    _seed_many_active_offers(path, 30)
+    default_output = tmp_path / "default.html"
+    bounded_output = tmp_path / "bounded.html"
+
+    summary = generate_dashboard(path, default_output)
+    bounded = generate_dashboard(path, bounded_output, top=7)
+
+    assert summary.offers == 30
+    assert "(l\u00edmite top" not in default_output.read_text(encoding="utf-8")
+    assert "(l\u00edmite top 7)" in bounded_output.read_text(encoding="utf-8")
+    assert bounded.offers == 7
 
 
 # ---------------------------------------------------------------------------
@@ -2843,3 +2988,186 @@ def _database_fingerprint(db_file: Path) -> dict[str, int]:
         return fingerprint
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Retired keyword series in the analytics
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_marks_retired_keyword_series(tmp_path: Path) -> None:
+    """Every series carries a truthful ``retired`` flag; the summary keeps the total."""
+    path = tmp_path / "dash" / "retired.sqlite3"
+    conn = connect(path)
+    try:
+        init_db(conn)
+        for provider, keyword in RETIRED_KEYWORD_PAIRS:
+            _seed_keyword_series(conn, provider=provider, keyword=keyword)
+        _seed_keyword_series(
+            conn, provider="linkedin", keyword="Junior Cloud Engineer", scores=(70.0,)
+        )
+    finally:
+        conn.close()
+
+    payload = _payload(path)
+    retired = payload["retired_keywords"]
+    assert {(item["provider"], item["keyword"]) for item in retired} == set(
+        RETIRED_KEYWORD_PAIRS
+    )
+    assert all(item["retired"] is True for item in retired)
+    assert all(
+        item["retired_on"] == RETIRED_ON_BY_PAIR[(item["provider"], item["keyword"])]
+        for item in retired
+    )
+    assert all(item["retired_reason"] for item in retired)
+
+    active = payload["keywords"]
+    assert [item["keyword"] for item in active] == ["Junior Cloud Engineer"]
+    assert all(item["retired"] is False for item in active)
+
+    # ``summary.keywords`` still counts every analyzed series, retired included.
+    assert payload["summary"]["keywords"] == len(RETIRED_KEYWORD_PAIRS) + 1
+    assert payload["summary"]["retired_keywords"] == len(RETIRED_KEYWORD_PAIRS)
+
+
+def test_dashboard_keyword_table_and_top_lists_omit_retired_series(tmp_path: Path) -> None:
+    """A retired series never renders in the table or the three ranking lists."""
+    path = tmp_path / "dash" / "omit.sqlite3"
+    conn = connect(path)
+    try:
+        init_db(conn)
+        # This retired series would top quality and yield if it were not filtered.
+        _seed_keyword_series(
+            conn,
+            provider="linkedin",
+            keyword="Identity and Access Management Engineer",
+            scores=(95.0, 90.0),
+        )
+        _seed_keyword_series(
+            conn,
+            provider="linkedin",
+            keyword="Senior Backend Engineer",
+            scores=(40.0,),
+        )
+    finally:
+        conn.close()
+
+    html_text = generate_and_read(path)
+    payload = _extract_payload(html_text)
+
+    assert [item["keyword"] for item in payload["keywords"]] == ["Senior Backend Engineer"]
+    assert "Identity and Access Management Engineer" not in [
+        item["keyword"] for item in payload["keywords"]
+    ]
+    assert [item["keyword"] for item in payload["top_quality"]] == ["Senior Backend Engineer"]
+    assert "Identity and Access Management Engineer" not in [
+        item["keyword"] for item in payload["top_yield"]
+    ]
+    assert payload["top_human"] == []
+    # The retired row is preserved and marked in its own collection.
+    assert [item["keyword"] for item in payload["retired_keywords"]] == [
+        "Identity and Access Management Engineer"
+    ]
+    # The renderer still owns the existing empty state for an empty active table.
+    assert "Todavía no hay procedencia de palabras clave registrada." in html_text
+
+
+def test_dashboard_all_retired_keyword_series_shows_empty_state(tmp_path: Path) -> None:
+    """If every series is retired, the table falls back to its empty state."""
+    path = tmp_path / "dash" / "all-retired.sqlite3"
+    conn = connect(path)
+    try:
+        init_db(conn)
+        for provider, keyword in RETIRED_KEYWORD_PAIRS:
+            _seed_keyword_series(conn, provider=provider, keyword=keyword)
+    finally:
+        conn.close()
+
+    html_text = generate_and_read(path)
+    payload = _extract_payload(html_text)
+
+    assert payload["keywords"] == []
+    assert payload["top_quality"] == []
+    assert payload["top_yield"] == []
+    assert payload["top_human"] == []
+    assert len(payload["retired_keywords"]) == len(RETIRED_KEYWORD_PAIRS)
+    assert "Todavía no hay procedencia de palabras clave registrada." in html_text
+
+
+def test_dashboard_retired_flag_is_provider_scoped_and_normalized(tmp_path: Path) -> None:
+    """The flag follows the registry: normalized equality, scoped to its provider."""
+    path = tmp_path / "dash" / "scope.sqlite3"
+    conn = connect(path)
+    try:
+        init_db(conn)
+        # Retired on LinkedIn only: the same literal stays active on Tecnoempleo.
+        _seed_keyword_series(
+            conn, provider="linkedin", keyword="Identity and Access Management Engineer"
+        )
+        _seed_keyword_series(
+            conn, provider="tecnoempleo", keyword="Identity and Access Management Engineer"
+        )
+        # Retired on Tecnoempleo, and a case variant matches by normalized equality.
+        _seed_keyword_series(conn, provider="tecnoempleo", keyword="AZURE SECURITY ENGINEER")
+        # Retired on Tecnoempleo only: stays active on LinkedIn.
+        _seed_keyword_series(conn, provider="linkedin", keyword="Azure Security Engineer")
+        # CP-8 kept these Tecnoempleo literals active (they cost good offers).
+        _seed_keyword_series(conn, provider="tecnoempleo", keyword="Cloud Security Engineer")
+        # CP-8 restored this LinkedIn literal.
+        _seed_keyword_series(conn, provider="linkedin", keyword="Cloud Security Engineer")
+    finally:
+        conn.close()
+
+    payload = _payload(path)
+    retired = {(item["provider"], item["keyword"]) for item in payload["retired_keywords"]}
+    active = {(item["provider"], item["keyword"]) for item in payload["keywords"]}
+
+    assert ("linkedin", "Identity and Access Management Engineer") in retired
+    assert ("tecnoempleo", "Identity and Access Management Engineer") in active
+    assert ("tecnoempleo", "AZURE SECURITY ENGINEER") in retired
+    assert ("linkedin", "Azure Security Engineer") in active
+    assert ("tecnoempleo", "Cloud Security Engineer") in active
+    assert ("linkedin", "Cloud Security Engineer") in active
+
+
+# ---------------------------------------------------------------------------
+# CP-10: the CP-9 senior/lead title filter was removed outright
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_has_no_senior_noise_filter(tmp_path: Path) -> None:
+    """A title-based senior/lead filter was tried and removed; it must not return.
+
+    The owner found the heuristic produced both false negatives (real noise
+    slipped through) and false positives (good offers were hidden), so CP-10
+    deletes the flag, the summary key, and the toggle. This test fails loudly if
+    a title heuristic for this purpose is reintroduced.
+    """
+    path = tmp_path / "dash" / "noise-removed.sqlite3"
+    conn = connect(path)
+    try:
+        init_db(conn)
+        job, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="noise-removed",
+                url="https://example.test/jobs/noise-removed",
+                title="Senior Platform Engineer",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+        insert_evaluation(conn, _score(job.id, 50.0, Recommendation.CONSIDER))
+    finally:
+        conn.close()
+
+    payload = _payload(path)
+    html_text = generate_and_read(path)
+
+    # No per-offer display flag and no hidden-count summary key.
+    assert all("noise" not in offer for offer in payload["offers"])
+    assert "noise_offers" not in payload["summary"]
+    # No control, note, or client state for the removed filter.
+    assert "filter-show-noise" not in html_text
+    assert "noise-note" not in html_text
+    assert "showNoise" not in html_text
+    assert "Mostrar ofertas senior/lead" not in html_text

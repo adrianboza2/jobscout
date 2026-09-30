@@ -49,6 +49,7 @@ from ..config import (
     is_safe_to_store,
     validate_bounded_int,
 )
+from ..keywords import retired_search
 from ..models import (
     ContentStatus,
     JobPosting,
@@ -97,6 +98,13 @@ class TecnoempleoSearchConfig:
     def __post_init__(self) -> None:
         if not self.keywords or not self.keywords.strip():
             raise ValueError("keywords are required for a Tecnoempleo search")
+        retired = retired_search(PROVIDER, self.keywords)
+        if retired is not None:
+            raise ValueError(
+                f"query {self.keywords.strip()!r} is retired for {PROVIDER} on "
+                f"{retired.retired_on} ({retired.reason}); the same query stays "
+                "available on other providers and its search history is preserved"
+            )
         validate_tecnoempleo_url(self.search_url, name="tecnoempleo_search_url")
         validate_tecnoempleo_url(self.robots_url, name="tecnoempleo_robots_url")
         if not self.offer_path_marker.strip():
