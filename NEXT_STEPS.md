@@ -3,6 +3,38 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Next session (2026-10-10)
+
+Directions decided after the 2026-10-10 ponytail-audit refactor
+(dead code removed, shared `collectors/htmlutil.py`, parameterized CLI runners;
+suite green at 1100 passed). In order:
+
+1. **GetManfred live confirmation + partial-offer re-enrichment.** The detail
+   adapter is implemented and offline-covered, but needs one real
+   `--confirm-network` run before re-enriching the ~128 partial GetManfred
+   offers. This is the most concrete payoff: it turns partial offers into
+   fully scored ones.
+2. **Auto re-score on profile/input change.** Input-aware scoring selection
+   already detects the fingerprint in the database; the missing piece is
+   marking offers "needs rescore" (with a placeholder status/flag exposed in
+   `list`/`dashboard`) instead of leaving stale scores until a manual
+   `--rescore`. Verify in the same sweep as step 1: with the GetManfred
+   enrichment changing inputs, refresh should trip the flag.
+3. **Expose OpenCode model/effort as CLI flags** (`--scorer-model/--effort`).
+   Small and self-contained; the env-driven variant is documented under
+   "Scoring effort and model selection" below. Makes A/B scoring comparisons
+   practical without env fiddling, and sizes the per-offer timeout for the
+   chosen effort.
+4. **Keep the manual keyword habit** (deliberate design, no fan-out):
+   continue the 3–4 day sweep cadence and prune the worst quartile as it
+   re-emerges. Watch item: LinkedIn failed closed on HTTP 429 for one query in
+   the 2026-10-10 sweep — correct behavior, but if it repeats across multiple
+   queries, widen keyword spacing rather than touching pacing.
+
+Not in scope without re-decision: InfoJobs (needs official API authorization),
+splitting large files (`dashboard.py`/`db.py` are large but monolithic by
+design), further keyword fan-out (see "Keyword coverage").
+
 ## Priority 1 — Turn feedback into durable data
 
 Status: implemented and verified.
