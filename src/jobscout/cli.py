@@ -32,7 +32,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from . import __version__
 from .calibration import CalibrationError, build_report
@@ -788,23 +788,25 @@ def cmd_ingest_fixture(args: argparse.Namespace, settings: Settings) -> int:
     return EXIT_OK
 
 
-def cmd_search_linkedin(args: argparse.Namespace, settings: Settings) -> int:
-    try:
-        config = LinkedInSearchConfig(
-            keywords=args.keywords,
-            location=args.location,
-            distance_miles=args.distance,
-            remote=args.remote,
-            employment_type=args.employment_type,
-            max_pages=args.max_pages if args.max_pages is not None else settings.max_pages,
-            max_items=args.max_items if args.max_items is not None else settings.max_items,
-        )
-    except (ConfigError, ValueError) as exc:
-        _write_line(f"invalid search options: {exc}", stream=sys.stderr)
-        return EXIT_ERROR
+def _run_search(
+    args: argparse.Namespace,
+    settings: Settings,
+    *,
+    config: Any,
+    plan_fn: Callable[[Any], list[str]],
+    refusal_message: str,
+    collect_fn: Callable[..., Any],
+    label: str | None = None,
+) -> int:
+    """Shared dry-run/gate/collect/emit skeleton for the search commands.
 
+    ``plan_fn`` returns the planned URLs for ``--dry-run``; ``collect_fn`` is the
+    provider collector (called with ``network_enabled=True``); ``label`` is the
+    optional run label. The refusal message is provider-specific, so the caller
+    builds it where the config metrics are known.
+    """
     if args.dry_run:
-        planned = plan_search_urls(config, settings=settings)
+        planned = plan_fn(config)
         _emit(
             {"dry_run": True, "planned_urls": planned},
             as_json=getattr(args, "as_json", False),
@@ -814,20 +816,14 @@ def cmd_search_linkedin(args: argparse.Namespace, settings: Settings) -> int:
         return EXIT_OK
 
     if not args.confirm_network:
-        _write_line(
-            "refusing to run: LinkedIn collection is disabled by default.\n"
-            "Rerun with --confirm-network to send bounded requests "
-            f"(max {config.max_pages} page(s), {config.max_items} item(s), "
-            f"{settings.request_delay_seconds:g}s delay), or use --dry-run to inspect the plan.",
-            stream=sys.stderr,
-        )
+        _write_line(refusal_message, stream=sys.stderr)
         return EXIT_FAIL_CLOSED
 
     conn = connect(settings.db_path)
     try:
         init_db(conn)
         try:
-            result = search_linkedin(config, settings=settings, network_enabled=True)
+            result = collect_fn(config, settings=settings, network_enabled=True)
         except CollectorDisabledError as exc:  # pragma: no cover - guarded above
             _write_line(f"collector disabled: {exc}", stream=sys.stderr)
             return EXIT_FAIL_CLOSED
@@ -837,6 +833,7 @@ def cmd_search_linkedin(args: argparse.Namespace, settings: Settings) -> int:
             config=config,
             settings=settings,
             cycle_id=getattr(args, "cycle_id", None),
+            label=label,
         )
     except CollectorError as exc:
         _write_line(f"collection failed: {exc}", stream=sys.stderr)
@@ -855,6 +852,37 @@ def cmd_search_linkedin(args: argparse.Namespace, settings: Settings) -> int:
         ),
     )
     return _collection_exit_code(outcome.status)
+
+
+def cmd_search_linkedin(args: argparse.Namespace, settings: Settings) -> int:
+    try:
+        config = LinkedInSearchConfig(
+            keywords=args.keywords,
+            location=args.location,
+            distance_miles=args.distance,
+            remote=args.remote,
+            employment_type=args.employment_type,
+            max_pages=args.max_pages if args.max_pages is not None else settings.max_pages,
+            max_items=args.max_items if args.max_items is not None else settings.max_items,
+        )
+    except (ConfigError, ValueError) as exc:
+        _write_line(f"invalid search options: {exc}", stream=sys.stderr)
+        return EXIT_ERROR
+
+    refusal = (
+        "refusing to run: LinkedIn collection is disabled by default.\n"
+        "Rerun with --confirm-network to send bounded requests "
+        f"(max {config.max_pages} page(s), {config.max_items} item(s), "
+        f"{settings.request_delay_seconds:g}s delay), or use --dry-run to inspect the plan."
+    )
+    return _run_search(
+        args,
+        settings,
+        config=config,
+        plan_fn=lambda config: plan_search_urls(config, settings=settings),
+        refusal_message=refusal,
+        collect_fn=search_linkedin,
+    )
 
 
 #: One collector's terminal status -> the CLI's exit code. Shared so every
@@ -889,59 +917,21 @@ def cmd_search_getmanfred(args: argparse.Namespace, settings: Settings) -> int:
         _write_line(f"invalid GetManfred options: {exc}", stream=sys.stderr)
         return EXIT_ERROR
 
-    if args.dry_run:
-        planned = plan_getmanfred_urls(config)
-        _emit(
-            {"dry_run": True, "planned_urls": planned},
-            as_json=getattr(args, "as_json", False),
-            text="dry run, no request performed. Planned requests:\n  "
-            + "\n  ".join(planned),
-        )
-        return EXIT_OK
-
-    if not args.confirm_network:
-        _write_line(
-            "refusing to run: GetManfred collection is disabled by default.\n"
-            "Rerun with --confirm-network to send bounded requests "
-            f"(max {config.max_documents} sitemap document(s), {config.max_items} item(s), "
-            f"{settings.request_delay_seconds:g}s delay), or use --dry-run to inspect the plan.",
-            stream=sys.stderr,
-        )
-        return EXIT_FAIL_CLOSED
-
-    conn = connect(settings.db_path)
-    try:
-        init_db(conn)
-        try:
-            result = search_getmanfred(config, settings=settings, network_enabled=True)
-        except CollectorDisabledError as exc:  # pragma: no cover - guarded above
-            _write_line(f"collector disabled: {exc}", stream=sys.stderr)
-            return EXIT_FAIL_CLOSED
-        outcome = ingest_collector_result(
-            conn,
-            result,
-            config=config,
-            settings=settings,
-            cycle_id=getattr(args, "cycle_id", None),
-            label=args.label,
-        )
-    except CollectorError as exc:
-        _write_line(f"collection failed: {exc}", stream=sys.stderr)
-        return EXIT_FAIL_CLOSED
-    finally:
-        conn.close()
-
-    _emit(
-        {**outcome.to_dict(), "planned_urls": result.planned_urls},
-        as_json=getattr(args, "as_json", False),
-        text=(
-            f"run #{outcome.run_id} [{outcome.status}]: {outcome.items_found} item(s), "
-            f"{outcome.new_jobs} new, {outcome.duplicate_jobs} duplicate(s)"
-            + (f"\nnote: {outcome.notes}" if outcome.notes else "")
-            + (f"\nerror: {outcome.error}" if outcome.error else "")
-        ),
+    refusal = (
+        "refusing to run: GetManfred collection is disabled by default.\n"
+        "Rerun with --confirm-network to send bounded requests "
+        f"(max {config.max_documents} sitemap document(s), {config.max_items} item(s), "
+        f"{settings.request_delay_seconds:g}s delay), or use --dry-run to inspect the plan."
     )
-    return _collection_exit_code(outcome.status)
+    return _run_search(
+        args,
+        settings,
+        config=config,
+        plan_fn=plan_getmanfred_urls,
+        refusal_message=refusal,
+        collect_fn=search_getmanfred,
+        label=args.label,
+    )
 
 
 def cmd_search_tecnoempleo(args: argparse.Namespace, settings: Settings) -> int:
@@ -968,59 +958,21 @@ def cmd_search_tecnoempleo(args: argparse.Namespace, settings: Settings) -> int:
         _write_line(f"invalid Tecnoempleo options: {exc}", stream=sys.stderr)
         return EXIT_ERROR
 
-    if args.dry_run:
-        planned = plan_tecnoempleo_urls(config)
-        _emit(
-            {"dry_run": True, "planned_urls": planned},
-            as_json=getattr(args, "as_json", False),
-            text="dry run, no request performed. Planned requests:\n  "
-            + "\n  ".join(planned),
-        )
-        return EXIT_OK
-
-    if not args.confirm_network:
-        _write_line(
-            "refusing to run: Tecnoempleo collection is disabled by default.\n"
-            "Rerun with --confirm-network to send bounded requests "
-            f"(max {config.max_pages} page(s), {config.max_items} item(s), "
-            f"{settings.request_delay_seconds:g}s delay), or use --dry-run to inspect the plan.",
-            stream=sys.stderr,
-        )
-        return EXIT_FAIL_CLOSED
-
-    conn = connect(settings.db_path)
-    try:
-        init_db(conn)
-        try:
-            result = search_tecnoempleo(config, settings=settings, network_enabled=True)
-        except CollectorDisabledError as exc:  # pragma: no cover - guarded above
-            _write_line(f"collector disabled: {exc}", stream=sys.stderr)
-            return EXIT_FAIL_CLOSED
-        outcome = ingest_collector_result(
-            conn,
-            result,
-            config=config,
-            settings=settings,
-            cycle_id=getattr(args, "cycle_id", None),
-            label=args.label,
-        )
-    except CollectorError as exc:
-        _write_line(f"collection failed: {exc}", stream=sys.stderr)
-        return EXIT_FAIL_CLOSED
-    finally:
-        conn.close()
-
-    _emit(
-        {**outcome.to_dict(), "planned_urls": result.planned_urls},
-        as_json=getattr(args, "as_json", False),
-        text=(
-            f"run #{outcome.run_id} [{outcome.status}]: {outcome.items_found} item(s), "
-            f"{outcome.new_jobs} new, {outcome.duplicate_jobs} duplicate(s)"
-            + (f"\nnote: {outcome.notes}" if outcome.notes else "")
-            + (f"\nerror: {outcome.error}" if outcome.error else "")
-        ),
+    refusal = (
+        "refusing to run: Tecnoempleo collection is disabled by default.\n"
+        "Rerun with --confirm-network to send bounded requests "
+        f"(max {config.max_pages} page(s), {config.max_items} item(s), "
+        f"{settings.request_delay_seconds:g}s delay), or use --dry-run to inspect the plan."
     )
-    return _collection_exit_code(outcome.status)
+    return _run_search(
+        args,
+        settings,
+        config=config,
+        plan_fn=plan_tecnoempleo_urls,
+        refusal_message=refusal,
+        collect_fn=search_tecnoempleo,
+        label=args.label,
+    )
 
 
 def _effective_stale_days(args: argparse.Namespace) -> int:
@@ -1137,11 +1089,20 @@ def _open_existing_readonly(db_path: Path) -> sqlite3.Connection | None:
 def _run_detail_dry_run(
     args: argparse.Namespace,
     settings: Settings,
-    config: DetailFetchConfig,
     *,
+    max_items: int,
+    select_fn: Callable[..., tuple[list[Any], int]],
+    plan_fn: Callable[..., tuple[list[Any], int]],
+    unavailable_label: str,
     refresh_cutoff: str | None = None,
 ) -> int:
-    """Plan ``fetch-details`` without creating or writing a database."""
+    """Plan a detail-fetch command without creating or writing a database.
+
+    ``select_fn`` scopes the selection to one provider; ``plan_fn(jobs,
+    max_items=)`` resolves fetch targets; ``unavailable_label`` names the id or
+    URL the dry-run could not resolve. ``_open_existing_readonly`` is intentional:
+    a dry run must not create a database or write schema/data.
+    """
     jobs: list[Any] = []
     omitted = 0
     note: str | None = None
@@ -1150,8 +1111,8 @@ def _run_detail_dry_run(
         note = f"no database at {settings.db_path}; nothing to plan"
     else:
         try:
-            jobs, omitted = _select_detail_jobs(
-                conn, args, limit=config.max_items, refresh_cutoff=refresh_cutoff
+            jobs, omitted = select_fn(
+                conn, args, limit=max_items, refresh_cutoff=refresh_cutoff
             )
         except sqlite3.DatabaseError:
             # Covers a database with no jobscout schema as well as an
@@ -1160,7 +1121,7 @@ def _run_detail_dry_run(
         finally:
             conn.close()
 
-    targets, _ = plan_detail_targets(jobs, settings=settings, max_items=config.max_items)
+    targets, _ = plan_fn(jobs, max_items=max_items)
     planned = [target.url for target in targets if target.url]
     skipped = [target.reason for target in targets if target.url is None]
     text = "dry run, no request performed and no data written. Planned requests:\n  " + (
@@ -1173,7 +1134,9 @@ def _run_detail_dry_run(
     if omitted:
         text += f"\n  {omitted} selected job(s) omitted by --max-items"
     if skipped:
-        text += f"\n  {len(skipped)} selected job(s) have no resolvable LinkedIn job id"
+        text += (
+            f"\n  {len(skipped)} selected job(s) have no resolvable {unavailable_label}"
+        )
     _emit(
         {
             "dry_run": True,
@@ -1188,6 +1151,94 @@ def _run_detail_dry_run(
         text=text,
     )
     return EXIT_OK
+
+
+def _finish_detail_run(
+    args: argparse.Namespace,
+    outcome: Any,
+    result: Any,
+    *,
+    refresh_cutoff: str | None = None,
+) -> int:
+    """Emit a detail run's summary and map its status to an exit code."""
+    as_json = getattr(args, "as_json", False)
+    text = (
+        f"detail run #{outcome.run_id} [{outcome.status}]: {outcome.enriched} enriched, "
+        f"{outcome.partial} partial, {outcome.skipped} skipped, {outcome.failed} failed "
+        f"(of {outcome.requested} selected)"
+        + (f"\nnote: {outcome.notes}" if outcome.notes else "")
+    )
+    if refresh_cutoff:
+        text += f"\n  {_refresh_text_line(args, refresh_cutoff)}"
+    if result.truncated:
+        text += f"\n  {result.truncated} selected job(s) omitted by --max-items"
+    _emit(
+        {
+            **outcome.to_dict(),
+            "planned_urls": result.planned_urls,
+            "truncated": result.truncated,
+            **_refresh_output_fields(args, refresh_cutoff),
+        },
+        as_json=as_json,
+        text=text,
+    )
+    if not as_json and (outcome.enriched or outcome.partial):
+        _write_line("next: score --all --rescore (or score --job-id ID) to score the enriched jobs")
+    if outcome.status == SearchRunStatus.FAILED_CLOSED:
+        return EXIT_FAIL_CLOSED
+    if outcome.status == SearchRunStatus.FAILED:
+        return EXIT_ERROR
+    return EXIT_OK
+
+
+def _run_detail_fetch(
+    args: argparse.Namespace,
+    settings: Settings,
+    *,
+    max_items: int,
+    select_fn: Callable[..., tuple[list[Any], int]],
+    collect_fn: Callable[..., Any],
+    provider: str | None,
+    collect_kwargs: dict[str, Any],
+    refresh_cutoff: str | None = None,
+) -> int:
+    """Run a confirmed detail fetch and emit its summary.
+
+    The caller has already cleared the confirmation gate. ``collect_kwargs``
+    carries the provider-specific transport argument (``client`` for LinkedIn,
+    ``robots_text`` for the robots-gated providers); ``provider`` is passed to
+    :func:`ingest_detail_results` (``None`` keeps LinkedIn's default).
+    """
+    conn = connect(settings.db_path)
+    try:
+        init_db(conn)
+        jobs, omitted = select_fn(
+            conn, args, limit=max_items, refresh_cutoff=refresh_cutoff
+        )
+        try:
+            result = collect_fn(
+                jobs,
+                settings=settings,
+                network_enabled=True,
+                max_items=max_items,
+                **collect_kwargs,
+            )
+        except CollectorDisabledError as exc:  # pragma: no cover - guarded above
+            _write_line(f"detail fetching disabled: {exc}", stream=sys.stderr)
+            return EXIT_FAIL_CLOSED
+        # ``jobs`` was already bounded by the selection query, so record the
+        # omission count we measured against the database.
+        result.truncated = omitted
+        outcome = ingest_detail_results(
+            conn, result, settings=settings, label=args.label, provider=provider
+        )
+    except CollectorError as exc:
+        _write_line(f"detail fetching failed: {exc}", stream=sys.stderr)
+        return EXIT_FAIL_CLOSED
+    finally:
+        conn.close()
+
+    return _finish_detail_run(args, outcome, result, refresh_cutoff=refresh_cutoff)
 
 
 def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
@@ -1225,7 +1276,15 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
         # ``--refresh --dry-run`` stays read-only and offline through the same
         # path: the refresh selection is a plain SELECT on the read-only URI.
         return _run_detail_dry_run(
-            args, settings, config, refresh_cutoff=refresh_cutoff
+            args,
+            settings,
+            max_items=config.max_items,
+            select_fn=_select_detail_jobs,
+            plan_fn=lambda jobs, max_items: plan_detail_targets(
+                jobs, settings=settings, max_items=max_items
+            ),
+            unavailable_label="LinkedIn job id",
+            refresh_cutoff=refresh_cutoff,
         )
 
     # Refuse before opening the database: an unconfirmed live run must leave no
@@ -1241,64 +1300,18 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
         )
         return EXIT_FAIL_CLOSED
 
-    conn = connect(settings.db_path)
-    try:
-        init_db(conn)
-        jobs, omitted = _select_detail_jobs(
-            conn, args, limit=config.max_items, refresh_cutoff=refresh_cutoff
-        )
-
-        try:
-            # The refusal gate above already required --confirm-network or an
-            # offline fixture. An injected fixture transport performs no I/O.
-            result = fetch_linkedin_details(
-                jobs,
-                settings=settings,
-                network_enabled=True,
-                max_items=config.max_items,
-                client=offline_transport,
-            )
-        except CollectorDisabledError as exc:  # pragma: no cover - guarded above
-            _write_line(f"detail fetching disabled: {exc}", stream=sys.stderr)
-            return EXIT_FAIL_CLOSED
-        # ``jobs`` was already bounded by the selection query, so record the
-        # omission count we measured against the database.
-        result.truncated = omitted
-        outcome = ingest_detail_results(conn, result, settings=settings, label=args.label)
-    except CollectorError as exc:
-        _write_line(f"detail fetching failed: {exc}", stream=sys.stderr)
-        return EXIT_FAIL_CLOSED
-    finally:
-        conn.close()
-
-    as_json = getattr(args, "as_json", False)
-    text = (
-        f"detail run #{outcome.run_id} [{outcome.status}]: {outcome.enriched} enriched, "
-        f"{outcome.partial} partial, {outcome.skipped} skipped, {outcome.failed} failed "
-        f"(of {outcome.requested} selected)"
-        + (f"\nnote: {outcome.notes}" if outcome.notes else "")
+    # The refusal gate above already required --confirm-network or an offline
+    # fixture. An injected fixture transport performs no I/O.
+    return _run_detail_fetch(
+        args,
+        settings,
+        max_items=config.max_items,
+        select_fn=_select_detail_jobs,
+        collect_fn=fetch_linkedin_details,
+        provider=None,
+        collect_kwargs={"client": offline_transport},
+        refresh_cutoff=refresh_cutoff,
     )
-    if refresh_cutoff:
-        text += f"\n  {_refresh_text_line(args, refresh_cutoff)}"
-    if result.truncated:
-        text += f"\n  {result.truncated} selected job(s) omitted by --max-items"
-    _emit(
-        {
-            **outcome.to_dict(),
-            "planned_urls": result.planned_urls,
-            "truncated": result.truncated,
-            **_refresh_output_fields(args, refresh_cutoff),
-        },
-        as_json=as_json,
-        text=text,
-    )
-    if not as_json and (outcome.enriched or outcome.partial):
-        _write_line("next: score --all --rescore (or score --job-id ID) to score the enriched jobs")
-    if outcome.status == SearchRunStatus.FAILED_CLOSED:
-        return EXIT_FAIL_CLOSED
-    if outcome.status == SearchRunStatus.FAILED:
-        return EXIT_ERROR
-    return EXIT_OK
 
 
 def _select_tecnoempleo_detail_jobs(
@@ -1346,46 +1359,14 @@ def cmd_fetch_tecnoempleo_details(args: argparse.Namespace, settings: Settings) 
             return EXIT_ERROR
 
     if args.dry_run:
-        jobs: list[Any] = []
-        omitted = 0
-        note: str | None = None
-        conn = _open_existing_readonly(Path(settings.db_path))
-        if conn is None:
-            note = f"no database at {settings.db_path}; nothing to plan"
-        else:
-            try:
-                jobs, omitted = _select_tecnoempleo_detail_jobs(
-                    conn, args, limit=max_items
-                )
-            except sqlite3.DatabaseError:
-                note = "database could not be read or is not initialized; nothing to plan"
-            finally:
-                conn.close()
-        targets, _ = plan_tecnoempleo_detail_targets(jobs, max_items=max_items)
-        planned = [target.url for target in targets if target.url]
-        skipped = [target.reason for target in targets if target.url is None]
-        text = "dry run, no request performed and no data written. Planned requests:\n  " + (
-            "\n  ".join(planned) or "(none)"
+        return _run_detail_dry_run(
+            args,
+            settings,
+            max_items=max_items,
+            select_fn=_select_tecnoempleo_detail_jobs,
+            plan_fn=plan_tecnoempleo_detail_targets,
+            unavailable_label="Tecnoempleo URL",
         )
-        if note:
-            text += f"\n  {note}"
-        if omitted:
-            text += f"\n  {omitted} selected job(s) omitted by --max-items"
-        if skipped:
-            text += f"\n  {len(skipped)} selected job(s) have no resolvable Tecnoempleo URL"
-        _emit(
-            {
-                "dry_run": True,
-                "selected": len(targets),
-                "truncated": omitted,
-                "planned_urls": planned,
-                "skipped_reasons": skipped,
-                "note": note,
-            },
-            as_json=getattr(args, "as_json", False),
-            text=text,
-        )
-        return EXIT_OK
 
     if not args.confirm_network:
         _write_line(
@@ -1397,58 +1378,15 @@ def cmd_fetch_tecnoempleo_details(args: argparse.Namespace, settings: Settings) 
         )
         return EXIT_FAIL_CLOSED
 
-    conn = connect(settings.db_path)
-    try:
-        init_db(conn)
-        jobs, omitted = _select_tecnoempleo_detail_jobs(
-            conn, args, limit=max_items
-        )
-        try:
-            result = fetch_tecnoempleo_details(
-                jobs,
-                settings=settings,
-                network_enabled=True,
-                max_items=max_items,
-                robots_text=robots_text,
-            )
-        except CollectorDisabledError as exc:  # pragma: no cover - guarded above
-            _write_line(f"detail fetching disabled: {exc}", stream=sys.stderr)
-            return EXIT_FAIL_CLOSED
-        result.truncated = omitted
-        outcome = ingest_detail_results(
-            conn, result, settings=settings, label=args.label, provider="tecnoempleo"
-        )
-    except CollectorError as exc:
-        _write_line(f"detail fetching failed: {exc}", stream=sys.stderr)
-        return EXIT_FAIL_CLOSED
-    finally:
-        conn.close()
-
-    as_json = getattr(args, "as_json", False)
-    text = (
-        f"detail run #{outcome.run_id} [{outcome.status}]: {outcome.enriched} enriched, "
-        f"{outcome.partial} partial, {outcome.skipped} skipped, {outcome.failed} failed "
-        f"(of {outcome.requested} selected)"
-        + (f"\nnote: {outcome.notes}" if outcome.notes else "")
+    return _run_detail_fetch(
+        args,
+        settings,
+        max_items=max_items,
+        select_fn=_select_tecnoempleo_detail_jobs,
+        collect_fn=fetch_tecnoempleo_details,
+        provider="tecnoempleo",
+        collect_kwargs={"robots_text": robots_text},
     )
-    if result.truncated:
-        text += f"\n  {result.truncated} selected job(s) omitted by --max-items"
-    _emit(
-        {
-            **outcome.to_dict(),
-            "planned_urls": result.planned_urls,
-            "truncated": result.truncated,
-        },
-        as_json=as_json,
-        text=text,
-    )
-    if not as_json and (outcome.enriched or outcome.partial):
-        _write_line("next: score --all --rescore (or score --job-id ID) to score the enriched jobs")
-    if outcome.status == SearchRunStatus.FAILED_CLOSED:
-        return EXIT_FAIL_CLOSED
-    if outcome.status == SearchRunStatus.FAILED:
-        return EXIT_ERROR
-    return EXIT_OK
 
 
 def _select_getmanfred_detail_jobs(
@@ -1496,46 +1434,14 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
             return EXIT_ERROR
 
     if args.dry_run:
-        jobs: list[Any] = []
-        omitted = 0
-        note: str | None = None
-        conn = _open_existing_readonly(Path(settings.db_path))
-        if conn is None:
-            note = f"no database at {settings.db_path}; nothing to plan"
-        else:
-            try:
-                jobs, omitted = _select_getmanfred_detail_jobs(
-                    conn, args, limit=max_items
-                )
-            except sqlite3.DatabaseError:
-                note = "database could not be read or is not initialized; nothing to plan"
-            finally:
-                conn.close()
-        targets, _ = plan_getmanfred_detail_targets(jobs, max_items=max_items)
-        planned = [target.url for target in targets if target.url]
-        skipped = [target.reason for target in targets if target.url is None]
-        text = "dry run, no request performed and no data written. Planned requests:\n  " + (
-            "\n  ".join(planned) or "(none)"
+        return _run_detail_dry_run(
+            args,
+            settings,
+            max_items=max_items,
+            select_fn=_select_getmanfred_detail_jobs,
+            plan_fn=plan_getmanfred_detail_targets,
+            unavailable_label="GetManfred URL",
         )
-        if note:
-            text += f"\n  {note}"
-        if omitted:
-            text += f"\n  {omitted} selected job(s) omitted by --max-items"
-        if skipped:
-            text += f"\n  {len(skipped)} selected job(s) have no resolvable GetManfred URL"
-        _emit(
-            {
-                "dry_run": True,
-                "selected": len(targets),
-                "truncated": omitted,
-                "planned_urls": planned,
-                "skipped_reasons": skipped,
-                "note": note,
-            },
-            as_json=getattr(args, "as_json", False),
-            text=text,
-        )
-        return EXIT_OK
 
     if not args.confirm_network:
         _write_line(
@@ -1547,58 +1453,15 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
         )
         return EXIT_FAIL_CLOSED
 
-    conn = connect(settings.db_path)
-    try:
-        init_db(conn)
-        jobs, omitted = _select_getmanfred_detail_jobs(
-            conn, args, limit=max_items
-        )
-        try:
-            result = fetch_getmanfred_details(
-                jobs,
-                settings=settings,
-                network_enabled=True,
-                max_items=max_items,
-                robots_text=robots_text,
-            )
-        except CollectorDisabledError as exc:  # pragma: no cover - guarded above
-            _write_line(f"detail fetching disabled: {exc}", stream=sys.stderr)
-            return EXIT_FAIL_CLOSED
-        result.truncated = omitted
-        outcome = ingest_detail_results(
-            conn, result, settings=settings, label=args.label, provider="getmanfred"
-        )
-    except CollectorError as exc:
-        _write_line(f"detail fetching failed: {exc}", stream=sys.stderr)
-        return EXIT_FAIL_CLOSED
-    finally:
-        conn.close()
-
-    as_json = getattr(args, "as_json", False)
-    text = (
-        f"detail run #{outcome.run_id} [{outcome.status}]: {outcome.enriched} enriched, "
-        f"{outcome.partial} partial, {outcome.skipped} skipped, {outcome.failed} failed "
-        f"(of {outcome.requested} selected)"
-        + (f"\nnote: {outcome.notes}" if outcome.notes else "")
+    return _run_detail_fetch(
+        args,
+        settings,
+        max_items=max_items,
+        select_fn=_select_getmanfred_detail_jobs,
+        collect_fn=fetch_getmanfred_details,
+        provider="getmanfred",
+        collect_kwargs={"robots_text": robots_text},
     )
-    if result.truncated:
-        text += f"\n  {result.truncated} selected job(s) omitted by --max-items"
-    _emit(
-        {
-            **outcome.to_dict(),
-            "planned_urls": result.planned_urls,
-            "truncated": result.truncated,
-        },
-        as_json=as_json,
-        text=text,
-    )
-    if not as_json and (outcome.enriched or outcome.partial):
-        _write_line("next: score --all --rescore (or score --job-id ID) to score the enriched jobs")
-    if outcome.status == SearchRunStatus.FAILED_CLOSED:
-        return EXIT_FAIL_CLOSED
-    if outcome.status == SearchRunStatus.FAILED:
-        return EXIT_ERROR
-    return EXIT_OK
 
 
 def cmd_list(args: argparse.Namespace, settings: Settings) -> int:
