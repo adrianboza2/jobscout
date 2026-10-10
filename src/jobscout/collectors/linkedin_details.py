@@ -31,7 +31,6 @@ import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Callable, Sequence
-from urllib.parse import urlsplit
 
 from ..config import (
     HARD_MAX_ITEMS,
@@ -48,7 +47,6 @@ from ..models import (
 )
 from ..normalize import content_hash, extract_linkedin_job_id, html_to_text, normalize_text
 from ..timeutil import utcnow_iso
-from ..url_policy import is_http_scheme
 from .base import (
     TRUNCATION_HEADER,
     AccessDeniedError,
@@ -62,6 +60,7 @@ from .base import (
     UrllibHttpClient,
     fetch_with_policy,
 )
+from .htmlutil import VOID_TAGS, sanitize_redirect
 from .ratelimit import BackoffPolicy, RequestPacer
 
 #: Class markers that identify the description container in guest detail HTML.
@@ -84,23 +83,6 @@ DEFINITIVE_MISSING_STATUSES = frozenset({404, 410})
 #: the same lower bound used by :func:`jobscout.normalize.extract_linkedin_job_id`,
 #: kept ASCII-only so a non-ASCII "digit" is never mistaken for a real id.
 _NUMERIC_SOURCE_JOB_ID_RE = re.compile(r"[0-9]{4,}")
-
-_VOID_TAGS = {
-    "area",
-    "base",
-    "br",
-    "col",
-    "embed",
-    "hr",
-    "img",
-    "input",
-    "link",
-    "meta",
-    "param",
-    "source",
-    "track",
-    "wbr",
-}
 
 
 @dataclass
@@ -252,29 +234,11 @@ def build_detail_url(template: str, source_job_id: str) -> str:
 def sanitize_final_url(requested_url: str | None, response_url: str | None) -> str | None:
     """Return the safe final URL of an allowed redirect, else ``None``.
 
-    Only a genuine, safely shaped redirect target is kept. The value is dropped
-    when the response URL is missing, identical to the requested URL (no redirect
-    happened), uses a non-HTTP(S) scheme, or embeds credentials
-    (``https://user:pass@host``). The host policy itself was already enforced by
-    the transport's redirect handler; this function only rejects values that must
-    never reach the ``job_detail_fetches.final_url`` column.
-
-    ``None`` is the honest "no redirect was observed" value, so callers persist
-    ``NULL`` instead of echoing the requested URL as if it were a redirect.
+    LinkedIn applies no extra host or scheme restriction here: the transport's
+    redirect handler already enforced host policy, so only the shape checks
+    shared with every detail fetcher run.
     """
-    requested = str(requested_url or "").strip()
-    candidate = str(response_url or "").strip()
-    if not candidate or candidate == requested:
-        return None
-    if not is_http_scheme(candidate):
-        return None
-    try:
-        netloc = urlsplit(candidate).netloc
-    except ValueError:
-        return None
-    if "@" in netloc:
-        return None
-    return candidate
+    return sanitize_redirect(requested_url, response_url)
 
 
 def plan_detail_targets(
@@ -363,7 +327,7 @@ class _DescriptionParser(HTMLParser):
                 self._parts = []
             return
         raw_tag = self.get_starttag_text() or f"<{tag}>"
-        if tag in _VOID_TAGS:
+        if tag in VOID_TAGS:
             # Void elements never emit an end tag, so they must not change depth.
             self._parts.append(raw_tag)
             return

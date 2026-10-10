@@ -1063,51 +1063,56 @@ def _select_detail_jobs(
     conn: Any,
     args: argparse.Namespace,
     *,
+    source: str = "linkedin",
+    provider_label: str = "LinkedIn",
     limit: int,
     refresh_cutoff: str | None = None,
 ) -> tuple[list[Any], int]:
-    """Resolve the selection for ``fetch-details``.
+    """Resolve the selection for a detail-fetch command.
 
     Returns ``(jobs, omitted)`` where ``jobs`` is bounded to ``limit`` and
     ``omitted`` is how many selected jobs were dropped by that cap. The count
     lets the CLI report truncation instead of always claiming zero.
 
-    Every route is restricted to ``source = 'linkedin'`` (default, ``--all``,
-    ``--refresh``, and explicit ``--job-id``). The fetcher builds a LinkedIn
-    guest-API URL, so letting another provider's numeric id into this selection
-    would read a different posting's body inside LinkedIn's id space.
+    Every route is restricted to ``source`` (default, ``--all``, ``--refresh``,
+    and explicit ``--job-id``). Each fetcher builds a URL inside its provider's
+    id space, so letting another provider's numeric id into this selection would
+    read a different posting's body. ``provider_label`` only names the provider
+    in the "not found" message; ``--refresh`` is a no-op for providers whose
+    subcommand does not define it.
     """
     if args.job_id:
         selected = []
         found: set[int] = set()
         for job_id in args.job_id:
-            job = variant_job_for_source(conn, job_id, "linkedin")
+            job = variant_job_for_source(conn, job_id, source)
             if job is not None:
                 selected.append(job)
                 found.add(job_id)
         for missing in [job_id for job_id in args.job_id if job_id not in found]:
             _write_line(
-                f"job #{missing} not found among LinkedIn offers", stream=sys.stderr
+                f"job #{missing} not found among {provider_label} offers",
+                stream=sys.stderr,
             )
         return selected[:limit], max(0, len(selected) - limit)
     if args.all:
-        total = count_active_variants(conn, source="linkedin")
+        total = count_active_variants(conn, source=source)
         return (
-            active_variants(conn, source="linkedin", limit=limit),
+            active_variants(conn, source=source, limit=limit),
             max(0, total - limit),
         )
     if getattr(args, "refresh", False):
         cutoff = refresh_cutoff or _refresh_cutoff(args)
-        total = count_variants_needing_refresh(conn, source="linkedin", cutoff=cutoff)
+        total = count_variants_needing_refresh(conn, source=source, cutoff=cutoff)
         return (
             variants_needing_refresh(
-                conn, source="linkedin", cutoff=cutoff, limit=limit
+                conn, source=source, cutoff=cutoff, limit=limit
             ),
             max(0, total - limit),
         )
-    total = count_variants_needing_details(conn, source="linkedin")
+    total = count_variants_needing_details(conn, source=source)
     return (
-        variants_needing_details(conn, source="linkedin", limit=limit),
+        variants_needing_details(conn, source=source, limit=limit),
         max(0, total - limit),
     )
 
@@ -1297,36 +1302,20 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
 
 
 def _select_tecnoempleo_detail_jobs(
-    conn: Any, args: argparse.Namespace, *, limit: int
+    conn: Any,
+    args: argparse.Namespace,
+    *,
+    limit: int,
+    refresh_cutoff: str | None = None,
 ) -> tuple[list[Any], int]:
-    """Resolve the selection for ``fetch-tecnoempleo-details``.
-
-    Returns ``(jobs, omitted)``. The default selection is every active
-    Tecnoempleo offer that still lacks a full description (``partial`` search
-    cards included); ``--all`` widens it to every active Tecnoempleo offer.
-    """
-    source = "tecnoempleo"
-    if args.job_id:
-        selected = []
-        found: set[int] = set()
-        for job_id in args.job_id:
-            job = variant_job_for_source(conn, job_id, source)
-            if job is not None:
-                selected.append(job)
-                found.add(job_id)
-        for missing in [job_id for job_id in args.job_id if job_id not in found]:
-            _write_line(
-                f"job #{missing} not found among Tecnoempleo offers", stream=sys.stderr
-            )
-        return selected[:limit], max(0, len(selected) - limit)
-    if args.all:
-        total = count_active_variants(conn, source=source)
-        jobs = active_variants(conn, source=source, limit=limit)
-        return jobs, max(0, total - limit)
-    total = count_variants_needing_details(conn, source=source)
-    return (
-        variants_needing_details(conn, source=source, limit=limit),
-        max(0, total - limit),
+    """Resolve the selection for ``fetch-tecnoempleo-details`` (Tecnoempleo-scoped)."""
+    return _select_detail_jobs(
+        conn,
+        args,
+        source="tecnoempleo",
+        provider_label="Tecnoempleo",
+        limit=limit,
+        refresh_cutoff=refresh_cutoff,
     )
 
 
@@ -1463,38 +1452,20 @@ def cmd_fetch_tecnoempleo_details(args: argparse.Namespace, settings: Settings) 
 
 
 def _select_getmanfred_detail_jobs(
-    conn: Any, args: argparse.Namespace, *, limit: int
+    conn: Any,
+    args: argparse.Namespace,
+    *,
+    limit: int,
+    refresh_cutoff: str | None = None,
 ) -> tuple[list[Any], int]:
-    """Resolve the selection for ``fetch-getmanfred-details``.
-
-    Returns ``(jobs, omitted)``. The default selection is every active
-    GetManfred offer that still lacks a full description (``partial`` inventory
-    entries included); ``--all`` widens it to every active GetManfred offer.
-    Every route — default, ``--all``, and an explicit ``--job-id`` — is scoped to
-    ``source = getmanfred`` so another provider's id can never be fetched.
-    """
-    source = "getmanfred"
-    if args.job_id:
-        selected = []
-        found: set[int] = set()
-        for job_id in args.job_id:
-            job = variant_job_for_source(conn, job_id, source)
-            if job is not None:
-                selected.append(job)
-                found.add(job_id)
-        for missing in [job_id for job_id in args.job_id if job_id not in found]:
-            _write_line(
-                f"job #{missing} not found among GetManfred offers", stream=sys.stderr
-            )
-        return selected[:limit], max(0, len(selected) - limit)
-    if args.all:
-        total = count_active_variants(conn, source=source)
-        jobs = active_variants(conn, source=source, limit=limit)
-        return jobs, max(0, total - limit)
-    total = count_variants_needing_details(conn, source=source)
-    return (
-        variants_needing_details(conn, source=source, limit=limit),
-        max(0, total - limit),
+    """Resolve the selection for ``fetch-getmanfred-details`` (GetManfred-scoped)."""
+    return _select_detail_jobs(
+        conn,
+        args,
+        source="getmanfred",
+        provider_label="GetManfred",
+        limit=limit,
+        refresh_cutoff=refresh_cutoff,
     )
 
 

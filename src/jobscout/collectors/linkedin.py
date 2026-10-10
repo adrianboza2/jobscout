@@ -62,26 +62,11 @@ from .base import (
     UrllibHttpClient,
     fetch_with_policy,
 )
+from .htmlutil import VOID_TAGS
 from .ratelimit import BackoffPolicy, RequestPacer
 
 DEFAULT_PAGE_SIZE = 25
 DEFAULT_BASE_URL = "https://www.linkedin.com"
-_VOID_TAGS = {
-    "area",
-    "base",
-    "br",
-    "col",
-    "embed",
-    "hr",
-    "img",
-    "input",
-    "link",
-    "meta",
-    "param",
-    "source",
-    "track",
-    "wbr",
-}
 
 
 @dataclass
@@ -263,7 +248,7 @@ class _JobCardParser(HTMLParser):
         if self._card is None:
             return
 
-        if tag not in _VOID_TAGS:
+        if tag not in VOID_TAGS:
             self._card["depth"] = self._card.get("depth", 0) + 1
 
         if tag == "a":
@@ -303,7 +288,7 @@ class _JobCardParser(HTMLParser):
                 # The field's own closing tag, or malformed nesting: close it
                 # either way and keep depth bookkeeping honest.
                 self._close_field()
-        if tag in _VOID_TAGS:
+        if tag in VOID_TAGS:
             return
         depth = int(self._card.get("depth", 0))
         if tag == "li" and depth <= 0:

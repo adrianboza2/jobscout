@@ -86,6 +86,7 @@ from .base import (
     fetch_with_policy,
 )
 from .getmanfred import PROVIDER, extract_getmanfred_job_id
+from .htmlutil import sanitize_redirect
 from .ratelimit import BackoffPolicy, RequestPacer
 from .robots import check_robots
 from .tecnoempleo import _fetch_robots
@@ -642,23 +643,12 @@ class GetManfredDetailResult:
 
 def _sanitize_final_url(requested_url: str | None, response_url: str | None) -> str | None:
     """Return the safe final URL of an allowed same-host redirect, else ``None``."""
-    requested = str(requested_url or "").strip()
-    candidate = str(response_url or "").strip()
-    if not candidate or candidate == requested:
-        return None
-    if not is_http_scheme(candidate):
-        return None
-    try:
-        parts = urlsplit(candidate)
-    except ValueError:
-        return None
-    if parts.scheme.lower() != "https":
-        return None
-    if "@" in parts.netloc:
-        return None
-    if not is_getmanfred_host(parts.hostname or ""):
-        return None
-    return candidate
+    return sanitize_redirect(
+        requested_url,
+        response_url,
+        allow_host=is_getmanfred_host,
+        require_https=True,
+    )
 
 
 def _record_detail_response(

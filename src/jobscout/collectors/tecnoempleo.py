@@ -74,6 +74,7 @@ from .base import (
     UrllibHttpClient,
     fetch_with_policy,
 )
+from .htmlutil import VOID_TAGS
 from .ratelimit import BackoffPolicy, RequestPacer
 from .robots import check_robots
 
@@ -300,11 +301,6 @@ _CARD_MODALITY_DATE_RE = re.compile(
 )
 _DDMMYYYY_RE = re.compile(r"\b(\d{2})/(\d{2})/(\d{4})\b")
 
-_VOID_TAGS = {
-    "area", "base", "br", "col", "embed", "hr", "img", "input",
-    "link", "meta", "param", "source", "track", "wbr",
-}
-
 
 class _BlockCaptureParser(HTMLParser):
     """Capture the full inner HTML of every container matching ``predicate``.
@@ -340,7 +336,7 @@ class _BlockCaptureParser(HTMLParser):
                 self._parts = [self.get_starttag_text() or f"<{tag}>"]
             return
         raw_tag = self.get_starttag_text() or f"<{tag}>"
-        if tag in _VOID_TAGS:
+        if tag in VOID_TAGS:
             self._parts.append(raw_tag)
             return
         self._depth += 1

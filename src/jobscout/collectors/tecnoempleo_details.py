@@ -73,6 +73,7 @@ from .base import (
     UrllibHttpClient,
     fetch_with_policy,
 )
+from .htmlutil import VOID_TAGS, sanitize_redirect
 from .ratelimit import BackoffPolicy, RequestPacer
 from .robots import check_robots
 from .tecnoempleo import (
@@ -156,13 +157,6 @@ TECH_CLASS_MARKERS = ("tecnologias", "skills", "requisitos-tecnicos")
 
 #: Minimum characters for extracted text to count as real content.
 MIN_DESCRIPTION_CHARS = 10
-
-#: Absolute floor for "the detail page is recognizable at all": the description
-#: is the only field that makes a page worth storing as ``ok``.
-_VOID_TAGS = {
-    "area", "base", "br", "col", "embed", "hr", "img", "input",
-    "link", "meta", "param", "source", "track", "wbr",
-}
 
 #: Technology tokens are kept short and alphanumeric-ish; a token with a space or
 #: punctuation is not a technology name.
@@ -389,7 +383,7 @@ class _BlockParser(HTMLParser):
                 self._parts = []
             return
         raw_tag = self.get_starttag_text() or f"<{tag}>"
-        if tag in _VOID_TAGS:
+        if tag in VOID_TAGS:
             self._parts.append(raw_tag)
             return
         self._depth += 1
@@ -690,21 +684,9 @@ def parse_detail_fields(html_text: str) -> TecnoempleoDetailFields:
 
 def _sanitize_final_url(requested_url: str | None, response_url: str | None) -> str | None:
     """Return the safe final URL of an allowed same-host redirect, else ``None``."""
-    requested = str(requested_url or "").strip()
-    candidate = str(response_url or "").strip()
-    if not candidate or candidate == requested:
-        return None
-    if not is_http_scheme(candidate):
-        return None
-    try:
-        parts = urlsplit(candidate)
-    except ValueError:
-        return None
-    if "@" in parts.netloc:
-        return None
-    if not is_tecnoempleo_host(parts.hostname or ""):
-        return None
-    return candidate
+    return sanitize_redirect(
+        requested_url, response_url, allow_host=is_tecnoempleo_host
+    )
 
 
 def _record_detail_response(
