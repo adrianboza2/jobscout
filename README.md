@@ -3,8 +3,7 @@
 Herramienta **local-first** para buscar empleo: recolecta resultados públicos de
 búsqueda de LinkedIn a muy bajo volumen, los normaliza y deduplica en SQLite, y
 puntúa cada oferta contra un perfil estructurado local. El puntuador
-predeterminado reutiliza tu CLI de OpenCode ya autenticada con el modelo gratuito
-MiMo; también hay un puntuador determinista offline y otro compatible con OpenAI.
+predeterminado reutiliza tu CLI de OpenCode ya autenticada con el modelo gratuito deepseek-v4.1-flash; también hay un puntuador determinista offline y otro compatible con OpenAI.
 
 Nada sale de tu equipo salvo las solicitudes que autorizas explícitamente.
 **jobscout no envía postulaciones automáticas.**
@@ -112,7 +111,7 @@ Prepara el perfil real antes de cualquier barrido:
 | 0 | Preparar perfil | `cp profile.example.yaml profile.yaml` (POSIX) o `Copy-Item profile.example.yaml profile.yaml` (PowerShell), y `JOBSCOUT_PROFILE_PATH=profile.yaml` en `.env` | Defines rol objetivo, seniority, skills, dealbreakers y exclusiones. | Decisión humana |
 | 1 | Barrido controlado | `python -m jobscout keyword-plan` y luego `python -m jobscout search-linkedin --keywords "..." --dry-run`; para ejecutarlo, cambia `--dry-run` por `--confirm-network` | Descubre ofertas nuevas. `keyword-plan` es offline; cada búsqueda real es un acto humano explícito. | Semiautomático: autorizas cada consulta |
 | 2 | Enriquecer | `python -m jobscout fetch-details --max-items 10 --confirm-network` (o `fetch-getmanfred-details` / `fetch-tecnoempleo-details` según la plataforma, o `--fixture` para trabajar offline) | Trae la descripción completa de cada oferta, acotado en volumen. Solo sube a `ok` cuando reconoce el detalle. | Semiautomático: autorizas cada corrida |
-| 3 | Puntuar con MiMo | `python -m jobscout score --all --scorer opencode` | El puntuador predeterminado (OpenCode + MiMo) evalúa solo las ofertas que aún no tienen evaluación. | El puntaje es automático; la decisión de postular no |
+| 3 | Puntuar con deepseek-v4.1-flash | `python -m jobscout score --all --scorer opencode` | El puntuador predeterminado (OpenCode + deepseek-v4.1-flash) evalúa solo las ofertas que aún no tienen evaluación. | El puntaje es automático; la decisión de postular no |
 | 4 | Generar dashboard | `python -m jobscout dashboard` | Escribe un HTML local con todas las ofertas activas, puntajes, evidencia del enlace y filtros de preferencia. | Automático y de solo lectura |
 | 5 | Revisar ofertas | Abre `reports/jobscout-dashboard.html` | Tú marcas **Aplicar** o **Descartar** en el navegador. | Decisión humana exclusivamente |
 | 6 | Exportar/importar feedback | Exporta el JSON desde el tablero y ejecuta `python -m jobscout import-feedback jobscout-feedback.json` | Tus decisiones pasan de `localStorage` a la tabla `job_feedback` de SQLite. | Importar es automático una vez que lo invocas |
@@ -148,7 +147,7 @@ Notas del ciclo:
 ### Criterio de seniority y tecnologías (prompt v5)
 
 El prompt de OpenCode está versionado como **`opencode-v5-seniority-aware`**. La
-política que aplica MiMo es:
+política que aplica deepseek-v4.1-flash es:
 
 - **Penaliza fuerte, y usa `skip` cuando define el rol:** 5 o más años de
   experiencia exigidos, títulos explícitos `senior`, `staff`, `principal`,
@@ -397,6 +396,7 @@ subcomando) y `--version`.
 | `import-feedback PATH [--project-id ID]` | Guarda una exportación de feedback del tablero en SQLite (sin red, idempotente). |
 | `calibrate [--scorer heuristic\|llm\|opencode]` | Compara la última evaluación válida de cada oferta con el feedback humano importado (solo lectura, sin red). |
 | `prune [--apply]` | Planea el peor cuarto de ofertas con puntaje y series de palabras clave por proveedor (vista previa de solo lectura; `--apply` desactiva solo las ofertas seleccionadas). |
+| `notify [--deliver] [--min-score S]` | Ofertas activas con puntaje ≥ umbral, opt-in y de solo lectura (ver «Notificaciones locales»). |
 
 Códigos de salida: `0` éxito, `1` error, `2` rechazo (collector deshabilitado,
 acceso denegado o solicitud que no se realizó a propósito).
@@ -706,7 +706,7 @@ opencode auth login
 python -m jobscout score --all --scorer opencode --profile profile.yaml
 ```
 
-Si no pasás `--scorer`, se usa OpenCode con MiMo. Para una evaluación offline
+Si no pasás `--scorer`, se usa OpenCode con deepseek-v4.1-flash. Para una evaluación offline
 explícita, usá `--scorer heuristic`.
 
 Ejecuta `opencode run --pure --model <modelo> [--variant minimal] --format json

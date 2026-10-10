@@ -3,7 +3,7 @@
 A **local-first** job search toolkit: it collects public LinkedIn search results
 at very low volume, normalizes and deduplicates them into SQLite, and scores each
 job against a local structured profile. The default scorer reuses your already-
-authenticated OpenCode CLI with the free MiMo model; two other scorers are also
+authenticated OpenCode CLI with the free deepseek-v4.1-flash model; two other scorers are also
 available — a deterministic offline scorer and an OpenAI-compatible endpoint.
 
 Nothing leaves your machine except the requests you explicitly authorize.
@@ -114,7 +114,7 @@ Prepare the real profile before any sweep:
 | 0 | Prepare the profile | `cp profile.example.yaml profile.yaml` (POSIX) or `Copy-Item profile.example.yaml profile.yaml` (PowerShell), then `JOBSCOUT_PROFILE_PATH=profile.yaml` in `.env` | You set the target role, seniority, skills, dealbreakers, and exclusions. | Human decision |
 | 1 | Controlled sweep | `python -m jobscout keyword-plan`, then `python -m jobscout search-linkedin --keywords "..." --dry-run`; to run it, replace `--dry-run` with `--confirm-network` | Discovers new offers. `keyword-plan` is offline; every live search is an explicit human action. | Semi-automatic: you authorize each query |
 | 2 | Enrich | `python -m jobscout fetch-details --max-items 10 --confirm-network` (or `fetch-getmanfred-details` / `fetch-tecnoempleo-details` per platform, or `--fixture` to stay offline) | Fetches each offer's full description, bounded in volume. | Semi-automatic: you authorize each run |
-| 3 | Score with MiMo | `python -m jobscout score --all --scorer opencode` | The default scorer (OpenCode + MiMo) evaluates only offers that have no evaluation yet. | Scoring is automatic; the apply decision is not |
+| 3 | Score with deepseek-v4.1-flash | `python -m jobscout score --all --scorer opencode` | The default scorer (OpenCode + deepseek-v4.1-flash) evaluates only offers that have no evaluation yet. | Scoring is automatic; the apply decision is not |
 | 4 | Generate the dashboard | `python -m jobscout dashboard` | Writes a local HTML report with every active offer, scores, link evidence, and preference filters. | Automatic and read-only |
 | 5 | Review offers | Open `reports/jobscout-dashboard.html` | You mark **Aplicar** or **Descartar** in the browser. | Human decision only |
 | 6 | Export/import feedback | Export the JSON from the dashboard, then run `python -m jobscout import-feedback jobscout-feedback.json` | Your decisions move from `localStorage` to the SQLite `job_feedback` table. | Import runs automatically once you invoke it |
@@ -148,7 +148,7 @@ Cycle notes:
 ### Seniority and technology criterion (prompt v5)
 
 The OpenCode prompt is versioned as **`opencode-v5-seniority-aware`**. The policy
-MiMo applies is:
+deepseek-v4.1-flash applies is:
 
 - **Strong penalty, with `skip` when it defines the role:** 5 or more required
   years of experience, explicit `senior`, `staff`, `principal`, `lead`, or
@@ -396,6 +396,7 @@ subcommand), and `--version`.
 | `import-feedback PATH [--project-id ID]` | Store a dashboard feedback export in SQLite (offline, idempotent). |
 | `calibrate [--scorer heuristic\|llm\|opencode]` | Compare each job's latest valid evaluation with imported human feedback (read-only, offline). |
 | `prune [--apply]` | Plan the worst quarter of scored offers and provider-specific keyword series (read-only preview; `--apply` deactivates only the selected offers). |
+| `notify [--deliver] [--min-score S]` | Active offers at or above the score threshold, opt-in and read-only (see "Local notifications"). |
 
 Exit codes: `0` success, `1` error, `2` refusal (collector disabled, access
 denied, or a request that was intentionally not performed).
@@ -695,7 +696,7 @@ opencode auth login
 python -m jobscout score --all --scorer opencode --profile profile.yaml
 ```
 
-When `--scorer` is omitted, OpenCode with MiMo is used. For an explicit offline
+When `--scorer` is omitted, OpenCode with deepseek-v4.1-flash is used. For an explicit offline
 evaluation, use `--scorer heuristic`.
 
 It runs `opencode run --pure --model <model> [--variant minimal] --format json

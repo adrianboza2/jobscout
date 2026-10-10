@@ -14,7 +14,7 @@ publish pipeline, no service. Everything runs from the repository root.
 
 ## Commands
 
-    .venv\Scripts\python.exe -m pytest -q          # offline suite, ~15-20 s, expect 1000 passed
+    .venv\Scripts\python.exe -m pytest -q          # offline suite, ~15-20 s, expect ~1100 passed
     .venv\Scripts\python.exe -m jobscout --help
     .venv\Scripts\python.exe -m jobscout keyword-plan          # offline, no network
     .venv\Scripts\python.exe -m jobscout rank --top 10         # reads data/jobscout.sqlite3
