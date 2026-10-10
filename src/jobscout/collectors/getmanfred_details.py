@@ -552,16 +552,6 @@ def plan_detail_targets(
 
 
 @dataclass
-class GetManfredDetailConfig:
-    """Bounded parameters for one GetManfred detail-fetch run."""
-
-    max_items: int = 20
-
-    def __post_init__(self) -> None:
-        validate_bounded_int(self.max_items, name="max_items", hard_max=HARD_MAX_ITEMS)
-
-
-@dataclass
 class GetManfredDetailItem:
     """Outcome of one GetManfred detail attempt (ok, partial, failed, skipped)."""
 
@@ -726,12 +716,11 @@ def fetch_getmanfred_details(
     skip the robots request; a live run fetches and enforces ``robots.txt``
     before the first detail request.
     """
-    config = GetManfredDetailConfig(
-        max_items=(
-            max_items if max_items is not None else settings.getmanfred_detail_max_items
-        )
+    resolved_max_items = (
+        max_items if max_items is not None else settings.getmanfred_detail_max_items
     )
-    targets, truncated = plan_detail_targets(jobs, max_items=config.max_items)
+    validate_bounded_int(resolved_max_items, name="max_items", hard_max=HARD_MAX_ITEMS)
+    targets, truncated = plan_detail_targets(jobs, max_items=resolved_max_items)
     planned = [target.url for target in targets if target.url]
     result = GetManfredDetailResult(
         planned_urls=planned, requested=len(targets), truncated=max(0, truncated)
@@ -969,7 +958,6 @@ def fetch_getmanfred_details(
 __all__ = [
     "EMPLOYMENT_TYPE_VALUES",
     "MIN_DESCRIPTION_CHARS",
-    "GetManfredDetailConfig",
     "GetManfredDetailFields",
     "GetManfredDetailItem",
     "GetManfredDetailResult",

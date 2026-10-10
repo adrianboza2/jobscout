@@ -16,7 +16,6 @@ from .getmanfred import (
     search_getmanfred,
 )
 from .getmanfred_details import (
-    GetManfredDetailConfig,
     fetch_getmanfred_details,
 )
 from .infojobs import BLOCKED_REASON as INFOJOBS_BLOCKED_REASON
@@ -35,7 +34,6 @@ from .tecnoempleo import (
     search_tecnoempleo,
 )
 from .tecnoempleo_details import (
-    TecnoempleoDetailConfig,
     fetch_tecnoempleo_details,
 )
 
@@ -47,7 +45,6 @@ __all__ = [
     "CollectorResult",
     "FailureClass",
     "FixturePayload",
-    "GetManfredDetailConfig",
     "GetManfredSitemapConfig",
     "INFOJOBS_BLOCKED_REASON",
     "NotFoundError",
@@ -55,7 +52,6 @@ __all__ = [
     "RequestPacer",
     "RetryDecision",
     "RobotsRules",
-    "TecnoempleoDetailConfig",
     "TecnoempleoSearchConfig",
     "TransientFailureError",
     "TransportError",

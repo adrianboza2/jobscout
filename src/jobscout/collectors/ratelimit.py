@@ -70,8 +70,6 @@ class BackoffPolicy:
     max_delay_seconds: float = 30.0
     max_retries: int = 2
     jitter_seconds: float = 0.5
-    retry_on_rate_limit: bool = False
-    retry_on_access_denied: bool = False
 
     def delay_for(self, attempt: int, *, rng: random.Random | None = None) -> float:
         """Deterministic (unless jitter) delay before the retry that follows ``attempt``."""
@@ -114,10 +112,6 @@ def decide_retry(
         reason = f"HTTP {status_code}" if status_code is not None else "no status"
 
     retryable = classification is FailureClass.TRANSIENT
-    if classification is FailureClass.RATE_LIMITED and policy.retry_on_rate_limit:
-        retryable = True
-    if classification is FailureClass.ACCESS_DENIED and policy.retry_on_access_denied:
-        retryable = True
 
     if not retryable:
         if classification is FailureClass.OK:

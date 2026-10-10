@@ -131,14 +131,6 @@ class OpenCodeResponse:
     model: str
     truncated: bool = False
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "model": self.model,
-            "chars": len(self.text),
-            "raw_chars": len(self.raw),
-            "truncated": self.truncated,
-        }
-
 
 # A runner has the same keyword signature as the default and returns a
 # :class:`CommandOutcome`. Tests inject one so no real process is ever started.

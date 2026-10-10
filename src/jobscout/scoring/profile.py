@@ -13,7 +13,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from ..models import ProfileEvidence, ProfileSnapshot
 from ..timeutil import utcnow_iso
@@ -419,22 +419,6 @@ def profile_summary_for_prompt(profile: Profile) -> dict[str, Any]:
     }
 
 
-def iter_profile_facts(profile: Profile) -> Iterable[str]:
-    """Human-readable facts, handy for CLI output."""
-    yield f"seniority: {profile.seniority}"
-    if profile.years_experience is not None:
-        yield f"years_experience: {profile.years_experience:g}"
-    if profile.must_have_skills:
-        yield "must_have: " + ", ".join(profile.must_have_skills)
-    if profile.nice_to_have_skills:
-        yield "nice_to_have: " + ", ".join(profile.nice_to_have_skills)
-    if profile.locations:
-        yield "locations: " + ", ".join(profile.locations)
-    yield f"remote: {profile.remote_preference}"
-    if profile.dealbreakers:
-        yield "dealbreakers: " + ", ".join(profile.dealbreakers)
-
-
 __all__ = [
     "DEFAULT_WEIGHTS",
     "KNOWN_FIELDS",
@@ -446,7 +430,6 @@ __all__ = [
     "SUPPORTED_CURRENCIES",
     "build_snapshot",
     "extract_evidence",
-    "iter_profile_facts",
     "load_profile",
     "profile_from_dict",
     "profile_summary_for_prompt",

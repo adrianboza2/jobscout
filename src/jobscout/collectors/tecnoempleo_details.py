@@ -171,16 +171,6 @@ _TECH_SPLIT_RE = re.compile(r"[,;/|\u00b7\n]+")
 
 
 @dataclass
-class TecnoempleoDetailConfig:
-    """Bounded parameters for one Tecnoempleo detail-fetch run."""
-
-    max_items: int = 20
-
-    def __post_init__(self) -> None:
-        validate_bounded_int(self.max_items, name="max_items", hard_max=HARD_MAX_ITEMS)
-
-
-@dataclass
 class TecnoempleoDetailItem:
     """Outcome of one Tecnoempleo detail attempt (ok, partial, failed, skipped)."""
 
@@ -772,10 +762,11 @@ def fetch_tecnoempleo_details(
     skip the robots request; a live run fetches and enforces ``robots.txt``
     before the first detail request.
     """
-    config = TecnoempleoDetailConfig(
-        max_items=max_items if max_items is not None else settings.tecnoempleo_detail_max_items
+    resolved_max_items = (
+        max_items if max_items is not None else settings.tecnoempleo_detail_max_items
     )
-    targets, truncated = plan_detail_targets(jobs, max_items=config.max_items)
+    validate_bounded_int(resolved_max_items, name="max_items", hard_max=HARD_MAX_ITEMS)
+    targets, truncated = plan_detail_targets(jobs, max_items=resolved_max_items)
     planned = [target.url for target in targets if target.url]
     result = TecnoempleoDetailResult(
         planned_urls=planned, requested=len(targets), truncated=max(0, truncated)
@@ -1016,7 +1007,6 @@ __all__ = [
     "LOCATION_CLASS_MARKERS",
     "MIN_DESCRIPTION_CHARS",
     "TECH_CLASS_MARKERS",
-    "TecnoempleoDetailConfig",
     "TecnoempleoDetailFields",
     "TecnoempleoDetailItem",
     "TecnoempleoDetailResult",

@@ -25,7 +25,7 @@ Design rules:
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from ..collectors.base import (
@@ -120,17 +120,6 @@ class LLMResponse:
 
     text: str
     model: str
-    raw: dict[str, Any] = field(default_factory=dict)
-    usage: dict[str, Any] = field(default_factory=dict)
-    request_id: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "model": self.model,
-            "usage": self.usage,
-            "request_id": self.request_id,
-            "chars": len(self.text),
-        }
 
 
 def neutralize_untrusted_text(text: str, *, max_chars: int = MAX_JOB_TEXT_CHARS) -> str:
@@ -286,9 +275,6 @@ class OpenAICompatibleScorer:
         return LLMResponse(
             text=str(text),
             model=str(payload.get("model") or self.settings.llm_model),
-            raw=payload,
-            usage=payload.get("usage") or {},
-            request_id=payload.get("id"),
         )
 
     # -- evaluation -------------------------------------------------------

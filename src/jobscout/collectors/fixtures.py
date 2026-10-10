@@ -127,8 +127,6 @@ class DetailFixture:
     """Parsed job-detail fixture."""
 
     path: Path
-    provider: str = "linkedin"
-    fetched_at: str | None = None
     entries: list[DetailFixtureEntry] = field(default_factory=list)
 
 
@@ -208,8 +206,6 @@ def load_detail_fixture(path: str | Path) -> DetailFixture:
 
     return DetailFixture(
         path=fixture_path,
-        provider=str(metadata.get("provider") or metadata.get("source") or "linkedin"),
-        fetched_at=metadata.get("fetched_at"),
         entries=entries,
     )
 
@@ -220,11 +216,8 @@ class FixtureDetailTransport(HttpClient):
     def __init__(
         self,
         entries: Iterable[DetailFixtureEntry],
-        *,
-        missing_status: int = 404,
     ) -> None:
         self.calls: list[dict[str, Any]] = []
-        self.missing_status = int(missing_status)
         self._by_url: dict[str, DetailFixtureEntry] = {}
         self._by_job_id: dict[str, DetailFixtureEntry] = {}
         for entry in entries:
@@ -257,11 +250,10 @@ class FixtureDetailTransport(HttpClient):
         if entry is None:
             return HttpResponse(
                 url=url,
-                status_code=self.missing_status,
+                status_code=404,
                 body="",
                 headers={},
                 fetched_at=utcnow_iso(),
-                error=f"no fixture entry for {url}",
             )
         if entry.error:
             raise TransportError(f"fixture entry failed: {entry.error}")
@@ -271,5 +263,4 @@ class FixtureDetailTransport(HttpClient):
             body=entry.body,
             headers={"content-type": entry.content_type or "text/html"},
             fetched_at=entry.fetched_at or utcnow_iso(),
-            error=None if 200 <= entry.status_code < 300 else f"HTTP {entry.status_code}",
         )

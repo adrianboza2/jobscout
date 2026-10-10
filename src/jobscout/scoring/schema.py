@@ -24,8 +24,6 @@ from ..models import PUBLIC_RECOMMENDATIONS, DimensionScore, Recommendation
 
 PROMPT_VERSION = "v1"
 
-ALLOWED_RECOMMENDATIONS = {item.value for item in Recommendation}
-
 _RECOMMENDATION_ALIASES = {
     "apply": Recommendation.APPLY.value,
     "strong_apply": Recommendation.APPLY.value,
@@ -71,12 +69,7 @@ class ParseOutcome:
     payload: dict[str, Any] | None = None
     errors: list[str] = field(default_factory=list)
     repairs: list[str] = field(default_factory=list)
-    raw_text: str = ""
     raw_excerpt: str = ""
-
-    @property
-    def failed(self) -> bool:
-        return not self.ok
 
 
 def _strip_code_fences(text: str) -> tuple[str, bool]:
@@ -485,13 +478,11 @@ def parse_llm_evaluation(
             ParseOutcome(
                 ok=False,
                 errors=errors or ["could not parse JSON"],
-                raw_text=raw,
                 raw_excerpt=raw[:400],
             ),
             secrets,
         )
     outcome = validate_payload(value, strict=strict)
-    outcome.raw_text = raw
     outcome.raw_excerpt = raw[:400]
     if errors:
         outcome.errors = errors + outcome.errors
@@ -499,7 +490,6 @@ def parse_llm_evaluation(
 
 
 __all__ = [
-    "ALLOWED_RECOMMENDATIONS",
     "PROMPT_VERSION",
     "ParseOutcome",
     "extract_json_object",

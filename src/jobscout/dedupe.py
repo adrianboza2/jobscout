@@ -64,25 +64,3 @@ def decide_duplicate(
     return NO_DUPLICATE
 
 
-def dedupe_batch(
-    postings: list[JobPosting],
-) -> tuple[list[JobPosting], list[tuple[JobPosting, DedupeDecision]]]:
-    """Deduplicate a batch in memory, preserving first-seen order.
-
-    Returns ``(unique_postings, duplicates)`` where duplicates carry the reason
-    and the fingerprint of the entry they collided with.
-    """
-    fingerprints: dict[str, int] = {}
-    dedupe_keys: dict[str, int] = {}
-    unique: list[JobPosting] = []
-    duplicates: list[tuple[JobPosting, DedupeDecision]] = []
-
-    for index, posting in enumerate(postings):
-        decision = decide_duplicate(posting, fingerprints, dedupe_keys)
-        if decision.is_new:
-            fingerprints[posting.fingerprint] = index
-            dedupe_keys.setdefault(posting.dedupe_key, index)
-            unique.append(posting)
-        else:
-            duplicates.append((posting, decision))
-    return unique, duplicates

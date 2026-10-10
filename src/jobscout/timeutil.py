@@ -9,7 +9,6 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
-_ISO_Z_RE = re.compile(r"Z$", re.IGNORECASE)
 _RELATIVE_RE = re.compile(
     r"(?P<count>\d+)\s*(?P<unit>minute|minutes|min|hour|hours|h|day|days|d|week|weeks|w|month|months|mo|year|years|y)"
     r"|(?P<word>yesterday|today|just\s+now|now|recién|recien|hoy|ayer)",
@@ -74,7 +73,8 @@ def parse_datetime(value: str | None) -> datetime | None:
     candidate = value.strip()
     if not candidate:
         return None
-    candidate = _ISO_Z_RE.sub("+00:00", candidate)
+    if candidate.endswith(("Z", "z")):
+        candidate = candidate[:-1] + "+00:00"
     try:
         parsed = datetime.fromisoformat(candidate)
     except ValueError:

@@ -16,6 +16,7 @@ from .collectors.fixtures import load_fixture, postings_from_fixture
 from .collectors.linkedin_details import DetailItem, DetailResult
 from .config import Settings, is_safe_to_store
 from .db import (
+    _sync_job_active,
     create_search_run,
     deactivate_job,
     deactivate_job_variant,
@@ -28,7 +29,6 @@ from .db import (
     record_run_item,
     resolve_variant_id,
     store_posting,
-    sync_job_active,
     update_job_content,
     update_job_variant_detail,
 )
@@ -636,7 +636,7 @@ def ingest_detail_results(
         # machine-readable status qualify.
         if item.is_definitive_missing and variant_id is not None:
             deactivate_job_variant(conn, variant_id)
-            if sync_job_active(conn, int(job.id)):
+            if _sync_job_active(conn, int(job.id)):
                 outcome.deactivated += 1
         elif item.is_definitive_missing and deactivate_job(conn, int(job.id)):
             outcome.deactivated += 1

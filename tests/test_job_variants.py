@@ -9,6 +9,7 @@ from __future__ import annotations
 from jobscout.collectors.linkedin_details import DetailItem, DetailResult
 from jobscout.db import (
     SCHEMA_SQL,
+    _sync_job_active,
     active_variants,
     connect,
     count_jobs,
@@ -19,7 +20,6 @@ from jobscout.db import (
     latest_detail_fetch,
     resolve_variant_id,
     store_posting,
-    sync_job_active,
     variant_job_for_source,
     variants_needing_details,
 )
@@ -464,9 +464,9 @@ def test_deactivate_and_resync_helpers(conn) -> None:
 
     assert deactivate_job_variant(conn, variants["getmanfred"].id) is True
     assert deactivate_job_variant(conn, variants["getmanfred"].id) is False
-    assert sync_job_active(conn, linkedin.id) is False  # linkedin still active
+    assert _sync_job_active(conn, linkedin.id) is False  # linkedin still active
     assert get_job(conn, linkedin.id).is_active is True
 
     deactivate_job_variant(conn, variants["linkedin"].id)
-    assert sync_job_active(conn, linkedin.id) is True
+    assert _sync_job_active(conn, linkedin.id) is True
     assert get_job(conn, linkedin.id).is_active is False

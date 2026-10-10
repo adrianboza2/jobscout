@@ -76,5 +76,4 @@ def matching_keywords(keyword_text: Any, text: Any) -> list[str]:
 __all__ = [
     "keyword_matches",
     "matching_keywords",
-    "normalize_tokens",
 ]

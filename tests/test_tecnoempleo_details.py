@@ -18,7 +18,6 @@ from jobscout.cli import EXIT_ERROR, EXIT_FAIL_CLOSED, EXIT_OK, main
 from jobscout.collectors.base import CollectorDisabledError, TRUNCATION_HEADER
 from jobscout.collectors.tecnoempleo import TecnoempleoSearchConfig, search_tecnoempleo
 from jobscout.collectors.tecnoempleo_details import (
-    TecnoempleoDetailConfig,
     fetch_tecnoempleo_details,
     parse_detail_company,
     parse_detail_description,
@@ -198,16 +197,6 @@ def test_plan_detail_targets_skips_unresolvable_jobs() -> None:
     assert truncated == 0
     assert targets[0].url == BACKEND_URL
     assert targets[1].url is None and targets[1].reason
-
-
-def test_detail_config_enforces_hard_caps() -> None:
-    from jobscout.config import HARD_MAX_ITEMS
-
-    assert TecnoempleoDetailConfig(max_items=HARD_MAX_ITEMS).max_items == HARD_MAX_ITEMS
-    with pytest.raises(ValueError):
-        TecnoempleoDetailConfig(max_items=HARD_MAX_ITEMS + 1)
-    with pytest.raises(ValueError):
-        TecnoempleoDetailConfig(max_items=0)
 
 
 # ---------------------------------------------------------------------------

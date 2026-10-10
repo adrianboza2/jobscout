@@ -116,13 +116,6 @@ def test_access_and_not_found_errors_fail_closed(status: int) -> None:
     assert "failing closed" in decision.reason
 
 
-def test_rate_limit_can_be_retried_only_when_explicitly_allowed() -> None:
-    default = decide_retry(BackoffPolicy(), 1, status_code=429)
-    explicit = decide_retry(BackoffPolicy(retry_on_rate_limit=True), 1, status_code=429)
-    assert default.should_retry is False
-    assert explicit.should_retry is True
-
-
 def test_pacer_enforces_minimum_interval_without_real_sleeping() -> None:
     clock = FakeClock()
     pacer = RequestPacer(5.0, clock=clock.clock, sleep=clock.sleep)

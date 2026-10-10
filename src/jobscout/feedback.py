@@ -119,11 +119,6 @@ class FeedbackImportOutcome:
     rejected: list[FeedbackRejection] = field(default_factory=list)
     job_ids: list[int] = field(default_factory=list)
 
-    @property
-    def written(self) -> int:
-        """Entries that created or replaced a stored row."""
-        return self.imported + self.updated
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "path": self.path,

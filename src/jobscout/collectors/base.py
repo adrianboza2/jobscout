@@ -86,8 +86,6 @@ class HttpResponse:
     body: str = ""
     headers: dict[str, str] = field(default_factory=dict)
     fetched_at: str = ""
-    elapsed_ms: int = 0
-    error: str | None = None
 
     def __post_init__(self) -> None:
         if not self.fetched_at:
@@ -263,7 +261,6 @@ class UrllibHttpClient:
             url, data=body, headers=request_headers, method=method.upper()
         )
         opener = self._build_opener()
-        started = time.monotonic()
         try:
             with opener.open(request, timeout=self.timeout) as response:  # type: ignore[attr-defined]
                 final_url = response.geturl()
@@ -286,7 +283,6 @@ class UrllibHttpClient:
                     status_code=int(status),
                     body=raw.decode("utf-8", errors="replace"),
                     headers=response_headers,
-                    elapsed_ms=int((time.monotonic() - started) * 1000),
                 )
         except urllib.error.HTTPError as exc:
             # Error bodies are read through the same ceiling as successful
@@ -301,8 +297,6 @@ class UrllibHttpClient:
                 status_code=int(exc.code),
                 body=raw.decode("utf-8", errors="replace"),
                 headers=normalized,
-                elapsed_ms=int((time.monotonic() - started) * 1000),
-                error=f"HTTP {exc.code}",
             )
         except urllib.error.URLError as exc:
             raise TransportError(f"connection failure: {exc.reason}") from exc
@@ -345,7 +339,6 @@ def fetch_with_policy(
     headers: Mapping[str, str] | None = None,
     body: bytes | None = None,
     on_attempt: Callable[[AttemptLog], None] | None = None,
-    max_attempts: int = 10,
 ) -> HttpResponse:
     """Perform one request with bounded retries for *transient* failures only.
 
@@ -404,8 +397,6 @@ def fetch_with_policy(
         if decision.delay_seconds > 0:
             sleeper(decision.delay_seconds)
         attempt += 1
-        if attempt > max_attempts:  # pragma: no cover - guarded by policy.max_retries
-            raise TransientFailureError(f"exceeded {max_attempts} attempts for {url}")
 
 
 __all__ = [

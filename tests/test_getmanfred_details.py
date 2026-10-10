@@ -17,7 +17,6 @@ from conftest import FakeHttpClient, fixture_text, no_network, response
 from jobscout.cli import EXIT_FAIL_CLOSED, EXIT_OK, main
 from jobscout.collectors.base import CollectorDisabledError, TRUNCATION_HEADER
 from jobscout.collectors.getmanfred_details import (
-    GetManfredDetailConfig,
     extract_json_ld_scripts,
     fetch_getmanfred_details,
     parse_detail_company,
@@ -224,16 +223,6 @@ def test_plan_detail_targets_skips_unresolvable_jobs() -> None:
     assert truncated == 0
     assert targets[0].url == OFFER_URL
     assert targets[1].url is None and targets[1].reason
-
-
-def test_detail_config_enforces_hard_caps() -> None:
-    from jobscout.config import HARD_MAX_ITEMS
-
-    assert GetManfredDetailConfig(max_items=HARD_MAX_ITEMS).max_items == HARD_MAX_ITEMS
-    with pytest.raises(ValueError):
-        GetManfredDetailConfig(max_items=HARD_MAX_ITEMS + 1)
-    with pytest.raises(ValueError):
-        GetManfredDetailConfig(max_items=0)
 
 
 def test_getmanfred_detail_settings_validate_env() -> None:

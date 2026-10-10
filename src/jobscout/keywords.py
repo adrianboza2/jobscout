@@ -165,14 +165,6 @@ class RetiredSearch:
     retired_on: str
     reason: str
 
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "provider": self.provider,
-            "query": self.query,
-            "retired_on": self.retired_on,
-            "reason": self.reason,
-        }
-
 
 #: Provider-keyed retirement history. A retired pair is refused by the matching
 #: provider's search config and omitted from ``prune`` candidates; the same

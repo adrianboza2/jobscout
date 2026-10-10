@@ -69,15 +69,6 @@ class PreferenceMatch:
     reason: str
     evidence: tuple[str, ...] = ()
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "rule": self.rule,
-            "outcome": str(self.outcome),
-            "label": self.label,
-            "reason": self.reason,
-            "evidence": list(self.evidence),
-        }
-
 
 @dataclass
 class PreferenceAssessment:
@@ -90,14 +81,11 @@ class PreferenceAssessment:
     @property
     def evidence(self) -> list[str]:
         """Distinct cue texts behind the verdict, in match order."""
-        seen: set[str] = set()
-        result: list[str] = []
-        for match in self.matches:
-            for item in match.evidence:
-                if item not in seen:
-                    seen.add(item)
-                    result.append(item)
-        return result
+        return list(
+            dict.fromkeys(
+                item for match in self.matches for item in match.evidence
+            )
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -257,16 +245,8 @@ _FLEXIBLE_PATTERNS: tuple[str, ...] = (
 
 
 def _evidence(items: Iterable[str], *, limit: int = 6) -> tuple[str, ...]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        cleaned = item.strip()
-        if cleaned and cleaned not in seen:
-            seen.add(cleaned)
-            result.append(cleaned)
-        if len(result) >= limit:
-            break
-    return tuple(result)
+    deduped = dict.fromkeys(item.strip() for item in items if item.strip())
+    return tuple(list(deduped)[:limit])
 
 
 def _window(text: str, start: int, end: int, radius: int) -> str:

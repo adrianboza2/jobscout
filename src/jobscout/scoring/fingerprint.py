@@ -86,7 +86,6 @@ def effective_input_fingerprint(
 
 
 __all__ = [
-    "FINGERPRINT_VERSION",
     "effective_input_fingerprint",
     "job_scoring_view",
 ]

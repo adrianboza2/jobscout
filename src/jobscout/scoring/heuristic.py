@@ -260,15 +260,6 @@ def _salary_amounts(salary_text: str) -> list[float]:
     return values
 
 
-def _salary_currencies(salary_text: str) -> tuple[set[str], set[str]]:
-    """Return the explicitly signalled ``(supported, unsupported)`` currencies.
-
-    Thin alias for :func:`jobscout.scoring.currency.salary_currencies`, the single
-    policy shared with the HTTP LLM and OpenCode scorers.
-    """
-    return salary_currencies(salary_text)
-
-
 def _salary_period(salary_text: str) -> str | None:
     """Return ``"month"``/``"year"`` only when the period is explicitly stated."""
     if _MONTH_PERIOD_RE.search(salary_text):
@@ -300,7 +291,7 @@ def _compensation_fit(
     # Detect the currency before reading any amount, so an explicit unsupported
     # currency hard-rejects even when the number is unparseable. This is the same
     # rule the HTTP LLM and OpenCode scorers enforce before their model calls.
-    supported, unsupported = _salary_currencies(salary_text)
+    supported, unsupported = salary_currencies(salary_text)
     if unsupported and not supported:
         codes = ", ".join(sorted(unsupported))
         return (
@@ -613,13 +604,7 @@ def input_fingerprint(job: Any, profile: Profile) -> str:
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        if item not in seen:
-            seen.add(item)
-            result.append(item)
-    return result
+    return list(dict.fromkeys(items))
 
 
 def _build_rationale(

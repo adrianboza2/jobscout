@@ -479,11 +479,6 @@ class Evaluation:
         }
 
 
-def is_public_recommendation(value: Any) -> bool:
-    """Whether ``value`` is a recommendation a successful evaluation may carry."""
-    return str(value) in PUBLIC_RECOMMENDATIONS
-
-
 def evaluation_contract_errors(evaluation: "Evaluation") -> list[str]:
     """Canonical invariant for a persisted successful evaluation.
 
@@ -501,7 +496,7 @@ def evaluation_contract_errors(evaluation: "Evaluation") -> list[str]:
     errors: list[str] = []
     if evaluation.overall_score is None:
         errors.append("status=ok requires a numeric overall_score")
-    if not is_public_recommendation(evaluation.recommendation):
+    if str(evaluation.recommendation) not in PUBLIC_RECOMMENDATIONS:
         errors.append("status=ok requires an apply/consider/skip recommendation")
     return errors
 
@@ -607,7 +602,6 @@ __all__ = [
     "Recommendation",
     "ScorerName",
     "evaluation_contract_errors",
-    "is_public_recommendation",
     "SearchRun",
     "SearchRunItem",
     "SearchRunStatus",

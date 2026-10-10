@@ -44,7 +44,6 @@ from .collectors.getmanfred import (
     search_getmanfred,
 )
 from .collectors.getmanfred_details import (
-    GetManfredDetailConfig,
     fetch_getmanfred_details,
     plan_detail_targets as plan_getmanfred_detail_targets,
 )
@@ -60,7 +59,6 @@ from .collectors.tecnoempleo import (
     search_tecnoempleo,
 )
 from .collectors.tecnoempleo_details import (
-    TecnoempleoDetailConfig,
     fetch_tecnoempleo_details,
     plan_detail_targets as plan_tecnoempleo_detail_targets,
 )
@@ -76,11 +74,8 @@ from .db import (
     all_active_jobs,
     connect,
     connect_readonly,
-    count_active_jobs,
     count_active_variants,
     count_jobs,
-    count_jobs_needing_details,
-    count_jobs_needing_refresh,
     count_variants_needing_details,
     count_variants_needing_refresh,
     evaluation_count,
@@ -88,9 +83,7 @@ from .db import (
     get_job,
     init_db,
     job_detail_fetch_count,
-    jobs_needing_details,
     jobs_needing_evaluation,
-    jobs_needing_refresh,
     list_jobs,
     list_search_runs,
     variant_job_for_source,
@@ -1345,13 +1338,12 @@ def cmd_fetch_tecnoempleo_details(args: argparse.Namespace, settings: Settings) 
     ``--confirm-network`` and re-fetches ``robots.txt`` before the first request.
     """
     try:
-        config = TecnoempleoDetailConfig(
-            max_items=(
-                args.max_items
-                if args.max_items is not None
-                else settings.tecnoempleo_detail_max_items
-            )
+        max_items = (
+            args.max_items
+            if args.max_items is not None
+            else settings.tecnoempleo_detail_max_items
         )
+        validate_bounded_int(max_items, name="max_items", hard_max=HARD_MAX_ITEMS)
     except (ConfigError, ValueError) as exc:
         _write_line(f"invalid Tecnoempleo detail options: {exc}", stream=sys.stderr)
         return EXIT_ERROR
@@ -1374,13 +1366,13 @@ def cmd_fetch_tecnoempleo_details(args: argparse.Namespace, settings: Settings) 
         else:
             try:
                 jobs, omitted = _select_tecnoempleo_detail_jobs(
-                    conn, args, limit=config.max_items
+                    conn, args, limit=max_items
                 )
             except sqlite3.DatabaseError:
                 note = "database could not be read or is not initialized; nothing to plan"
             finally:
                 conn.close()
-        targets, _ = plan_tecnoempleo_detail_targets(jobs, max_items=config.max_items)
+        targets, _ = plan_tecnoempleo_detail_targets(jobs, max_items=max_items)
         planned = [target.url for target in targets if target.url]
         skipped = [target.reason for target in targets if target.url is None]
         text = "dry run, no request performed and no data written. Planned requests:\n  " + (
@@ -1410,7 +1402,7 @@ def cmd_fetch_tecnoempleo_details(args: argparse.Namespace, settings: Settings) 
         _write_line(
             "refusing to run: Tecnoempleo detail fetching is disabled by default.\n"
             "Rerun with --confirm-network to send bounded requests "
-            f"(max {config.max_items} item(s), {settings.request_delay_seconds:g}s delay), "
+            f"(max {max_items} item(s), {settings.request_delay_seconds:g}s delay), "
             "or use --dry-run to inspect the plan.",
             stream=sys.stderr,
         )
@@ -1420,14 +1412,14 @@ def cmd_fetch_tecnoempleo_details(args: argparse.Namespace, settings: Settings) 
     try:
         init_db(conn)
         jobs, omitted = _select_tecnoempleo_detail_jobs(
-            conn, args, limit=config.max_items
+            conn, args, limit=max_items
         )
         try:
             result = fetch_tecnoempleo_details(
                 jobs,
                 settings=settings,
                 network_enabled=True,
-                max_items=config.max_items,
+                max_items=max_items,
                 robots_text=robots_text,
             )
         except CollectorDisabledError as exc:  # pragma: no cover - guarded above
@@ -1514,13 +1506,12 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
     ``--confirm-network`` and re-fetches ``robots.txt`` before the first request.
     """
     try:
-        config = GetManfredDetailConfig(
-            max_items=(
-                args.max_items
-                if args.max_items is not None
-                else settings.getmanfred_detail_max_items
-            )
+        max_items = (
+            args.max_items
+            if args.max_items is not None
+            else settings.getmanfred_detail_max_items
         )
+        validate_bounded_int(max_items, name="max_items", hard_max=HARD_MAX_ITEMS)
     except (ConfigError, ValueError) as exc:
         _write_line(f"invalid GetManfred detail options: {exc}", stream=sys.stderr)
         return EXIT_ERROR
@@ -1543,13 +1534,13 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
         else:
             try:
                 jobs, omitted = _select_getmanfred_detail_jobs(
-                    conn, args, limit=config.max_items
+                    conn, args, limit=max_items
                 )
             except sqlite3.DatabaseError:
                 note = "database could not be read or is not initialized; nothing to plan"
             finally:
                 conn.close()
-        targets, _ = plan_getmanfred_detail_targets(jobs, max_items=config.max_items)
+        targets, _ = plan_getmanfred_detail_targets(jobs, max_items=max_items)
         planned = [target.url for target in targets if target.url]
         skipped = [target.reason for target in targets if target.url is None]
         text = "dry run, no request performed and no data written. Planned requests:\n  " + (
@@ -1579,7 +1570,7 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
         _write_line(
             "refusing to run: GetManfred detail fetching is disabled by default.\n"
             "Rerun with --confirm-network to send bounded requests "
-            f"(max {config.max_items} item(s), {settings.request_delay_seconds:g}s delay), "
+            f"(max {max_items} item(s), {settings.request_delay_seconds:g}s delay), "
             "or use --dry-run to inspect the plan.",
             stream=sys.stderr,
         )
@@ -1589,14 +1580,14 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
     try:
         init_db(conn)
         jobs, omitted = _select_getmanfred_detail_jobs(
-            conn, args, limit=config.max_items
+            conn, args, limit=max_items
         )
         try:
             result = fetch_getmanfred_details(
                 jobs,
                 settings=settings,
                 network_enabled=True,
-                max_items=config.max_items,
+                max_items=max_items,
                 robots_text=robots_text,
             )
         except CollectorDisabledError as exc:  # pragma: no cover - guarded above

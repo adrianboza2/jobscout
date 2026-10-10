@@ -42,10 +42,6 @@ DEFAULT_NOTIFY_LIMIT = 20
 #: Delivery channels. ``stdout`` is always available; ``system`` may fall back.
 DELIVERY_STDOUT = "stdout"
 DELIVERY_SYSTEM = "system"
-DELIVERY_CHOICES: tuple[str, ...] = (DELIVERY_STDOUT, DELIVERY_SYSTEM)
-
-#: Preference outcomes accepted by the optional filter (empty/``None`` = any).
-PREFERENCE_CHOICES: tuple[str, ...] = ("pass", "flag", "fail")
 
 #: Local notifier executables discovered on ``PATH``, in preference order.
 SYSTEM_NOTIFIERS: tuple[str, ...] = ("notify-send", "terminal-notifier")
@@ -446,7 +442,6 @@ def deliver_report(
 
 __all__ = [
     "DEFAULT_NOTIFY_LIMIT",
-    "DELIVERY_CHOICES",
     "DELIVERY_STDOUT",
     "DELIVERY_SYSTEM",
     "DeliveryResult",
@@ -454,7 +449,6 @@ __all__ = [
     "NotificationItem",
     "NotificationReport",
     "NotificationSelection",
-    "PREFERENCE_CHOICES",
     "SCAN_LIMIT",
     "SYSTEM_NOTIFIERS",
     "build_report",

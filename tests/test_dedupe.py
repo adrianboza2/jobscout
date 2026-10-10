@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from jobscout.dedupe import decide_duplicate, dedupe_batch
+from jobscout.dedupe import decide_duplicate
 from jobscout.models import DuplicateKind, JobPosting
 from jobscout.normalize import finalize_posting
 
@@ -60,19 +60,3 @@ def test_exact_match_wins_over_probable() -> None:
 def test_unfinalized_posting_is_rejected() -> None:
     with pytest.raises(ValueError):
         decide_duplicate(JobPosting(source="s", title="t", company="c"), {}, {})
-
-
-def test_dedupe_batch_keeps_first_occurrence() -> None:
-    first = make_posting()
-    duplicate = make_posting(url="https://www.linkedin.com/jobs/view/3901234567/?trk=x")
-    different = make_posting(
-        source_job_id="999",
-        url="https://www.linkedin.com/jobs/view/999/data-engineer",
-        title="Data Engineer",
-    )
-    unique, duplicates = dedupe_batch([first, duplicate, different])
-    assert unique == [first, different]
-    assert len(duplicates) == 1
-    kept, decision = duplicates[0]
-    assert kept is duplicate
-    assert decision.kind is DuplicateKind.EXACT_DUPLICATE

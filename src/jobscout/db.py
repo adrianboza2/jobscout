@@ -447,12 +447,6 @@ def init_db(conn: sqlite3.Connection) -> int:
     return SCHEMA_VERSION
 
 
-def ensure_initialized(conn: sqlite3.Connection) -> sqlite3.Connection:
-    """Convenience wrapper used by the CLI so every command self-initializes."""
-    init_db(conn)
-    return conn
-
-
 # ---------------------------------------------------------------------------
 # Row mapping
 # ---------------------------------------------------------------------------
@@ -649,10 +643,6 @@ def insert_raw_document(conn: sqlite3.Connection, document: RawDocument) -> int:
         )
     document.id = int(cursor.lastrowid)
     return document.id
-
-
-def get_raw_document(conn: sqlite3.Connection, document_id: int) -> sqlite3.Row | None:
-    return conn.execute("SELECT * FROM raw_documents WHERE id = ?", (document_id,)).fetchone()
 
 
 # ---------------------------------------------------------------------------
@@ -979,15 +969,6 @@ def upsert_job_variant(
     )
 
 
-def get_job_variant(
-    conn: sqlite3.Connection, variant_id: int
-) -> JobVariant | None:
-    row = conn.execute(
-        "SELECT * FROM job_variants WHERE id = ?", (int(variant_id),)
-    ).fetchone()
-    return _row_to_variant(row) if row else None
-
-
 def job_variants_for_job(
     conn: sqlite3.Connection, job_id: int
 ) -> list[JobVariant]:
@@ -1073,11 +1054,6 @@ def _sync_job_active(conn: sqlite3.Connection, job_id: int) -> bool:
             (want, int(job_id), want),
         )
     return cursor.rowcount > 0
-
-
-def sync_job_active(conn: sqlite3.Connection, job_id: int) -> bool:
-    """Public wrapper around the canonical-status reconciliation."""
-    return _sync_job_active(conn, job_id)
 
 
 def store_posting(
@@ -1375,41 +1351,6 @@ def all_active_jobs(
 
 def _jobs_needing_details_predicate() -> str:
     return "(content_status != 'ok' OR description IS NULL OR TRIM(description) = '')"
-
-def count_active_jobs(conn: sqlite3.Connection, *, source: str | None = None) -> int:
-    """Number of active jobs, used to report ``--max-items`` truncation.
-
-    ``source`` optionally narrows the count to one provider, mirroring
-    :func:`all_active_jobs` so a provider-scoped selection reports its own
-    truncation.
-    """
-    sql = "SELECT COUNT(*) FROM jobs WHERE is_active = 1"
-    params: list[Any] = []
-    if source:
-        sql += " AND source = ?"
-        params.append(str(source))
-    return int(conn.execute(sql, params).fetchone()[0])
-
-
-def count_jobs_needing_details(
-    conn: sqlite3.Connection, *, source: str | None = None
-) -> int:
-    """Number of active jobs that still lack a successful full description.
-
-    ``source`` optionally narrows the count to one provider, so a
-    provider-specific enrichment command can report its own truncation without
-    counting unrelated platforms.
-    """
-    clauses = ["is_active = 1", _jobs_needing_details_predicate()]
-    params: list[Any] = []
-    if source:
-        clauses.append("source = ?")
-        params.append(str(source))
-    return int(
-        conn.execute(
-            "SELECT COUNT(*) FROM jobs WHERE " + " AND ".join(clauses), params
-        ).fetchone()[0]
-    )
 
 
 def jobs_needing_details(
@@ -2023,15 +1964,6 @@ def profile_evidence(conn: sqlite3.Connection, profile_id: int) -> list[ProfileE
         )
         for row in rows
     ]
-
-
-def get_profile(conn: sqlite3.Connection, profile_id: int) -> ProfileSnapshot | None:
-    row = conn.execute("SELECT * FROM profiles WHERE id = ?", (profile_id,)).fetchone()
-    if row is None:
-        return None
-    snapshot = _row_to_profile(row)
-    snapshot.evidence = profile_evidence(conn, profile_id)
-    return snapshot
 
 
 # ---------------------------------------------------------------------------

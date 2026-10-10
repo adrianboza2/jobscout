@@ -217,10 +217,6 @@ def redirect_allowed(source_host: str | None, target_host: str | None) -> bool:
 
 
 __all__ = [
-    "GETMANFRED_PARENT_DOMAIN",
-    "LINKEDIN_PARENT_DOMAIN",
-    "PROVIDER_PARENT_DOMAINS",
-    "TECNOEMPLEO_PARENT_DOMAIN",
     "UrlPolicyError",
     "is_getmanfred_host",
     "is_http_scheme",
