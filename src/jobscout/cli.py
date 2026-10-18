@@ -66,6 +66,7 @@ from .config import ConfigError, HARD_MAX_ITEMS, Settings, validate_bounded_int
 from .dashboard import (
     DEFAULT_OUTPUT as DASHBOARD_DEFAULT_OUTPUT,
     DashboardError,
+    _fetch_imported_feedback,
     generate_dashboard,
     project_key,
 )
@@ -1503,14 +1504,28 @@ def cmd_rank(args: argparse.Namespace, settings: Settings) -> int:
             rank_by_score=True,
         )
         preferences = {item.job.id: assess_preference(item.job) for item in items}
+        # An imported human decision outranks the model: the offer leaves the
+        # shortlist instead of re-appearing on every run.
+        decided = _fetch_imported_feedback(conn, [item.job.id for item in items])
     finally:
         conn.close()
+    # shortcut: --top is applied in SQL before hiding, so a head full of
+    # decided offers shows fewer than --top; re-query with a larger limit
+    # if that ever matters.
+    hidden_count = sum(1 for item in items if item.job.id in decided)
+    items = [item for item in items if item.job.id not in decided]
     text = "\n".join(
         _job_line(item, preferences.get(item.job.id)) for item in items
     ) or "no scored jobs yet"
+    if hidden_count:
+        text += (
+            f"\n{hidden_count} offer(s) hidden: already decided "
+            "(import-feedback has the final word)"
+        )
     _emit(
         {
             "count": len(items),
+            "hidden_decided": hidden_count,
             "jobs": [_job_payload(item, preferences.get(item.job.id)) for item in items],
         },
         as_json=getattr(args, "as_json", False),

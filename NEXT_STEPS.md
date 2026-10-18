@@ -3,6 +3,76 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Next session (2026-10-18) — roadmap: expandable rows, salary estimator, gates, divergence review
+
+Decisions recorded after reviewing `MadsLorentzen/ai-job-search` against this
+repo (clone at `/tmp/opencode/ai-job-search`, read-only; nothing adopted
+verbatim). Owner context: collection-only phase until applications start
+May–June 2027; no post-application outcome tracking for now.
+
+### Decisions
+
+- **Pipeline stays automatic.** The existing cron sweep already runs
+  collect → dedupe → enrich → score unattended (five completed runs audited
+  2026-10-16). Nothing in this plan adds a manual step; the workflow section
+  below replaces per-offer human review with one weekly session.
+- **Posting-deadline/urgency flags: dropped** (owner, not important).
+- **Binary apply/reject decisions: out of the weekly workflow**, replaced by
+  the divergence view (item 5). The decision UI's final fate (remove vs keep
+  dormant) is an open owner decision; the tables stay regardless.
+- **Model guidance philosophy:** prompt-first iteration is the owner's
+  preferred improvement loop; the defensive parser (`scoring/schema.py`)
+  stays as the *measurement instrument* — `ParseOutcome.repairs` per 100
+  evaluations is the metric that shows whether a prompt change worked.
+
+### Planned work units (in order; suite green after each)
+
+1. **Expandable offer row** (dashboard render only). `dashboard.py` renders,
+   per offer, the data `evaluations` already stores: dimension breakdown,
+   strengths, gaps, rationale. No schema, scoring, or LLM change.
+2. **Unknown profile-key warnings.** `scoring/profile.py` warns at load time
+   using `difflib.get_close_matches` (stdlib): near-miss of a known field →
+   `"unknown key 'profile.deal_breakerss' — did you mean 'deal_breakers'?"`;
+   far-miss keys → one collapsed summary line. Warnings go to stderr on every
+   command that loads the profile and to a badge in the dashboard header.
+   Invariants: fingerprint computation unchanged, scoring behavior unchanged,
+   warnings never block a run.
+3. **Salary estimator (grounded, bruto anual only).** New
+   `data/salary_reference.json` (gitignored, machine-local) holding tables
+   extracted once from two public sources, versioned with
+   `source`/`edition`/`captured`: Manfred *Guía Salarial 2026* (role ×
+   experience tables, e.g. Security Engineer 2-5y €31-40K, 5-10y €41-55K,
+   >10y €56-80K; SRE/DevOps 5-10y €46-60K; onsite +20% premium) and Nothiring
+   *Informe mercado tech* (P25/mediana/P90 by role; secondary — its own N=241
+   caveat applies). The LLM only classifies the offer (role, experience
+   bracket, modality); the number comes from a deterministic table lookup.
+   Output: always a bruto-anual **range** with per-row provenance ("stated by
+   offer" / source+bracket), 12 vs 14 pagas normalized via the existing
+   `_salary_period` logic; no stated salary and no table row → `unknown`,
+   never a guess. Currency policy unchanged (`scoring/currency.py`: USD/EUR,
+   no FX, hard-reject otherwise). Fills the "Later features: Salary and
+   compensation analysis" slot. Refresh cadence: Nothiring monthly, Manfred
+   each January (2027 guide lands ~5 months before applications start).
+4. **Gates: FAIL / FLAG.** FAIL fires only on an explicit profile
+   deal-breaker or zero overlap with the profile; everything questionable
+   becomes FLAG (⚠, stays ranked, quoted posting evidence persisted). The
+   dashboard gains a veto-audit list; the owner promotes FLAG→FAIL weekly,
+   writing the reason (a rulings log accumulates the criteria). Strictness is
+   earned gradually after zero false-fails are observed.
+5. **Divergence view (replaces per-offer review).** New dashboard view:
+   offers where the heuristic and the LLM scorer disagree, plus a small
+   random control sample of agreements. `calibration.py` extends with a
+   scorer-vs-scorer comparison (read-only, same evidence-report policy).
+   Human cost target: one ~10-minute weekly session; no offer-by-offer
+   evaluation.
+
+### Carried-over priorities (unchanged, still first if a sweep session comes)
+
+The 2026-10-16 sweep findings remain the immediate fixes: expose keyword
+retirements in `keyword-plan --json` so the sweep skips dead
+provider+query pairs, and the LinkedIn 429 watch item (widen keyword spacing,
+never touch pacing).
+
 ## Next session (2026-10-16) — sweep findings
 
 Audit of the 2026-10-01 → 2026-10-13 sweeps (`reports/sweep-*.log` plus the cron

@@ -17,6 +17,8 @@ from conftest import FIXTURES, no_network
 
 from jobscout.cli import EXIT_ERROR, EXIT_FAIL_CLOSED, EXIT_OK, main
 from jobscout.config import HARD_MAX_ITEMS, HARD_MAX_PAGES
+from jobscout.db import connect, upsert_feedback
+from jobscout.models import FeedbackDecision, JobFeedback
 
 FIXTURE = FIXTURES / "linkedin_search_sample.json"
 PROFILE = FIXTURES / "profile_test.yaml"
@@ -89,6 +91,55 @@ def test_score_heuristic_then_rank_and_list(db_path: Path, capsys) -> None:
 
     assert main(["--db", str(db_path), "list", "--json", "--min-score", "0"]) == EXIT_OK
     assert json.loads(capsys.readouterr().out)["count"] >= 1
+
+
+def test_rank_hides_offers_with_imported_feedback(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "--profile",
+                str(PROFILE),
+                "score",
+                "--all",
+                "--scorer",
+                "heuristic",
+            ]
+        )
+        == EXIT_OK
+    )
+    capsys.readouterr()
+    assert main(["--db", str(db_path), "rank", "--top", "5", "--json"]) == EXIT_OK
+    ranked = json.loads(capsys.readouterr().out)
+    decided = ranked["jobs"][0]["job"]["id"]
+
+    # The human's imported decision is final: rank stops showing the offer.
+    conn = connect(db_path)
+    try:
+        upsert_feedback(
+            conn,
+            JobFeedback(
+                job_id=decided,
+                decision=FeedbackDecision.REJECT,
+                reason="not a fit",
+                decision_updated_at="2026-10-18T10:00:00Z",
+            ),
+        )
+    finally:
+        conn.close()
+
+    assert main(["--db", str(db_path), "rank", "--top", "5", "--json"]) == EXIT_OK
+    after = json.loads(capsys.readouterr().out)
+    shown = [item["job"]["id"] for item in after["jobs"]]
+    assert decided not in shown
+    assert after["count"] == len(ranked["jobs"]) - 1
+    assert after["hidden_decided"] == 1
+
+    assert main(["--db", str(db_path), "rank", "--top", "5"]) == EXIT_OK
+    assert "already decided" in capsys.readouterr().out
 
 
 def test_score_is_idempotent_without_rescore(db_path: Path, capsys) -> None:
