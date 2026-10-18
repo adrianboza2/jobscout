@@ -3,6 +3,53 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Next session (2026-10-16) — sweep findings
+
+Audit of the 2026-10-01 → 2026-10-13 sweeps (`reports/sweep-*.log` plus the cron
+digests). All five runs completed and were delivered — nothing was lost — but
+three root causes are behind "the sweep looks dead", in priority order:
+
+1. **`keyword-plan` hides per-provider retirements, so the sweep fires dead
+   queries.** `keywords.retired_search(provider, query)` knows a pair is
+   retired (the dashboard already consumes it), but `keyword-plan --json` only
+   exposes `family/label/group/query/command`, with no provider dimension. So
+   the sweep runs every planned query against both providers, Tecnoempleo
+   rejects the retired pairs with `invalid Tecnoempleo options: ... is retired
+   ...` and exits 1, and the digest reports it as a collector failure — six
+   sweeps in a row, in the same spot.
+   Measured 2026-10-13: 4 of that sweep's runs were retired pairs — Azure
+   Security Engineer, Junior Cloud Security Engineer, Platform Engineer and
+   Security Infrastructure Engineer (retired 2026-09-29/30). Each costs a
+   useless command and a false alarm.
+   Fix: expose the retirement in `keyword-plan --json` (e.g. a
+   `retired_for: ["tecnoempleo"]` field) and make the sweep skip that provider
+   for those queries. Note: the digest labels a failure group with one query
+   of the group, so "tecnoempleo:Platform Engineer x4" was really four
+   *different* dead queries.
+
+2. **LinkedIn throttling is now the bottleneck, and it costs offers.** HTTP 429
+   per sweep: 0 (10-04), 0 (10-07), 1 (10-10), **4 (10-13)**. In the last one
+   both the search (page 2, `start=25`) and the detail run hit it; the detail
+   run aborts partway (`failed_closed`, ~9 of 20 selected enriched). Variants
+   without a full description: 63 (10-07) → 83 (10-10) → 88 (10-13), all
+   LinkedIn. **53 active offers have no enriched variant at all**, and the
+   scorer reads stored text only, so they can never surface as candidates.
+   This is the one that actually starves the output.
+   Standing policy applies (AGENTS.md: no retries, no pacing changes; the
+   2026-10-10 watch item): widen keyword spacing / cut the number of LinkedIn
+   queries per sweep and let the backlog drain — do not touch pacing.
+
+3. **The "no human decision" block repeats the same five offers every sweep.**
+   `notify` is stateless by design ("no schema or notification state of its
+   own"), so the head of the high-value selection is identical every 72 h:
+   #977 Mapfre 88, #90 METRICA 85, #661 Nubosas 85, #689 IGNIS 85, #868 GMV 85
+   — all undecided since 2026-09-18…25. The digest therefore reads as "no new
+   offers" even in sweeps that found 33 new ones.
+   Fix is in the cron script, not the repo: keep a state file of what has
+   already been reported and show only what is new since the previous sweep.
+   Cheaper stopgap: mark a human decision on those five (they leave the
+   selection and the next ones appear).
+
 ## Next session (2026-10-10)
 
 Directions decided after the 2026-10-10 ponytail-audit refactor
