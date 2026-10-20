@@ -1369,29 +1369,35 @@ def test_report_exposes_filters_search_feedback_and_summary(db_file: Path) -> No
     for element_id in (
         "filter-text",
         "filter-recommendation",
+        "filter-new",
         "filter-min-score",
         "filter-keyword",
         "filter-review",
         "filter-sort",
         "reset-filters",
+        "result-count",
         "export-feedback",
         "feedback-count",
     ):
         assert f'id="{element_id}"' in html_text, element_id
 
-    # Visible labels are neutral Spanish; the option values stay English keys.
-    assert ">Aplicar</option>" in html_text
-    assert ">Considerar</option>" in html_text
-    assert ">Descartar</option>" in html_text
-    assert ">Requiere más información</option>" in html_text
-    assert ">Sin puntaje</option>" in html_text
+    # The toolbar keeps the existing ids; the recommendation axis is a segmented
+    # button group, so the option values become data attributes on the buttons.
+    assert 'id="filter-recommendation" role="group"' in html_text
+    assert 'data-value="apply" aria-pressed="false">Aplicar</button>' in html_text
+    assert 'data-value="consider" aria-pressed="false">Considerar</button>' in html_text
+    assert 'data-value="skip" aria-pressed="false">Descartar</button>' in html_text
+    assert 'id="filter-imported-review" class="btn btn-ghost filter-toggle"' in html_text
+    # The KPI summary is gone; the status line replaces it.
+    assert 'id="summary"' not in html_text
+    assert 'id="summary-note"' not in html_text
     # Human feedback labels stay separate from the model recommendation labels.
     # The human surface is binary; the legacy value has a display-only label.
     assert 'var FEEDBACK_LABELS = { apply: "Aplicar", reject: "Descartar" };' in html_text
     assert 'var LEGACY_FEEDBACK_LABELS = { consider: "Considerar (histórico)" };' in html_text
     assert 'var FEEDBACK_DECISIONS = ["apply", "reject"];' in html_text
     assert "localStorage" in html_text
-    assert "no se escribe en la base" in html_text
+    assert "escribe en la base de datos" in html_text
     assert "SQLite" in html_text
 
     payload = _extract_payload(html_text)
@@ -1400,7 +1406,7 @@ def test_report_exposes_filters_search_feedback_and_summary(db_file: Path) -> No
     assert payload["feedback_schema"] == "jobscout.feedback.v1"
     assert payload["project_id"] == project_key(db_file)
     # The storage key is namespaced by project so two databases never collide.
-    assert f"jobscout.feedback.v1:{payload['project_id']}" in html_text
+    assert 'var STORAGE_KEY = payload.feedback_schema + ":" + payload.project_id;' in html_text
 
 
 def test_visible_ui_text_is_neutral_spanish(db_file: Path) -> None:
@@ -1408,14 +1414,17 @@ def test_visible_ui_text_is_neutral_spanish(db_file: Path) -> None:
 
     assert '<html lang="es">' in html_text
     for label in (
-        "Panel de ofertas",
-        "Resumen",
-        "Buscar y filtrar",
-        "Privacidad y funcionamiento sin conexión",
+        "jobscout",
+        "Ofertas",
+        "Palabras clave",
+        "Buscar",
+        "Todas",
+        "Aplicar",
+        "Considerar",
+        "Descartar",
+        "Solo nuevas",
+        "limpiar",
         "Desempeño por palabra clave",
-        "Restablecer filtros",
-        "Ofertas mostradas",
-        "Revisadas (tu decisión)",
         "Puntos fuertes",
         "Brechas",
         "Bloqueos",
@@ -1423,8 +1432,23 @@ def test_visible_ui_text_is_neutral_spanish(db_file: Path) -> None:
         "Justificación del modelo:",
         "Ver la oferta",
         "Sin puntaje",
+        "Último barrido",
+        "Sin barridos",
+        "sin evaluar",
+        "Detalles pendientes:",
+        "fallos",
     ):
         assert label in html_text, label
+    # The rail copy and the KPI labels must not come back.
+    for retired in (
+        "Buscar y filtrar",
+        "Privacidad y funcionamiento sin conexión",
+        "Restablecer filtros",
+        "Ofertas mostradas",
+        "Revisadas (tu decisión)",
+        "Dos ejes distintos",
+    ):
+        assert retired not in html_text, retired
 
     # The embedded payload keeps its English schema keys and values.
     payload = _extract_payload(html_text)
@@ -1433,16 +1457,20 @@ def test_visible_ui_text_is_neutral_spanish(db_file: Path) -> None:
     assert payload["offers"][0]["recommendation"] == "apply"
 
 
-def test_dashboard_exposes_accessible_kpi_and_provenance_structure(db_file: Path) -> None:
+def test_dashboard_exposes_accessible_tabs_and_status_structure(db_file: Path) -> None:
     html_text = generate_and_read(db_file)
 
-    # Section landmarks carry stable ids and explicit accessible names.
-    assert 'id="summary"' in html_text
-    assert 'id="summary-note"' in html_text
-    assert 'id="kpi-reviewed-value"' not in html_text  # created by the client script
-    assert 'value.id = "kpi-reviewed-value";' in html_text
+    # The shell exposes the tab pattern and one status line instead of KPI cards.
+    assert 'role="tablist"' in html_text
+    assert html_text.count('role="tab" ') == 2
+    assert 'aria-selected="true"' in html_text
+    assert 'aria-selected="false"' in html_text
+    assert 'aria-controls="panel-offers"' in html_text
+    assert 'aria-controls="panel-keywords"' in html_text
+    assert 'id="status-line" aria-label="Estado del último barrido"' in html_text
+    assert 'id="summary"' not in html_text
+    assert 'id="kpi-reviewed-value"' not in html_text
     assert 'role="search"' in html_text
-    assert 'aria-labelledby="privacy-title"' in html_text
     assert 'aria-labelledby="analytics-title"' in html_text
     assert 'class="skip-link"' in html_text
     # Feedback buttons expose a pressed state so colour is not the only signal.
@@ -1479,56 +1507,71 @@ def test_report_uses_the_desktop_technical_panel_design_tokens(db_file: Path) ->
     assert "color-scheme: light;" in css
     assert "prefers-color-scheme" not in html_text
     for token in (
-        "--canvas:#e7ebee",
-        "--paper:#ffffff",
-        "--surface:#f4f6f7",
-        "--ink:#0c1216",
-        "--soft-ink:#20303a",
-        "--muted:#5c6a74",
-        "--hairline:#ccd4da",
-        "--ember:#e7000b",
-        "--signal:#0f6b4f",
-        "--space:4px",
-        "--radius:3px",
-        "--panel-max:1440px",
-        "--rail-width:320px",
+        "--paper:#f3f0e8",
+        "--sheet:#fbfaf6",
+        "--ink:#17160f",
+        "--ink-2:#55524a",
+        "--ink-3:#8a867b",
+        "--rule:#d8d3c6",
+        "--rule-2:#e8e4d9",
+        "--signal:#c8361b",
+        "--signal-wash:#f6e3dc",
+        "--mid:#7a6a1f",
+        "--mid-wash:#f0ead2",
+        "--low:#8a867b",
     ):
         assert token in css, token
+    for family in ("--serif:", "--sans:", "--mono:"):
+        assert family in css, family
 
-    # The retired dark-mode/soft-state palette must not come back.
-    for retired in ("--accent", "--ok-soft", "--warn-soft", "prefers-color"):
+    # The old rail/KPI token set must not come back.
+    for retired in (
+        "--canvas", "--surface", "--soft-ink", "--muted", "--hairline",
+        "--rule-strong", "--ember", "--hover", "--rail-width", "--topbar-h",
+        "--panel-max", "--font-sans", "--font-mono", "--fs-micro", "--fs-small",
+        "--fs-body", "--fs-title", "--fs-heading", "--fs-display", "--gap-card",
+        "--gap-block", "--radius", "--pad-block", "--space", "--accent",
+        "--ok-soft", "--warn-soft", "prefers-color",
+    ):
         assert retired not in html_text, retired
 
     # System font stack only: no webfont, no remote asset URL.
-    assert "--font-sans:system-ui, -apple-system" in css
     assert "Geist" not in html_text
+    assert "Inter" not in html_text
     assert "@font-face" not in css
     assert not re.search(r'url\(\s*["\']?https?://', html_text)
 
-    # One six-step type scale; no rule outside it hard-codes a size. The title step
-    # exists so an offer title outranks body text without competing with a section
-    # heading: 15px body, 17px row title, 20px section heading.
-    scale = re.findall(r"--fs-([a-z]+):(\d+)px", css)
-    assert scale == [
-        ("micro", "11"),
-        ("small", "13"),
-        ("body", "15"),
-        ("title", "17"),
-        ("heading", "20"),
-        ("display", "28"),
-    ]
+    # Closed type scale: 11/12/13/14/16/22, and no rule hard-codes a size.
+    scale = re.findall(r"--fs-[a-z0-9]+:(\d+)px", css)
+    assert scale == ["11", "12", "13", "14", "16", "22"]
     for declared in re.findall(r"font-size:\s*([^;]+);", css):
         declared = declared.strip()
-        assert declared.startswith("var(--fs-") or declared == ".9em", declared
+        assert declared.startswith("var(--fs-"), declared
+    for declared in re.findall(r"font:\s*([^;]+);", css):
+        assert declared.strip() == "inherit", declared
 
-    # The panel shell keeps its structure: top bar, content list, control rail.
+    # Closed 4px spacing scale: no raw px value in padding, margin or gap.
+    spacing = re.findall(r"--sp-[a-z0-9]+:(\d+)px", css)
+    assert spacing == ["4", "8", "12", "16", "24", "32", "48"]
+    for declared in re.findall(r"(?:padding|margin|gap)[^:;{]*:\s*([^;{}]+);", css):
+        assert "px" not in declared, declared
+
+    # Corners are square or at most 2px, and elevation is a hairline only.
+    for declared in re.findall(r"border-radius:\s*([^;]+);", css):
+        for value in re.findall(r"(\d+)px", declared):
+            assert int(value) <= 2, declared
+    assert "box-shadow" not in css
+    assert "gradient" not in css
+
+    # The panel shell keeps its structure: sticky masthead, tabs, toolbar.
     for hook in (
         'class="panel"',
-        'class="topbar"',
+        'class="masthead"',
+        'class="tabs"',
+        'class="toolbar"',
         'class="content"',
-        'class="rail"',
-        'class="kpi-grid"',
-        'class="filters"',
+        'id="panel-offers"',
+        'id="panel-keywords"',
         'class="two-col"',
         'class="method"',
     ):
@@ -1548,9 +1591,7 @@ def test_report_declares_no_narrow_screen_breakpoints(db_file: Path) -> None:
     for forbidden in ("max-width", "min-width"):
         assert f"@media ({forbidden}" not in css, forbidden
 
-    # The desktop shell is a fixed content + rail grid, with fixed strip columns.
-    assert "grid-template-columns:minmax(0, 1fr) var(--rail-width)" in css
-    assert "grid-template-columns:repeat(6, minmax(0, 1fr))" in css
+    # The desktop shell keeps the keyword Top lists in three fixed columns.
     assert "grid-template-columns:repeat(3, minmax(0, 1fr))" in css
 
 
@@ -1565,23 +1606,28 @@ def test_accent_is_scoped_to_the_model_axis_only(db_file: Path) -> None:
     css = _embedded_style(generate_and_read(db_file))
 
     accent_rules = [rule for rule in css.split("}") if "--signal" in rule]
-    assert accent_rules, "the model accent must be defined and used"
-    allowed = (":root", ".axis-model", ".card.rec-apply", ".badge-apply")
+    assert accent_rules, "the signal token must be defined and used"
+    allowed = (
+        ":root",
+        ".status-line .bad",
+        ".notice.warn",
+        ".card.rec-apply",
+        ".badge-apply",
+    )
     for rule in accent_rules:
         assert any(hook in rule for hook in allowed), rule
 
     human_rules = [
         rule
         for rule in css.split("}")
-        if ".decision-btn" in rule or ".feedback" in rule or ".kpi-reviewed" in rule
+        if ".decision-btn" in rule or ".feedback" in rule
     ]
     assert human_rules, "the human feedback surface must be styled"
     for rule in human_rules:
         assert "--signal" not in rule, rule
 
-    # The two axes are also named in visible copy, not only in CSS.
+    # The two axes are still named in visible copy, not only in CSS.
     html_text = generate_and_read(db_file)
-    assert "Dos ejes distintos" in html_text
     assert "Recomendación del modelo" in html_text
     assert "Mi decisión (feedback)" in html_text
 
@@ -1599,9 +1645,10 @@ def test_explainability_is_a_native_progressive_disclosure(db_file: Path) -> Non
     assert 'block.className = "explain";' in html_text
     assert 'document.createElement("summary")' in html_text
     assert "Explicabilidad del puntaje y procedencia" in html_text
-    assert 'id="explain-controls"' in html_text
-    assert "Expandir todo" in html_text
-    assert "Contraer todo" in html_text
+    # The bulk expand/collapse controls belong to the removed rail.
+    assert 'id="explain-controls"' not in html_text
+    assert "Expandir todo" not in html_text
+    assert "Contraer todo" not in html_text
     assert "MutationObserver" in html_text
     # Additive only: the base report script is still written exactly once.
     assert html_text.count("var EXPECTED_SCHEMA =") == 1
@@ -1614,50 +1661,47 @@ def test_explainability_is_a_native_progressive_disclosure(db_file: Path) -> Non
 
 
 def test_report_orders_its_regions_for_a_desktop_scan(db_file: Path) -> None:
-    """Required order: summary, offers, keywords, actions/filters, footer/scope.
-
-    The control rail is emitted after the content so the DOM, tab, and required
-    order agree, and CSS places it on the right so the visual order matches too.
-    """
+    """Required order: masthead/status, tabs, toolbar, offers, keywords."""
     html_text = generate_and_read(db_file)
 
     positions = [
         html_text.index(marker)
         for marker in (
-            'id="resumen"',
-            'id="contenido"',
-            'id="analitica"',
-            'id="filtros"',
-            "<footer",
+            'class="masthead"',
+            'id="status-line"',
+            'role="tablist"',
+            'class="toolbar"',
+            'id="offers"',
+            'id="panel-keywords"',
         )
     ]
     assert positions == sorted(positions), positions
 
     css = _embedded_style(html_text)
-    assert ".content { grid-column:1; grid-row:2;" in css
-    assert ".rail { grid-column:2; grid-row:2;" in css
-    assert "position:sticky" in css
+    assert "header.masthead { position:sticky; top:0;" in css
+    # The offers view owns the toolbar; the keyword view is its sibling panel.
+    assert 'id="panel-offers" role="tabpanel"' in html_text
+    assert 'id="panel-keywords" role="tabpanel"' in html_text
 
 
 def test_sticky_shell_reaches_the_controls_without_covering_content(db_file: Path) -> None:
-    """The top bar and the control rail stay reachable while the offer list scrolls.
+    """The masthead stays reachable while the offer list scrolls.
 
-    ``--topbar-h`` is the measured height of the sticky bar at the shell's desktop
-    widths, and it is the only thing keeping the rail clear of it. Changing the top
-    bar's padding without updating the token re-creates the overlap this guards, so
-    the literal is asserted on purpose.
+    It is the only sticky element and keeps the paper background, so rows never
+    show through. The back-to-top control lives in that header; there is no
+    floating button.
     """
-    css = _embedded_style(generate_and_read(db_file))
+    html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
 
-    assert "--topbar-h:78px" in css
-    assert ".topbar { grid-column:1 / -1; grid-row:1; position:sticky; top:0; z-index:20;" in css
-    assert "min-height:var(--topbar-h)" in css
-    assert "top:calc(var(--topbar-h) + 14px)" in css
-    assert "max-height:calc(100vh - var(--topbar-h) - 28px)" in css
-    # The sticky layer is opaque, so a row scrolling under it never shows through, and
-    # the rail keeps its own column instead of overlaying the content.
-    assert "background:var(--canvas); min-height:var(--topbar-h)" in css
-    assert "scrollbar-gutter:stable;" in css
+    assert "header.masthead { position:sticky; top:0; z-index:20;" in css
+    assert "background:var(--paper);" in css
+    assert "--topbar-h" not in css
+    assert 'id="back-to-top" aria-label="Volver arriba" hidden' in html_text
+    assert "function bindBackToTop()" in html_text
+    assert "window.scrollY <= window.innerHeight" in html_text
+    assert "window.scrollTo(0, 0)" in html_text
+    assert "position:fixed" not in css.split(".toast")[0]
 
 
 def test_each_offer_is_an_independent_block_separated_by_gap_and_outline(
@@ -1674,33 +1718,28 @@ def test_each_offer_is_an_independent_block_separated_by_gap_and_outline(
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
 
-    # The list container paints nothing at all; the gap is the separator.
-    assert "#offers { display:flex; flex-direction:column; gap:var(--gap-card); }" in css
-
-    # The gap sits in the 20-28px band a desktop reader asked for.
-    card_gap = re.search(r"--gap-card:(\d+)px;", css)
-    assert card_gap is not None, "the offer separation step must be a named token"
-    assert 20 <= int(card_gap.group(1)) <= 28, card_gap.group(0)
+    # The list container only spaces the blocks; the gap is the separator.
+    assert "#offers { display:flex; flex-direction:column; gap:var(--sp-16);" in css
 
     card = re.search(r"\.card \{([^}]*)\}", css, re.DOTALL)
     assert card is not None, "the base offer block must be styled"
     body = card.group(1)
-    assert "background:var(--paper);" in body
-    assert "border:1px solid var(--rule-strong);" in body
-    assert "border-radius:var(--radius);" in body
-    assert "padding:24px 26px;" in body
-    assert "gap:var(--gap-block);" in body
+    assert "background:var(--sheet);" in body
+    assert "border:1px solid var(--rule);" in body
+    assert "border-radius:2px;" in body
+    assert "padding:var(--sp-16);" in body
+    assert "gap:var(--sp-12);" in body
     # No elevation and no gradient: the boundary is a hairline, not a shadow.
     assert "box-shadow" not in body
+    assert "box-shadow" not in css
     assert "gradient" not in css
     # A per-block bottom rule is unnecessary once the gap separates the blocks.
     assert ".card:last-child { border-bottom:0; }" not in css
 
-    # Hover still lifts the block, and reviewed keeps its flat ink rule.
-    assert ".card:hover { background:var(--hover); border-color:var(--ink); }" in css
-    assert ".card.reviewed:hover { background:var(--hover-strong); }" in css
-    assert "box-shadow:inset 3px 0 0 var(--ink)" in css
-    assert "--hover:#f8fafb" in css and "--hover-strong:#eef1f3" in css
+    # Hover and keyboard focus use the same states; reviewed keeps an ink rule.
+    assert ".card:hover, .card:focus-within { background:var(--paper); border-color:var(--ink); }" in css
+    assert ".card.reviewed:hover { background:var(--sheet); }" in css
+    assert ".card.reviewed { background:var(--paper); border-color:var(--ink); border-left-width:4px; }" in css
 
 
 def test_regions_are_bounded_and_offer_bands_are_separated_by_rules(
@@ -1716,29 +1755,22 @@ def test_regions_are_bounded_and_offer_bands_are_separated_by_rules(
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
 
-    # Region boundary: summary, offers and analytics all carry the same head rule.
-    assert "gap:12px; padding-bottom:8px; border-bottom:2px solid var(--ink); }" in css
-    assert html_text.count('class="section-head"') == 3
-    for region in ('id="resumen"', 'id="contenido"', 'id="analitica"'):
+    # Region boundaries are hairlines, never shadows.
+    assert "gap:var(--sp-12); padding-bottom:var(--sp-8); border-bottom:1px solid var(--ink); }" in css
+    assert "box-shadow" not in css
+    for region in ('id="panel-offers"', 'id="offers"', 'id="analitica"'):
         assert region in html_text, region
 
-    # The offers region heading is a real heading, not a muted micro label.
-    assert '<h2 id="offers-title">Ofertas</h2>' in html_text
-    assert '<h2 id="kpis-title">Resumen</h2>' in html_text
-
     # Inside one offer: header | facts | explanation | human feedback.
-    assert re.search(r"\.meta \{[^}]*border-top:1px solid var\(--hairline\);", css)
-    assert re.search(r"\.meta \{[^}]*padding:14px 0 0;", css)
-    assert ".explain { border-top:1px solid var(--hairline); }" in css
-    assert re.search(r"\.card > \.grid \{[^}]*border-top:1px solid var\(--hairline\);", css)
-    assert re.search(r"\.feedback \{[^}]*border-top:2px solid var\(--ink\);", css)
-    assert re.search(r"\.card-side \{[^}]*border-left:1px solid var\(--hairline\);", css)
+    assert re.search(r"\.meta \{[^}]*border-top:1px solid var\(--rule\);", css)
+    assert re.search(r"\.meta \{[^}]*padding:var\(--sp-12\) 0 0;", css)
+    assert ".explain { border-top:1px solid var(--rule); }" in css
+    assert re.search(r"\.card > \.grid \{[^}]*border-top:1px solid var\(--rule\);", css)
+    assert re.search(r"\.feedback \{[^}]*border-top:1px solid var\(--ink\);", css)
+    assert re.search(r"\.card-side \{[^}]*border-left:1px solid var\(--rule\);", css)
 
-    # Offers are paper blocks on the canvas; the other regions are not that shape.
-    assert re.search(r"\.block \{[^}]*background:var\(--surface\);", css)
-    assert re.search(r"\.kpi-grid \{[^}]*background:var\(--paper\);", css)
-    assert re.search(r"\.rail-block \{[^}]*background:var\(--paper\);", css)
-    # Inside the sunken analytics panel, the readable surfaces come back to paper.
+    # The analytics panel is a paper surface with hairlines, not a second sheet.
+    assert re.search(r"\.block \{[^}]*background:var\(--paper\);", css)
     assert re.search(r"\.table-wrap \{[^}]*background:var\(--paper\);", css)
     assert re.search(r"\.two-col > section \{[^}]*background:var\(--paper\);", css)
 
@@ -1754,9 +1786,9 @@ def test_offer_row_keeps_a_title_score_action_hierarchy(db_file: Path) -> None:
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
 
-    assert "--fs-title:17px" in css
-    assert ".card-title h3 { font-size:var(--fs-title); line-height:1.3;" in css
-    assert ".card-sub .company { color:var(--soft-ink); font-weight:600; }" in css
+    assert "--fs-16:16px" in css
+    assert ".card-title h3 { font-size:var(--fs-16); line-height:1.3;" in css
+    assert ".card-sub .company { color:var(--ink-2); font-weight:600; }" in css
     # Company and location appear once, in the subtitle.
     assert 'el("span", "company", offer.company)' in html_text
     assert 'metaItem("Empresa"' not in html_text
@@ -1787,15 +1819,15 @@ def test_disclosure_summaries_draw_a_chevron_and_show_their_state(db_file: Path)
 
     for selector in (".explain > summary::before", ".method > summary::before"):
         assert selector in css, selector
-    assert "border-left:7px solid var(--rule-strong);" in css
+    assert "border-left:7px solid var(--rule);" in css
     assert ".explain[open] > summary::before {" in css
     assert "transform:rotate(90deg)" in css
     assert ".method[open] > summary::before {" in css
-    # The label is a sentence-sized control with a hover and a pressed state.
-    assert ".explain > summary { display:flex; align-items:center; gap:9px; cursor:pointer;" in css
-    assert ".explain > summary:hover { background:var(--hover-strong); }" in css
-    assert ".explain > summary:active { background:var(--hairline); }" in css
-    assert ".method > summary:hover { background:var(--paper); }" in css
+    # The label is a sentence-sized control with hover and keyboard focus states.
+    assert ".explain > summary { display:flex; align-items:center; gap:var(--sp-8); cursor:pointer;" in css
+    assert ".explain > summary:hover, .explain > summary:focus-visible { background:var(--sheet); }" in css
+    assert ".explain > summary:active { background:var(--rule-2); }" in css
+    assert ".method > summary:hover, .method > summary:focus-visible { background:var(--sheet); }" in css
     # No glyph is used for the state, so nothing depends on a symbol font.
     assert 'content:"+"' not in css and 'content:"−"' not in css
 
@@ -1811,10 +1843,11 @@ def test_human_feedback_shows_selection_hover_and_a_saved_confirmation(db_file: 
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
 
-    assert '.decision-btn.selected::before { content:"\\2713"; margin-right:7px; }' in css
-    assert ".decision-btn:hover:not(:disabled) { background:var(--hover-strong); border-color:var(--ink); }" in css
-    assert ".decision-btn:active:not(:disabled) { background:var(--hairline); }" in css
-    assert ".decision-btn.selected:hover:not(:disabled) { background:var(--soft-ink);" in css
+    assert '.decision-btn.selected::before { content:"\\2713"; margin-right:var(--sp-8); }' in css
+    assert ".decision-btn:hover:not(:disabled), .decision-btn:focus-visible:not(:disabled) {" in css
+    assert "background:var(--rule-2); border-color:var(--ink); }" in css
+    assert ".decision-btn:active:not(:disabled) { background:var(--rule); }" in css
+    assert ".decision-btn.selected:hover:not(:disabled) { background:var(--ink-2);" in css
     # The block heading repeats the ink square that marks the human axis in the legend.
     assert ".feedback h4::before { content:\"\"; flex:0 0 auto; width:9px; height:9px;" in css
 
@@ -1829,24 +1862,77 @@ def test_human_feedback_shows_selection_hover_and_a_saved_confirmation(db_file: 
 
 
 def test_filter_rail_reports_what_is_narrowing_the_list(db_file: Path) -> None:
-    """The rail says how much is filtering, and Reset is only offered when it can act."""
+    """The toolbar reports the result count, and "limpiar" only appears when needed."""
     html_text = generate_and_read(db_file)
 
-    assert 'id="filters-summary"' in html_text
-    assert 'aria-live="polite">Sin filtros activos</p>' in html_text
-    assert '"Sin filtros activos"' in html_text
-    assert '"1 filtro activo"' in html_text
+    assert 'id="result-count"' in html_text
+    assert 'id="reset-filters" hidden' in html_text
     assert "function activeFilterCount()" in html_text
     assert "function applyFilters()" in html_text
-    assert 'document.getElementById("reset-filters").disabled =' in html_text
-    # Every narrowing control goes through the one path, so the list and the summary
-    # can never disagree; ordering is not counted as a filter.
+    assert "reset.hidden = (count === 0 && filters.sort === \"score\");" in html_text
+    assert '" ofertas"' in html_text
+    assert '" de "' in html_text
+    # Every narrowing control goes through the one path, so the list and the
+    # result count can never disagree; ordering is not counted as a filter.
     assert html_text.count("applyFilters();") >= 7
-    # Ordering is reported by its own control, so it is not counted as a filter.
     counted = re.search(r"function activeFilterCount\(\) \{(.*?)\n  \}", html_text, re.DOTALL)
     assert counted is not None
     assert "filters.sort" not in counted.group(1)
     assert "filters.review" in counted.group(1)
+    assert "filters.isNew" in counted.group(1)
+
+
+def test_status_line_is_built_from_payload_status_with_conditional_signal(
+    db_file: Path,
+) -> None:
+    """The status line is textContent only, and signal marks just the failures."""
+    html_text = generate_and_read(db_file)
+    match = re.search(
+        r"function renderStatusLine\(\) \{(.*?)\n  \}", html_text, re.DOTALL
+    )
+    assert match is not None, "the header status line must be built client-side"
+    body = match.group(1)
+
+    assert 'host.textContent = "";' in body
+    assert "payload.status" in body
+    assert "last_sweep_at" in body
+    assert "Sin barridos" in body
+    assert "new_jobs" in body
+    assert "new_scored" in body
+    assert "sin evaluar" in body
+    assert "pending_details" in body
+    assert "Detalles pendientes:" in body
+    assert "failed.searches" in body and "failed.details" in body
+    # The signal class is attached to exactly the two conditional branches:
+    # unscored new offers and failed runs.
+    assert body.count('"bad"') == 2
+    assert "if (newScored < newJobs)" in body
+    assert 'totalFailed > 0 ? "bad" : "calm"' in body
+
+
+def test_no_discrepancias_or_vetos_tabs_before_their_data_exists(db_file: Path) -> None:
+    """DR-2 ships only the two views the payload can currently fill."""
+    html_text = generate_and_read(db_file)
+
+    assert ">Discrepancias<" not in html_text
+    assert ">Vetos<" not in html_text
+    assert 'data-view="div"' not in html_text
+    assert 'data-view="gates"' not in html_text
+
+
+def test_filter_new_filters_offers_by_is_new(db_file: Path) -> None:
+    """The new toggle narrows the list through the existing filter path."""
+    html_text = generate_and_read(db_file)
+
+    assert 'id="filter-new"' in html_text
+    assert "Solo nuevas" in html_text
+    matches_block = re.search(
+        r"function matches\(offer\) \{(.*?)\n  \}", html_text, re.DOTALL
+    )
+    assert matches_block is not None
+    assert "if (filters.isNew && !offer.is_new) { return false; }" in matches_block.group(1)
+    assert 'document.getElementById("filter-new").addEventListener("click"' in html_text
+    assert "filters.isNew = !filters.isNew;" in html_text
 
 
 def test_keyword_table_headers_sort_the_rendered_rows(db_file: Path) -> None:
@@ -1904,30 +1990,24 @@ def test_report_keeps_empty_error_and_local_storage_states(db_file: Path) -> Non
 
 
 def test_ember_is_reserved_for_warning_and_error_states(db_file: Path) -> None:
-    """Red marks only real warning/error UI, never a recommendation state.
-
-    Every rule that reaches for the ember token must be the warning notice (the
-    token definition itself lives in ``:root``). Recommendation badges and KPI
-    modifiers stay monochromatic, so the reader never learns to read a hue as a
-    score.
-    """
+    """Every colour is a token: no raw hex survives outside ``:root``."""
     html_text = generate_and_read(db_file)
     style = re.search(r"<style>(.*?)</style>", html_text, re.DOTALL)
     assert style is not None, "the report must embed its stylesheet"
     css = style.group(1)
 
-    # One literal definition, referenced by token everywhere else.
-    assert css.count("#e7000b") == 1
-    ember_rules = [rule for rule in css.split("}") if "--ember" in rule]
-    assert ember_rules, "the ember token must be defined and used"
-    for rule in ember_rules:
-        assert ":root" in rule or ".notice.warn" in rule, rule
+    root = re.search(r":root \{(.*?)\n\}", css, re.DOTALL)
+    assert root is not None, "the report must define its token set"
+    outside_root = css.replace(root.group(0), "")
+    assert not re.findall(r"#[0-9a-fA-F]{3,8}(?=[\s;])", outside_root)
+    assert "--ember" not in css
 
-    # Recommendation styling carries weight, not hue.
+    # Recommendation styling still carries weight and its own token, not the
+    # warning colour.
     badges = [rule for rule in css.split("}") if ".badge-" in rule]
     assert badges, "the recommendation badges must be styled"
     for rule in badges:
-        assert "--ember" not in rule and "#e7000b" not in rule, rule
+        assert "#" not in rule, rule
 
 
 def test_feedback_region_accessible_name_identifies_the_offer(db_file: Path) -> None:
@@ -1988,8 +2068,8 @@ def test_dashboard_feedback_is_binary_and_keeps_consider_legacy(db_file: Path) -
     # The legacy value still has a display-only label.
     assert 'var LEGACY_FEEDBACK_LABELS = { consider: "Considerar (histórico)" };' in html_text
     # The model recommendation axis keeps its own three-way labels (a different
-    # signal), including its "Considerar" filter option.
-    assert '>Considerar</option>' in html_text
+    # signal), including its "Considerar" segmented-control button.
+    assert '>Considerar</button>' in html_text
     assert 'consider: "Considerar"' in html_text
 
 
@@ -2363,13 +2443,11 @@ def test_detail_evidence_css_stays_neutral_and_keeps_the_six_kpi_shell(db_file: 
         assert "#e7000b" not in rule, rule
         assert "@media" not in rule, rule
 
-    # No new media query and no seventh KPI.
+    # No new media query and no six-column KPI strip.
     assert css.count("@media") == 1
     assert re.findall(r"@media\s*\(([^)]*)\)", css) == ["prefers-reduced-motion:reduce"]
-    assert "grid-template-columns:repeat(6, minmax(0, 1fr))" in css
-    cards = re.search(r"var cards = \[(.*?)\];", html_text, re.DOTALL)
-    assert cards is not None
-    assert cards.group(1).count('["') == 6
+    assert "grid-template-columns:repeat(6, minmax(0, 1fr))" not in css
+    assert 'id="summary"' not in html_text
 
 
 def test_detail_state_labels_cover_every_state_in_neutral_spanish(db_file: Path) -> None:

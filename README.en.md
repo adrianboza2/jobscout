@@ -178,7 +178,12 @@ The output format is unchanged: a single JSON object with `overall_score`,
 HTML file (embedded CSS, JavaScript, and data). It uses no CDN, requests no
 external asset, needs no server, and makes no network request. All visible text
 is neutral/professional Spanish; internal schema keys and CLI command names stay
-English so the report never drifts from the database.
+English so the report never drifts from the database. The sticky header
+summarises the last sweep (date, new offers, pending details and failures;
+unscored new offers and failures show in red) and offers two tabs, **Ofertas** and **Palabras clave**, with the decision counter and
+export control on the right. The offers view uses a single horizontal toolbar,
+including a **Solo nuevas** toggle (offers first seen in the latest sweep); there
+is no side rail and no KPI cards.
 
 ```bash
 # POSIX
@@ -253,16 +258,16 @@ There is still no automatic scheduling: importing is a command you run yourself.
 
 ### Offers without an imported decision
 
-The filter rail includes **Solo sin decisión importada** ("only without an
-imported decision"), which narrows the shown offers to those with **no
-`job_feedback` row**. That is the real review backlog that exists in SQLite, read
-with a single read-only `SELECT` over the `mode=ro` connection. It invents no
-figure: it never shows a "pending" counter the database cannot support.
+The toolbar includes **Solo sin decisión importada** ("only without an imported
+decision"), which narrows the shown offers to those with **no `job_feedback`
+row**. That is the real review backlog that exists in SQLite, read with a single
+read-only `SELECT` over the `mode=ro` connection. It invents no figure: it never
+shows a "pending" counter the database cannot support.
 
 - It is a **separate axis** from *Estado de revisión* (`revisadas` / `sin
   revisar`): that filter reads your marks in `localStorage`, while this one reads
-  the imported human decision in SQLite. The **Revisadas (tu decisión)** KPI
-  remains the browser signal and is never merged with the imported feedback.
+  the imported human decision in SQLite. The header counter only reflects browser
+  decisions and is never merged with the imported feedback.
 - When no decision has been imported yet, the panel says so and points to
   `jobscout import-feedback`; it does not present every active offer as a
   measured backlog.

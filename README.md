@@ -179,7 +179,13 @@ autocontenido (CSS, JavaScript y datos embebidos). No usa CDN, no pide assets
 externos, no necesita servidor y no hace ninguna solicitud de red. Toda la
 interfaz visible está en español neutro/profesional; las claves internas del
 esquema y los comandos de CLI permanecen en inglés para no divergir de la base
-de datos.
+de datos. La cabecera fija resume el último barrido (fecha, ofertas nuevas,
+detalles pendientes y fallos; las nuevas sin evaluar y los fallos salen en rojo)
+y ofrece dos pestañas, **Ofertas** y **Palabras
+clave**, con el contador de decisiones y la exportación a la derecha. La vista de
+ofertas usa una única barra de herramientas horizontal, con el filtro **Solo
+nuevas** (ofertas vistas por primera vez en el último barrido); ya no hay rail
+lateral ni tarjetas KPI.
 
 ```bash
 # POSIX
@@ -256,16 +262,16 @@ Todavía no hay programación automática: importar es un comando que ejecutas t
 
 ### Ofertas sin decisión importada
 
-El rail de filtros incluye **Solo sin decisión importada**, que reduce las ofertas
-mostradas a las que **no tienen ninguna fila en `job_feedback`**. Ese es el
-backlog real de revisión que existe en SQLite; se lee con un único `SELECT` de
+La barra de herramientas incluye **Solo sin decisión importada**, que reduce las
+ofertas mostradas a las que **no tienen ninguna fila en `job_feedback`**. Ese es
+el backlog real de revisión que existe en SQLite; se lee con un único `SELECT` de
 solo lectura sobre la conexión `mode=ro`. No inventa ninguna cifra: no muestra un
 contador de "pendientes" que la base no pueda respaldar.
 
 - Es un eje **distinto** de *Estado de revisión* (`revisadas` / `sin revisar`):
   ese filtro lee tus marcas guardadas en `localStorage`, mientras que este lee la
-  decisión humana importada en SQLite. El KPI **Revisadas (tu decisión)** sigue
-  siendo la señal del navegador y nunca se mezcla con el feedback importado.
+  decisión humana importada en SQLite. La cabecera solo cuenta las decisiones
+  guardadas en el navegador y nunca las mezcla con el feedback importado.
 - Si todavía no importaste ninguna decisión, el propio panel lo dice y remite a
   `jobscout import-feedback`; no presenta todas las ofertas activas como un
   backlog medido.

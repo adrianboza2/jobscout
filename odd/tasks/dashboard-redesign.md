@@ -267,11 +267,19 @@ marketing components are not.
       (the sweep writes `YYYY-MM-DD-sweep`); it starts at that cycle's `MIN(started_at)`,
       and an offer is new when `first_seen_at` is at or after it. No cycle: nothing is new.
     - `detail.http_status` stays until DR-3, because the old UI still prints it.
-- [ ] DR-2 **Shell and visual system.**
+- [x] DR-2 **Shell and visual system.**
   - Tokens, header with status line, tabs, toolbar.
   - Remove the rail, KPIs, explanation boxes and footer.
   - Rewrite the look-pinning tests (ids, classes, tokens, grids).
   - Run the pre-flight checklist.
+  - Decisions (owner, 2026-10-20):
+    - The status line warns in signal colour when new offers are left unscored.
+    - The review and imported-decision toggles stay in the toolbar (same ids).
+    - The report metadata is one muted line at the end of the offers list.
+    - "Expandir/Contraer todo" is dropped; "limpiar" sits next to the result count.
+    - Export moves to the header, visible and disabled without decisions, so the
+      export test stays untouched. DR-5 must reconcile "visible only when N > 0"
+      with `test_export_button_is_visible_and_disabled_until_reviewed`.
 - [ ] DR-3 **Offer row.** Collapsed line, batched rendering, lazy expanded body (justification,
   dimensions or their absence, four lists, salary block with the stated value, footer), and
   the empty/error states. Roadmap item 1 is closed here.
@@ -310,3 +318,10 @@ marketing components are not.
   `retired_on`/`retired_reason`. UI unchanged. Suite 1130 passed. Live read-only check: last
   sweep 2026-10-19-sweep, 18 new, 0 of them scored (the sweep log shows `scored 21 job(s),
   0 succeeded`), pending details linkedin 113 / tecnoempleo 1. Next: DR-2 in a new session.
+- 2026-10-20: DR-2 done. Sticky header with status line, Ofertas/Palabras clave tabs, export
+  on the right; one-row toolbar with "Solo nuevas"; rail, KPIs, explanation boxes, footer and
+  the bulk disclosure controls removed. Tokens follow the card. Suite 1133 passed. Pre-flight:
+  no raw colour outside `:root`, closed type scale, no shadow/gradient/web font, one reduced-
+  motion `@media`. Open: `--ink-3` (3.2:1 on paper), `--signal` and `--mid` on their washes
+  (4.2 and 4.3:1) are below AA; darker values proposed to the owner. Page weight unchanged
+  (2.2 MB) until DR-3/DR-6. Next: colour decision, then DR-3.

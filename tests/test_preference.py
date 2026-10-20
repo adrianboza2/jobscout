@@ -358,7 +358,7 @@ def test_dashboard_never_serializes_the_description_used_for_detection(
     assert "Preferencia:" in html_text
 
 
-def test_preference_band_stays_hue_free_and_keeps_the_six_kpi_shell(
+def test_preference_band_stays_hue_free(
     tmp_path: Path,
 ) -> None:
     db_path = tmp_path / "preference-css.sqlite3"
@@ -386,14 +386,11 @@ def test_preference_band_stays_hue_free_and_keeps_the_six_kpi_shell(
         assert "--ember" not in rule, rule
         assert "#e7000b" not in rule, rule
 
-    # The existing six-KPI shell and the single reduced-motion media query stay.
+    # The single reduced-motion media query stays.
     import re
 
     css = re.search(r"<style>(.*?)</style>", html_text, re.DOTALL).group(1)
     assert css.count("@media") == 1
-    cards = re.search(r"var cards = \[(.*?)\];", html_text, re.DOTALL)
-    assert cards is not None
-    assert cards.group(1).count('["') == 6
 
 
 def test_dashboard_generation_needs_no_network(tmp_path: Path, monkeypatch) -> None:

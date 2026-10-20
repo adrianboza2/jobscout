@@ -3,6 +3,18 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-20 (e) — dashboard redesign DR-2: shell and visual system
+
+Done (`odd/tasks/dashboard-redesign.md`, DR-2): new tokens, sticky header
+with a status line built from `payload.status`, Ofertas/Palabras clave tabs,
+one-row toolbar (with "Solo nuevas"), export in the header. Rail, KPIs,
+explanation boxes and footer removed. Offer cards and the keyword view are
+unchanged until DR-3/DR-4.
+
+- **Pending owner decision:** three tokens fail AA (`--ink-3`, `--signal`
+  and `--mid` on their washes); darker values proposed.
+- **Next:** DR-3 (offer row).
+
 ## Session 2026-10-20 (d) — dashboard redesign DR-1: payload
 
 Done (`odd/tasks/dashboard-redesign.md`, DR-1): the dashboard payload gains

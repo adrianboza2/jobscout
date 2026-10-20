@@ -1316,16 +1316,22 @@ __STYLE__
 
 <div class="panel">
 
-<header class="topbar">
-  <div class="topbar-id">
-    <p class="kicker">Informe local &middot; sin conexión</p>
-    <h1>Panel de ofertas &mdash; jobscout</h1>
+<header class="masthead">
+  <div class="mast">
+    <h1>jobscout</h1>
+    <p class="status-line" id="status-line" aria-label="Estado del último barrido"></p>
+    <button type="button" class="to-top" id="back-to-top" aria-label="Volver arriba" hidden>↑</button>
   </div>
-  <nav class="topbar-nav" aria-label="Secciones del informe">
-    <a href="#resumen">Resumen</a>
-    <a href="#contenido">Ofertas</a>
-    <a href="#analitica">Palabras clave</a>
-    <a href="#filtros">Filtros</a>
+  <nav class="tabs" role="tablist" aria-label="Vistas del informe">
+    <button type="button" role="tab" id="tab-offers" aria-selected="true"
+      aria-controls="panel-offers" data-view="offers">Ofertas <span class="tab-count" id="tab-offers-count">0</span></button>
+    <button type="button" role="tab" id="tab-keywords" aria-selected="false"
+      aria-controls="panel-keywords" data-view="keywords">Palabras clave <span class="tab-count" id="tab-keywords-count">0</span></button>
+    <span class="tab-spacer"></span>
+    <span id="feedback-count" aria-live="polite">0 revisadas</span>
+    <button type="button" id="export-feedback" class="export"
+      title="Descarga un archivo JSON con sus decisiones guardadas en este navegador"
+      disabled>Exportar feedback local (JSON)</button>
   </nav>
 </header>
 
@@ -1336,25 +1342,51 @@ __STYLE__
   __WARNINGS__
 </section>
 
-<section class="strip" id="resumen" aria-labelledby="kpis-title">
-  <div class="section-head">
-    <h2 id="kpis-title">Resumen</h2>
-  </div>
-  <div class="kpi-grid" id="summary" aria-live="polite"></div>
-  <p class="muted" id="summary-note"></p>
-</section>
+<main id="contenido">
+  <section id="panel-offers" role="tabpanel" aria-labelledby="tab-offers">
+    <div class="toolbar" role="search" aria-label="Búsqueda y filtros de ofertas">
+      <input type="search" id="filter-text" autocomplete="off"
+        aria-label="Buscar" placeholder="título, empresa, ubicación">
+      <div class="seg" id="filter-recommendation" role="group"
+        aria-label="Recomendación del modelo">
+        <button type="button" data-value="" aria-pressed="true">Todas</button>
+        <button type="button" data-value="apply" aria-pressed="false">Aplicar</button>
+        <button type="button" data-value="consider" aria-pressed="false">Considerar</button>
+        <button type="button" data-value="skip" aria-pressed="false">Descartar</button>
+      </div>
+      <button type="button" id="filter-new" class="btn btn-ghost filter-toggle"
+        aria-pressed="false" title="Muestra solo las ofertas nuevas del último barrido">Solo nuevas</button>
+      <input type="number" id="filter-min-score" min="0" max="100" step="1"
+        inputmode="numeric" placeholder="Score ≥ 0" aria-label="Puntaje mínimo">
+      <select id="filter-keyword" aria-label="Palabra clave de origen">
+        <option value="">Todas las keywords</option>
+      </select>
+      <select id="filter-sort" aria-label="Ordenar por">
+        <option value="score">Orden: score</option>
+        <option value="fresh">Orden: más recientes</option>
+      </select>
+      <span id="result-count" aria-live="polite">0 ofertas</span>
+      <button type="button" id="reset-filters" hidden>limpiar</button>
+      <select id="filter-review" aria-label="Estado de revisión">
+        <option value="">todas</option>
+        <option value="reviewed">revisadas</option>
+        <option value="unreviewed">sin revisar</option>
+      </select>
+      <button type="button" id="filter-imported-review" class="btn btn-ghost filter-toggle"
+        aria-pressed="false"
+        title="Muestra solo las ofertas sin una decisión humana importada en SQLite">
+        Solo sin decisión importada
+      </button>
+    </div>
+    <p class="muted toolbar-note" id="imported-review-note"></p>
+    <div id="offers"></div>
+    <p id="empty-state" class="empty" hidden>
+      Ninguna oferta coincide con la búsqueda y los filtros actuales.
+    </p>
+    <p class="report-meta" id="report-meta">__META__</p>
+  </section>
 
-<main id="contenido" aria-labelledby="offers-title">
-  <div class="section-head">
-    <h2 id="offers-title">Ofertas</h2>
-    <p class="muted" id="offer-count" role="status"></p>
-  </div>
-  <div id="offers"></div>
-  <p id="empty-state" class="empty" hidden>
-    Ninguna oferta coincide con la búsqueda y los filtros actuales.
-  </p>
-</main>
-
+<section id="panel-keywords" role="tabpanel" aria-labelledby="tab-keywords" hidden>
 <section class="block" id="analitica" aria-labelledby="analytics-title">
   <div class="section-head">
     <h2 id="analytics-title">Desempeño por palabra clave</h2>
@@ -1394,123 +1426,10 @@ __STYLE__
     </section>
   </div>
 </section>
+</section>
+</main>
 
 </div>
-
-<aside class="rail" aria-label="Controles y contexto del informe">
-
-  <section class="rail-block" id="filtros" aria-labelledby="filters-title">
-    <h2 id="filters-title" class="rail-title">Buscar y filtrar</h2>
-    <p class="filters-summary" id="filters-summary" aria-live="polite">Sin filtros activos</p>
-    <div class="filters" role="search" aria-label="Búsqueda y filtros de ofertas">
-      <div class="filter-field">
-        <label for="filter-text">Buscar</label>
-        <input type="search" id="filter-text" autocomplete="off"
-          placeholder="título, empresa, ubicación">
-      </div>
-      <div class="filter-field">
-        <label for="filter-recommendation">Recomendación del modelo</label>
-        <select id="filter-recommendation">
-          <option value="">todas</option>
-          <option value="apply">Aplicar</option>
-          <option value="consider">Considerar</option>
-          <option value="skip">Descartar</option>
-          <option value="need_more_info">Requiere más información</option>
-          <option value="unscored">Sin puntaje</option>
-        </select>
-      </div>
-      <div class="filter-field">
-        <label for="filter-keyword">Palabra clave de origen</label>
-        <select id="filter-keyword">
-          <option value="">todas</option>
-        </select>
-      </div>
-      <div class="filter-field">
-        <label for="filter-min-score">Puntaje mínimo</label>
-        <input type="number" id="filter-min-score" min="0" max="100" step="1"
-          inputmode="numeric" placeholder="0">
-      </div>
-      <div class="filter-field">
-        <label for="filter-review">Estado de revisión</label>
-        <select id="filter-review">
-          <option value="">todas</option>
-          <option value="reviewed">revisadas</option>
-          <option value="unreviewed">sin revisar</option>
-        </select>
-      </div>
-      <div class="filter-field">
-        <button type="button" id="filter-imported-review" class="btn btn-ghost filter-toggle"
-          aria-pressed="false"
-          title="Muestra solo las ofertas sin una decisión humana importada en SQLite">
-          Solo sin decisión importada
-        </button>
-        <p class="muted" id="imported-review-note"></p>
-      </div>
-      <div class="filter-field">
-        <label for="filter-sort">Ordenar por</label>
-        <select id="filter-sort">
-          <option value="score">puntaje (mejor primero)</option>
-          <option value="fresh">fecha (más recientes primero)</option>
-        </select>
-      </div>
-      <div class="filter-field">
-        <button type="button" id="reset-filters" class="btn btn-ghost"
-          title="Restablece la búsqueda y todos los filtros">Restablecer filtros</button>
-      </div>
-    </div>
-  </section>
-
-  <section class="rail-block" aria-labelledby="actions-title">
-    <h2 id="actions-title" class="rail-title">Acciones</h2>
-    <div class="rail-actions">
-      <button type="button" id="export-feedback" class="btn btn-primary"
-        title="Descarga un archivo JSON con sus decisiones guardadas en este navegador">
-        Exportar feedback local (JSON)
-      </button>
-      <span class="muted" id="feedback-count" aria-live="polite">0 revisadas</span>
-      <div id="explain-controls" class="control-row"></div>
-    </div>
-  </section>
-
-  <section class="rail-block" aria-labelledby="axes-title">
-    <h2 id="axes-title" class="rail-title">Dos ejes distintos</h2>
-    <dl class="axes">
-      <dt class="axis-model">Recomendación del modelo</dt>
-      <dd>La calcula el evaluador de jobscout a partir de la oferta y de su perfil. Sus
-        marcas no la cambian.</dd>
-      <dt class="axis-human">Mi decisión (feedback)</dt>
-      <dd>Su marca manual: <strong>Aplicar</strong> o <strong>Descartar</strong>. Se
-        guarda solo en este navegador y no modifica el puntaje, la recomendación ni la
-        base de datos.</dd>
-    </dl>
-  </section>
-
-  <section class="rail-block" aria-labelledby="privacy-title">
-    <h2 id="privacy-title" class="rail-title">Privacidad y funcionamiento sin conexión</h2>
-    <p class="muted">
-      <strong>Todo queda en este navegador.</strong> Las decisiones manuales se guardan
-      en <code>localStorage</code> bajo la clave <code>__STORAGE_KEY__</code>. No se envía
-      ninguna postulación, no se guarda nada en LinkedIn y no se escribe en la base
-      SQLite. Para conservar una copia, use <em>Exportar feedback local (JSON)</em>. Los
-      puntajes y las recomendaciones provienen del evaluador de jobscout, no de su decisión.
-    </p>
-  </section>
-
-</aside>
-
-<footer class="scope">
-  <div>
-    <h2 class="section-label">Alcance del informe</h2>
-    <p class="muted">__META__</p>
-  </div>
-  <div>
-    <h2 class="section-label">Sin red</h2>
-    <p class="muted">
-      Generado por <code>jobscout dashboard</code>. Un solo archivo HTML: sin recursos
-      externos, sin solicitudes de red, sin servidor.
-    </p>
-  </div>
-</footer>
 
 </div>
 
@@ -1528,455 +1447,398 @@ __SCRIPT__
 _STYLE = """
 :root {
   color-scheme: light;
-  --canvas:#e7ebee;
-  --paper:#ffffff;
-  --surface:#f4f6f7;
-  /* Two hover washes: one that lifts from paper (rows, buttons) and one that
-     lifts from the sunken surface (table rows, inputs). */
-  --hover:#f8fafb;
-  --hover-strong:#eef1f3;
-  --ink:#0c1216;
-  --soft-ink:#20303a;
-  --muted:#5c6a74;
-  --hairline:#ccd4da;
-  --rule-strong:#8b98a1;
-  --ember:#e7000b;
-  --signal:#0f6b4f;
-  --space:4px;
-  --pad-block:16px;
-  --radius:3px;
-  /* Two separation steps, and only two. ``--gap-card`` is the canvas showing
-     between two offers; ``--gap-block`` is the space inside one offer between its
-     bands. Every rule drawn below is a hairline meant to be read, never decoration. */
-  --gap-card:24px;
-  --gap-block:16px;
-  --fs-micro:11px;
-  --fs-small:13px;
-  --fs-body:15px;
-  /* The offer title is the row's name, so it has to outrank body text without
-     competing with a section heading. */
-  --fs-title:17px;
-  --fs-heading:20px;
-  --fs-display:28px;
-  --panel-max:1440px;
-  --rail-width:320px;
-  /* Measured height of the sticky top bar, used to keep the sticky rail clear of it
-     at every desktop width the shell targets. */
-  --topbar-h:78px;
-  --font-sans:system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-mono:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --paper:#f3f0e8;
+  --sheet:#fbfaf6;
+  --ink:#17160f;
+  --ink-2:#55524a;
+  --ink-3:#8a867b;
+  --rule:#d8d3c6;
+  --rule-2:#e8e4d9;
+  --signal:#c8361b;
+  --signal-wash:#f6e3dc;
+  --mid:#7a6a1f;
+  --mid-wash:#f0ead2;
+  --low:#8a867b;
+  --serif:"Iowan Old Style","Charter","Georgia",serif;
+  --sans:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Mono",monospace;
+  --fs-11:11px;
+  --fs-12:12px;
+  --fs-13:13px;
+  --fs-14:14px;
+  --fs-16:16px;
+  --fs-22:22px;
+  --sp-4:4px;
+  --sp-8:8px;
+  --sp-12:12px;
+  --sp-16:16px;
+  --sp-24:24px;
+  --sp-32:32px;
+  --sp-48:48px;
 }
 * { box-sizing:border-box; }
 html { -webkit-text-size-adjust:100%; }
-body { margin:0; background:var(--canvas); color:var(--soft-ink);
-  font-family:var(--font-sans); font-size:var(--fs-body); line-height:1.5;
+body { margin:0; background:var(--paper); color:var(--ink);
+  font-family:var(--sans); font-size:var(--fs-14); line-height:1.5;
   -webkit-font-smoothing:antialiased; }
 h1, h2, h3, h4 { margin:0; color:var(--ink); font-weight:600; }
-h1 { font-size:var(--fs-display); line-height:1.15; letter-spacing:-.02em; }
-h2 { font-size:var(--fs-heading); line-height:1.25; letter-spacing:-.01em; }
-h3 { font-size:var(--fs-body); line-height:1.35; }
-h4 { font-size:var(--fs-micro); line-height:1.3; font-weight:700; text-transform:uppercase;
-  letter-spacing:.08em; color:var(--muted); }
+h1 { font-family:var(--serif); font-size:var(--fs-22); line-height:1; letter-spacing:-.01em; }
+h2 { font-size:var(--fs-16); line-height:1.25; letter-spacing:-.01em; }
+h3 { font-size:var(--fs-14); line-height:1.35; }
+h4 { font-family:var(--mono); font-size:var(--fs-11); line-height:1.3;
+  text-transform:uppercase; letter-spacing:.06em; color:var(--ink-3); }
 p { margin:0; }
-code { font-family:var(--font-mono); font-size:.9em; }
-.muted { color:var(--muted); }
+code { font-family:var(--mono); font-size:var(--fs-12); }
+.muted { color:var(--ink-3); }
 a { color:var(--ink); text-decoration:underline; text-underline-offset:2px;
-  text-decoration-color:var(--rule-strong); }
-a:hover { text-decoration-color:var(--ink); }
-:focus-visible { outline:3px solid var(--ink); outline-offset:1px; }
+  text-decoration-color:var(--rule); }
+a:hover, a:focus-visible { text-decoration-color:var(--ink); }
+:focus-visible { outline:2px solid var(--ink); outline-offset:2px; }
+[hidden] { display:none !important; }
 .skip-link { position:absolute; left:-9999px; top:0; z-index:100; background:var(--ink);
-  color:var(--paper); font-weight:600; font-size:var(--fs-small); text-decoration:none;
-  padding:10px 14px; }
+  color:var(--paper); font-weight:600; font-size:var(--fs-13); text-decoration:none;
+  padding:var(--sp-8) var(--sp-12); }
 .skip-link:focus { left:0; }
 
-/* Desktop-only shell: a fixed two-column grid (content + control rail) with no
-   narrow-screen breakpoint. The rail follows the content in the DOM so the reading
-   and tab order follow the required section order, and it is placed on the right so
-   the visual order matches that DOM order. */
-.panel { max-width:var(--panel-max); margin:0 auto; padding:0 20px 28px;
-  display:grid; grid-template-columns:minmax(0, 1fr) var(--rail-width);
-  gap:18px 20px; align-items:start; }
-/* The top bar is the report's one sticky element: the section shortcuts stay
-   reachable while the offer list scrolls past. It owns no width of its own, so it
-   never covers the column a reader is working in. */
-.topbar { grid-column:1 / -1; grid-row:1; position:sticky; top:0; z-index:20;
-  background:var(--canvas); min-height:var(--topbar-h); display:flex; flex-wrap:wrap;
-  align-items:flex-end; justify-content:space-between; gap:8px 24px;
-  padding:14px 0 10px; border-bottom:2px solid var(--ink); }
-.topbar-id { display:flex; flex-direction:column; gap:2px; }
-.kicker { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
-  letter-spacing:.1em; color:var(--muted); }
-.topbar-nav { display:flex; gap:18px; font-size:var(--fs-micro); font-weight:700;
-  text-transform:uppercase; letter-spacing:.07em; }
-.topbar-nav a { color:var(--soft-ink); text-decoration:none; padding:4px 0;
-  border-bottom:2px solid transparent;
-  transition:color .14s ease, border-color .14s ease; }
-.topbar-nav a:hover { color:var(--ink); text-decoration:underline;
-  border-bottom-color:var(--ink); }
-.topbar-nav a:active { color:var(--ink); }
+.panel { max-width:1280px; margin:0 auto; padding:0 var(--sp-32) var(--sp-48); }
+/* The masthead is the report's only sticky element: status, tabs, decisions and
+   export stay reachable while the offer list scrolls. Its opaque paper keeps rows
+   from showing through, and it stays in the normal flow so it never covers content
+   at rest. */
+header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
+  border-bottom:1px solid var(--ink); }
+.mast { display:flex; align-items:baseline; gap:var(--sp-24);
+  padding:var(--sp-16) 0 var(--sp-8); }
+.mast h1 { font-size:var(--fs-22); }
+.status-line { margin:0; display:flex; flex-wrap:wrap; gap:var(--sp-16);
+  font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-2); }
+.status-line .bad { color:var(--signal); }
+.status-line .calm { color:var(--ink-3); }
+.to-top { margin-left:auto; cursor:pointer; background:var(--paper); color:var(--ink);
+  border:1px solid var(--rule); font-family:var(--mono); font-size:var(--fs-12);
+  padding:var(--sp-4) var(--sp-8); }
+.to-top:hover, .to-top:focus-visible { border-color:var(--ink); background:var(--sheet); }
+.tabs { display:flex; align-items:flex-end; }
+.tabs [role="tab"] { cursor:pointer; background:none; color:var(--ink-2);
+  border:0; border-bottom:2px solid transparent; font-family:var(--sans);
+  font-size:var(--fs-13); padding:var(--sp-8) var(--sp-12); }
+.tabs [role="tab"]:hover, .tabs [role="tab"]:focus-visible { color:var(--ink); }
+.tabs [role="tab"][aria-selected="true"] { color:var(--ink); border-bottom-color:var(--ink); }
+.tab-count { margin-left:var(--sp-4); font-family:var(--mono); font-size:var(--fs-12);
+  color:var(--ink-3); }
+.tab-spacer { flex:1; }
+#feedback-count { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3);
+  padding:0 var(--sp-8) var(--sp-4); }
+.export { cursor:pointer; background:var(--paper); color:var(--ink);
+  border:1px solid var(--ink); font-family:var(--mono); font-size:var(--fs-12);
+  padding:var(--sp-4) var(--sp-8); margin:0 0 var(--sp-4) var(--sp-8); }
+.export:hover:not(:disabled), .export:focus-visible:not(:disabled) {
+  background:var(--ink); color:var(--paper); }
+.export:disabled { opacity:.45; cursor:not-allowed; }
 
-.content { grid-column:1; grid-row:2; display:flex; flex-direction:column; gap:22px;
-  min-width:0; }
+.content { display:flex; flex-direction:column; gap:var(--sp-24); min-width:0; }
 .content > * { min-width:0; }
-footer.scope { grid-column:1 / -1; grid-row:3; display:grid;
-  grid-template-columns:repeat(2, minmax(0, 1fr)); gap:12px 24px; padding-top:12px;
-  border-top:2px solid var(--ink); }
-footer.scope p { font-size:var(--fs-small); }
 
-/* Sticky control rail: pinned below the top bar, never over the content column,
-   and internally scrollable so a short window still reaches the last block. */
-.rail { grid-column:2; grid-row:2; display:flex; flex-direction:column; gap:12px;
-  position:sticky; top:calc(var(--topbar-h) + 14px);
-  max-height:calc(100vh - var(--topbar-h) - 28px); overflow-y:auto;
-  scrollbar-gutter:stable; }
-.rail-block { display:flex; flex-direction:column; gap:10px; background:var(--paper);
-  border:1px solid var(--rule-strong); border-radius:var(--radius); padding:var(--pad-block); }
-.rail-block p { font-size:var(--fs-small); }
-.rail-block code { overflow-wrap:anywhere; }
-.rail-title { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
-  letter-spacing:.09em; color:var(--ink); padding-bottom:6px;
-  border-bottom:1px solid var(--hairline); }
+.toolbar { display:flex; flex-wrap:nowrap; align-items:center; gap:var(--sp-8);
+  padding:var(--sp-12) 0; border-bottom:1px solid var(--rule); }
+.toolbar input[type="search"] { flex:1 1 240px; min-width:0; font-family:var(--sans);
+  font-size:var(--fs-13); padding:var(--sp-4) var(--sp-8); color:var(--ink);
+  background:var(--sheet); border:1px solid var(--rule); }
+.toolbar input[type="number"], .toolbar select { font-family:var(--sans);
+  font-size:var(--fs-12); padding:var(--sp-4) var(--sp-8); color:var(--ink);
+  background:var(--sheet); border:1px solid var(--rule); }
+#filter-min-score { width:72px; }
+.seg { display:flex; border:1px solid var(--rule); }
+.seg button { cursor:pointer; background:var(--sheet); color:var(--ink-2);
+  border:0; border-right:1px solid var(--rule); font-family:var(--sans);
+  font-size:var(--fs-12); padding:var(--sp-4) var(--sp-8); }
+.seg button:last-child { border-right:0; }
+.seg button:hover, .seg button:focus-visible { color:var(--ink); }
+.seg button[aria-pressed="true"] { background:var(--ink); color:var(--paper); }
+#result-count { margin-left:auto; font-family:var(--mono); font-size:var(--fs-12);
+  color:var(--ink-3); white-space:nowrap; }
+#reset-filters { cursor:pointer; background:none; color:var(--ink-2); border:0;
+  font-family:var(--sans); font-size:var(--fs-12); padding:0;
+  text-decoration:underline; text-underline-offset:2px; }
+#reset-filters:hover, #reset-filters:focus-visible { color:var(--ink); }
+.toolbar-note { font-size:var(--fs-12); }
 
-.filters { display:flex; flex-direction:column; gap:10px; }
-.filter-field { display:flex; flex-direction:column; gap:4px; min-width:0; }
-.filter-field label { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
-  letter-spacing:.07em; color:var(--muted); }
-/* Element-qualified so it outranks the rail's generic paragraph size. */
-p.filters-summary { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
-  letter-spacing:.07em; color:var(--muted); }
-p.filters-summary.active { color:var(--ink); }
-.filters input, .filters select, .feedback textarea { font-family:inherit;
-  font-size:var(--fs-small); width:100%; padding:8px 10px; color:var(--ink);
-  background:var(--surface); border:1px solid var(--hairline);
-  border-radius:var(--radius);
-  transition:background-color .14s ease, border-color .14s ease; }
-.filters input:hover, .filters select:hover, .feedback textarea:hover {
-  background:var(--hover-strong); }
-.filters input:focus, .filters select:focus, .feedback textarea:focus {
-  background:var(--paper); border-color:var(--ink); }
-
-.btn { font-family:inherit; font-size:var(--fs-small); font-weight:600; padding:8px 13px;
-  cursor:pointer; color:var(--ink); background:var(--paper);
-  border:1px solid var(--rule-strong); border-radius:var(--radius);
-  transition:background-color .14s ease, border-color .14s ease, color .14s ease; }
-.btn:hover:not(:disabled) { background:var(--surface); border-color:var(--ink); }
-.btn:active:not(:disabled) { background:var(--hover-strong); border-color:var(--ink); }
+.btn { font-family:inherit; font-size:var(--fs-13); font-weight:600;
+  padding:var(--sp-4) var(--sp-8); cursor:pointer; color:var(--ink);
+  background:var(--paper); border:1px solid var(--rule); border-radius:2px; }
+.btn:hover:not(:disabled), .btn:focus-visible:not(:disabled) {
+  background:var(--sheet); border-color:var(--ink); }
+.btn:active:not(:disabled) { background:var(--rule-2); }
 .btn:disabled { opacity:.45; cursor:not-allowed; }
 .btn-primary { background:var(--ink); border-color:var(--ink); color:var(--paper); }
-.btn-primary:hover:not(:disabled) { background:var(--soft-ink); border-color:var(--soft-ink); }
-.btn-ghost { background:transparent; border-color:var(--hairline); }
-.btn-ghost:hover:not(:disabled) { background:var(--surface); border-color:var(--rule-strong); }
-/* Imported-decision toggle: it always states its state in aria-pressed, and the
-   pressed fill reuses the ink marker of the human axis. No hue, no separate
-   media query; its colour transition is inherited from .btn and covered by the
-   single reduced-motion guard. */
-.filter-toggle { width:100%; text-align:left; }
+.btn-primary:hover:not(:disabled), .btn-primary:focus-visible:not(:disabled) {
+  background:var(--ink-2); border-color:var(--ink-2); }
+.btn-ghost { background:transparent; border-color:var(--rule); }
+.btn-ghost:hover:not(:disabled), .btn-ghost:focus-visible:not(:disabled) {
+  background:var(--sheet); border-color:var(--ink); }
+/* The imported-decision toggle states its state in aria-pressed and reuses the
+   ink fill, never a hue. It adds no media query and no transition. */
+.filter-toggle { white-space:nowrap; }
 .filter-toggle[aria-pressed="true"],
 .filter-toggle[aria-pressed="true"]:hover {
   background:var(--ink); border-color:var(--ink); color:var(--paper); }
-#export-feedback { width:100%; }
-.rail-actions { display:flex; flex-direction:column; gap:8px; }
-.control-row { display:flex; gap:8px; }
-.control-row .btn { flex:1 1 0; }
 
-.axes { margin:0; display:flex; flex-direction:column; gap:10px; }
-.axes dt { display:flex; align-items:center; gap:6px; font-size:var(--fs-micro);
-  font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--ink); }
-.axes dt::before { content:""; flex:0 0 auto; width:9px; height:9px;
-  border:1px solid var(--ink); background:var(--paper); }
-/* The accent swatch is the legend for the model axis; the human axis stays ink so a
-   reader never learns "the accent means my decision". */
-.axis-model::before { background:var(--signal); border-color:var(--signal); }
-.axis-human::before { background:var(--ink); border-color:var(--ink); }
-.axes dd { margin:4px 0 0; font-size:var(--fs-small); color:var(--muted); }
+.notice { display:flex; flex-direction:column; gap:var(--sp-4); background:var(--sheet);
+  border:1px solid var(--rule); border-radius:2px; padding:var(--sp-12); }
+.notice-title { font-size:var(--fs-13); }
+.notice p { font-size:var(--fs-13); color:var(--ink-2); }
+/* The signal colour is reserved for real warning/error states, never decoration. */
+.notice.warn { background:var(--signal-wash); border-color:var(--signal); border-left-width:4px; }
+.notice.warn .notice-title { color:var(--signal); }
+.notice.warn p { color:var(--ink-2); }
 
-.notice { display:flex; flex-direction:column; gap:6px; background:var(--paper);
-  border:1px solid var(--hairline); border-radius:var(--radius); padding:var(--pad-block); }
-.notice-title { font-size:var(--fs-small); }
-.notice p { font-size:var(--fs-small); color:var(--muted); }
-/* Ember is reserved for real warning/error states, never for decoration. */
-.notice.warn { background:#fff5f5; border-color:var(--ember); border-left-width:4px; }
-.notice.warn .notice-title { color:var(--ember); }
-.notice.warn p { color:var(--soft-ink); }
-
-.strip { display:flex; flex-direction:column; gap:8px; }
-.section-label { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
-  letter-spacing:.09em; color:var(--muted); }
-/* Region boundary: every region heading closes with a hard ink rule, so the
-   summary strip, the offers list and the analytics panel each read as their own
-   section instead of one continuous sheet. */
+.section-label { font-size:var(--fs-11); font-weight:600; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--ink-3); }
+/* Region boundary: every region heading closes with a hairline ink rule. */
 .section-head { display:flex; align-items:baseline; justify-content:space-between;
-  gap:12px; padding-bottom:8px; border-bottom:2px solid var(--ink); }
-.section-head h2 { font-size:var(--fs-heading); }
-/* Exactly six stat blocks, so the strip is an explicit fixed six-column row. */
-.kpi-grid { display:grid; grid-template-columns:repeat(6, minmax(0, 1fr));
-  background:var(--paper); border:1px solid var(--rule-strong);
-  border-radius:var(--radius); overflow:hidden; }
-.kpi { display:flex; flex-direction:column; gap:3px; padding:12px 14px;
-  border-left:1px solid var(--hairline); }
-.kpi:first-child { border-left:0; }
-.kpi-value { font-family:var(--font-mono); font-size:var(--fs-display); line-height:1;
-  font-weight:600; letter-spacing:-.02em; color:var(--ink);
-  font-variant-numeric:tabular-nums; }
-.kpi-label { font-size:var(--fs-micro); text-transform:uppercase; letter-spacing:.05em;
-  color:var(--muted); }
-/* The human-reviewed counter is the one KPI the reader owns, so it is marked with an
-   ink rule rather than the model accent. */
-.kpi-reviewed { background:var(--surface); box-shadow:inset 3px 0 0 var(--ink); }
-#summary-note { font-size:var(--fs-small); }
+  gap:var(--sp-12); padding-bottom:var(--sp-8); border-bottom:1px solid var(--ink); }
+.section-head h2 { font-size:var(--fs-16); }
+#panel-offers { display:flex; flex-direction:column; min-width:0; }
+#offers { display:flex; flex-direction:column; gap:var(--sp-16); padding-top:var(--sp-16); }
+.report-meta { margin:var(--sp-24) 0 0; font-family:var(--mono);
+  font-size:var(--fs-12); color:var(--ink-3); }
 
-#contenido { display:flex; flex-direction:column; gap:18px; min-width:0; }
-#offer-count { font-size:var(--fs-small); }
-/* Each offer is its own paper block sitting on the canvas. The list container
-   paints nothing: separation is the vertical gap between blocks plus one
-   restrained outline per block, so two neighbouring offers can never merge into
-   one continuous list. Elevation is not used as a separator. */
-#offers { display:flex; flex-direction:column; gap:var(--gap-card); }
-.card { display:flex; flex-direction:column; gap:var(--gap-block);
-  padding:24px 26px; background:var(--paper);
-  border:1px solid var(--rule-strong); border-radius:var(--radius);
-  transition:background-color .14s ease, border-color .14s ease; }
-.card:hover { background:var(--hover); border-color:var(--ink); }
-/* Reviewed means "you touched this one": an ink marker, not a hue. */
-.card.reviewed { background:var(--surface); border-color:var(--ink);
-  box-shadow:inset 3px 0 0 var(--ink); }
-.card.reviewed:hover { background:var(--hover-strong); }
+#contenido { display:flex; flex-direction:column; gap:var(--sp-24); min-width:0; }
+/* Each offer is its own paper block. The list container paints nothing: separation
+   is the vertical gap between blocks plus one hairline per block, never elevation. */
+.card { display:flex; flex-direction:column; gap:var(--sp-12);
+  padding:var(--sp-16); background:var(--sheet);
+  border:1px solid var(--rule); border-radius:2px; }
+.card:hover, .card:focus-within { background:var(--paper); border-color:var(--ink); }
+/* Reviewed means "you touched this one": an ink rule, not a hue or a shadow. */
+.card.reviewed { background:var(--paper); border-color:var(--ink); border-left-width:4px; }
+.card.reviewed:hover { background:var(--sheet); }
 /* Two fixed header columns instead of a wrapping flex row: the title column takes
-   the remaining width and the score/recommendation column keeps its rule, so the
-   hairline between them never ends up floating on a line of its own. */
+   the remaining width and the score/recommendation column keeps its hairline. */
 .card-head { display:grid; grid-template-columns:minmax(0, 1fr) auto;
-  gap:16px 24px; align-items:start; }
-.card-title { min-width:0; display:flex; flex-direction:column; gap:4px; }
-.card-title h3 { font-size:var(--fs-title); line-height:1.3; letter-spacing:-.01em;
+  gap:var(--sp-12) var(--sp-24); align-items:start; }
+.card-title { min-width:0; display:flex; flex-direction:column; gap:var(--sp-4); }
+.card-title h3 { font-size:var(--fs-16); line-height:1.3; letter-spacing:-.01em;
   overflow-wrap:anywhere; }
-.card-sub { display:flex; flex-wrap:wrap; gap:6px; align-items:baseline;
-  font-size:var(--fs-small); }
-.card-sub .company { color:var(--soft-ink); font-weight:600; }
-.card-sub .location { color:var(--muted); }
-.card-sub .dot { color:var(--rule-strong); }
+.card-sub { display:flex; flex-wrap:wrap; gap:var(--sp-4); align-items:baseline;
+  font-size:var(--fs-13); }
+.card-sub .company { color:var(--ink-2); font-weight:600; }
+.card-sub .location { color:var(--ink-3); }
+.card-sub .dot { color:var(--rule); }
 /* Link-liveness evidence is a neutral fact band inside the title column. It is
-   neither the model axis (the accent badge/score) nor the human axis (the ink
-   feedback rule), so it carries no hue at all: muted micro text and a hairline. */
-.detail-evidence { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline;
-  font-size:var(--fs-micro); color:var(--muted); }
-.detail-evidence-state { font-weight:700; letter-spacing:.04em; }
-.detail-evidence-note { color:var(--soft-ink); }
-.detail-evidence-redirect { font-family:var(--font-mono); overflow-wrap:anywhere; }
-.detail-evidence-link { color:var(--muted); }
+   neither the model axis nor the human axis, so it carries no hue at all. */
+.detail-evidence { display:flex; flex-wrap:wrap; gap:var(--sp-4) var(--sp-8);
+  align-items:baseline; font-size:var(--fs-11); color:var(--ink-3); }
+.detail-evidence-state { font-weight:600; letter-spacing:.04em; }
+.detail-evidence-note { color:var(--ink-2); }
+.detail-evidence-redirect { font-family:var(--mono); overflow-wrap:anywhere; }
+.detail-evidence-link { color:var(--ink-3); }
 .detail-evidence-link:hover { color:var(--ink); }
-/* Preference exclusions are a third, independent fact band. Like the link
-   evidence it carries no hue, so it can never be mistaken for the model accent
-   or for the human feedback axis; a FAIL only gains weight, not a colour. */
-.preference-evidence { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:baseline;
-  font-size:var(--fs-micro); color:var(--muted); }
-.preference-evidence-state { font-weight:700; letter-spacing:.04em; }
+/* Preference exclusions are a third, independent fact band and stay hue-free. */
+.preference-evidence { display:flex; flex-wrap:wrap; gap:var(--sp-4) var(--sp-8);
+  align-items:baseline; font-size:var(--fs-11); color:var(--ink-3); }
+.preference-evidence-state { font-weight:600; letter-spacing:.04em; }
 .preference-fail .preference-evidence-state { color:var(--ink); }
-.preference-evidence-reason { color:var(--soft-ink); }
-.preference-evidence-cue { font-family:var(--font-mono); overflow-wrap:anywhere; }
+.preference-evidence-reason { color:var(--ink-2); }
+.preference-evidence-cue { font-family:var(--mono); overflow-wrap:anywhere; }
 /* The right-hand side of a row: the model's score and badge, then the one action
    that leaves the report. A hairline marks where the header's title column ends
    and the score/recommendation column begins. */
-.card-side { display:flex; flex-direction:column; align-items:flex-end; gap:12px;
-  min-width:0; padding-left:20px; border-left:1px solid var(--hairline); }
-.card-score { display:flex; align-items:center; gap:10px; }
-.offer-link { display:inline-flex; align-items:center; gap:7px;
-  font-size:var(--fs-small); font-weight:600; text-decoration:none; color:var(--ink);
-  background:var(--paper); border:1px solid var(--rule-strong);
-  border-radius:var(--radius); padding:7px 13px;
-  transition:background-color .14s ease, border-color .14s ease, color .14s ease; }
-.offer-link::after { content:"\\2197"; font-family:var(--font-mono); }
+.card-side { display:flex; flex-direction:column; align-items:flex-end;
+  gap:var(--sp-12); min-width:0; padding-left:var(--sp-12);
+  border-left:1px solid var(--rule); }
+.card-score { display:flex; align-items:center; gap:var(--sp-8); }
+.offer-link { display:inline-flex; align-items:center; gap:var(--sp-4);
+  font-size:var(--fs-13); font-weight:600; text-decoration:none; color:var(--ink);
+  background:var(--paper); border:1px solid var(--rule);
+  border-radius:2px; padding:var(--sp-4) var(--sp-8); }
+.offer-link::after { content:"\\2197"; font-family:var(--mono); }
 .offer-link:hover { background:var(--ink); border-color:var(--ink); color:var(--paper); }
-.offer-link:active { background:var(--soft-ink); border-color:var(--soft-ink); }
-.score { display:inline-flex; align-items:baseline; gap:3px;
-  font-family:var(--font-mono); font-size:var(--fs-display); line-height:1;
+.offer-link:active { background:var(--ink-2); border-color:var(--ink-2); }
+.score { display:inline-flex; align-items:baseline; gap:var(--sp-4);
+  font-family:var(--mono); font-size:var(--fs-22); line-height:1;
   font-weight:600; letter-spacing:-.02em; color:var(--ink);
   font-variant-numeric:tabular-nums; }
-.score-max { font-family:var(--font-sans); font-size:var(--fs-micro); font-weight:600;
-  color:var(--muted); letter-spacing:0; }
-/* Model-axis weight only: apply reads loudest, skip and need_more_info recede. */
+.score-max { font-family:var(--sans); font-size:var(--fs-11); font-weight:600;
+  color:var(--ink-3); letter-spacing:0; }
+/* Model-axis weight only: apply reads loudest, consider mid, skip recedes. */
 .card.rec-apply .score { color:var(--signal); }
-.card.rec-skip .score, .card.rec-need_more_info .score { color:var(--muted); }
+.card.rec-consider .score { color:var(--mid); }
+.card.rec-skip .score, .card.rec-need_more_info .score { color:var(--low); }
 /* A missing, incomplete or failed evaluation is stated in words, never shown as
    a numeric score: the display type is deliberately smaller than a real score. */
-.score-state { font-family:var(--font-sans); font-size:var(--fs-small); font-weight:600;
+.score-state { font-family:var(--sans); font-size:var(--fs-13); font-weight:600;
   letter-spacing:0; }
-.card.rec-failed .score, .card.rec-unscored .score { color:var(--muted); }
+.card.rec-failed .score, .card.rec-unscored .score { color:var(--low); }
 
 /* The badge belongs to the model axis. The accent marks "apply" and nothing else;
    human feedback never uses it (see .decision-btn below). */
-.badge { display:inline-flex; align-items:baseline; font-family:var(--font-sans);
-  font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
-  letter-spacing:.06em; white-space:nowrap; padding:4px 8px;
-  border:1px solid var(--hairline); border-radius:2px; background:var(--surface);
-  color:var(--muted); }
-.badge::before { content:"Modelo"; margin-right:5px; padding-right:5px;
+.badge { display:inline-flex; align-items:baseline; font-family:var(--sans);
+  font-size:var(--fs-11); font-weight:600; text-transform:uppercase;
+  letter-spacing:.05em; white-space:nowrap; padding:var(--sp-4) var(--sp-8);
+  border:1px solid var(--rule); border-radius:2px; background:var(--sheet);
+  color:var(--ink-3); }
+.badge::before { content:"Modelo"; margin-right:var(--sp-4); padding-right:var(--sp-4);
   border-right:1px solid currentColor; }
-.badge-apply { background:var(--signal); border-color:var(--signal); color:#ffffff; }
-.badge-consider { background:var(--paper); border-color:var(--ink); color:var(--ink); }
-.badge-skip { background:var(--surface); border-color:var(--hairline); color:var(--muted); }
+.badge-apply { background:var(--signal-wash); border-color:var(--signal); color:var(--signal); }
+.badge-consider { background:var(--mid-wash); border-color:var(--mid); color:var(--mid); }
+.badge-skip { background:var(--sheet); border-color:var(--rule); color:var(--ink-3); }
 .badge-need_more_info { background:transparent; border-style:dashed;
-  border-color:var(--rule-strong); color:var(--muted); }
+  border-color:var(--rule); color:var(--ink-3); }
 .badge-unscored { background:transparent; border-style:dashed;
-  border-color:var(--rule-strong); color:var(--muted); }
+  border-color:var(--rule); color:var(--ink-3); }
 .badge-failed { background:transparent; border-style:dashed;
-  border-color:var(--rule-strong); color:var(--muted); }
+  border-color:var(--rule); color:var(--ink-3); }
 
 /* Exactly six facts per offer, so three fixed columns fill two tidy rows and the
    longer values ("27.82 días (fecha de publicación)") stop wrapping mid-phrase.
    The rule above the facts is the boundary between the offer header (title, score,
    recommendation) and the stored facts underneath; the whitespace carries the rest. */
 .meta { list-style:none; display:grid;
-  grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px 18px; margin:0;
-  padding:14px 0 0; border-top:1px solid var(--hairline);
-  font-size:var(--fs-small); }
-.meta li { display:flex; gap:6px; align-items:baseline; min-width:0; }
-.meta-key { flex:0 0 auto; font-size:var(--fs-micro); text-transform:uppercase;
-  letter-spacing:.06em; color:var(--muted); }
-.meta-value { color:var(--soft-ink); overflow-wrap:anywhere; }
+  grid-template-columns:repeat(3, minmax(0, 1fr)); gap:var(--sp-8) var(--sp-16);
+  margin:0; padding:var(--sp-12) 0 0; border-top:1px solid var(--rule);
+  font-size:var(--fs-13); }
+.meta li { display:flex; gap:var(--sp-4); align-items:baseline; min-width:0; }
+.meta-key { flex:0 0 auto; font-size:var(--fs-11); text-transform:uppercase;
+  letter-spacing:.06em; color:var(--ink-3); }
+.meta-value { color:var(--ink-2); overflow-wrap:anywhere; }
 
-/* An inset rule block rather than a colour band: the explanation is marked with a
-   heavier left rule on a sunken surface, so it reads as a quotation of the model. */
-.rationale { font-size:var(--fs-small); color:var(--soft-ink); background:var(--surface);
-  border:1px solid var(--hairline); border-left:3px solid var(--rule-strong);
-  padding:10px 12px; }
-.rationale strong { display:block; font-size:var(--fs-micro); text-transform:uppercase;
-  letter-spacing:.06em; color:var(--muted); }
+/* An inset rule block rather than a colour band, so it reads as a quotation. */
+.rationale { font-size:var(--fs-13); color:var(--ink-2); background:var(--paper);
+  border:1px solid var(--rule); border-left:4px solid var(--rule);
+  padding:var(--sp-8) var(--sp-12); }
+.rationale strong { display:block; font-size:var(--fs-11); text-transform:uppercase;
+  letter-spacing:.06em; color:var(--ink-3); }
 
 /* Native disclosure: the platform owns the keyboard and screen-reader behaviour.
    The whole row is the hit target, the chevron states open/closed, and hovering or
    focusing it is obvious without a heavy chrome. */
-.explain { border-top:1px solid var(--hairline); }
-.explain > summary { display:flex; align-items:center; gap:9px; cursor:pointer;
-  padding:10px 12px; border-radius:var(--radius); font-size:var(--fs-small);
-  font-weight:700; color:var(--ink);
-  transition:background-color .14s ease, color .14s ease; }
+.explain { border-top:1px solid var(--rule); }
+.explain > summary { display:flex; align-items:center; gap:var(--sp-8); cursor:pointer;
+  padding:var(--sp-8) var(--sp-12); border-radius:2px; font-size:var(--fs-13);
+  font-weight:600; color:var(--ink); }
 .explain > summary::-webkit-details-marker { display:none; }
 .explain > summary::before { content:""; flex:0 0 auto; width:0; height:0;
-  border-top:5px solid transparent; border-bottom:5px solid transparent;
-  border-left:7px solid var(--rule-strong);
-  transition:transform .16s ease, border-left-color .14s ease; }
-.explain > summary:hover { background:var(--hover-strong); }
-.explain > summary:hover::before { border-left-color:var(--ink); }
-.explain > summary:active { background:var(--hairline); }
+  border-top:6px solid transparent; border-bottom:6px solid transparent;
+  border-left:7px solid var(--rule); }
+.explain > summary:hover, .explain > summary:focus-visible { background:var(--sheet); }
+.explain > summary:hover::before, .explain > summary:focus-visible::before {
+  border-left-color:var(--ink); }
+.explain > summary:active { background:var(--rule-2); }
 .explain[open] > summary::before { transform:rotate(90deg); border-left-color:var(--ink); }
-.explain-body { display:flex; flex-direction:column; gap:14px; padding:6px 14px 12px; }
+.explain-body { display:flex; flex-direction:column; gap:var(--sp-12);
+  padding:var(--sp-4) var(--sp-12) var(--sp-12); }
 
 /* Provenance and the four scoring lists are the last band of the explanation. With
    JavaScript off they are direct children of the offer, so they carry the same
    hairline boundary the disclosure draws when it is present. */
 .grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));
-  gap:12px; }
-.card > .grid { border-top:1px solid var(--hairline); padding-top:14px; }
-.grid > div { display:flex; flex-direction:column; gap:6px; background:var(--surface);
-  border:1px solid var(--hairline); border-radius:var(--radius); padding:10px 12px; }
-.grid ul { margin:0; padding-left:16px; display:flex; flex-direction:column; gap:3px;
-  font-size:var(--fs-small); color:var(--soft-ink); }
+  gap:var(--sp-12); }
+.card > .grid { border-top:1px solid var(--rule); padding-top:var(--sp-12); }
+.grid > div { display:flex; flex-direction:column; gap:var(--sp-4); background:var(--paper);
+  border:1px solid var(--rule); border-radius:2px; padding:var(--sp-8) var(--sp-12); }
+.grid ul { margin:0; padding-left:var(--sp-16); display:flex; flex-direction:column;
+  gap:var(--sp-4); font-size:var(--fs-13); color:var(--ink-2); }
 
 /* Human axis: weight, shape and an ink rule. No accent colour anywhere here, so a
-   reader can never mistake this for the model recommendation. The heading repeats
-   the ink square of the "Mi decisión" legend, which is the axis marker. */
-.feedback { display:flex; flex-direction:column; gap:12px; border-top:2px solid var(--ink);
-  padding-top:16px; }
-.feedback h4 { display:flex; align-items:center; gap:7px; color:var(--ink); }
+   reader can never mistake this for the model recommendation. */
+.feedback { display:flex; flex-direction:column; gap:var(--sp-12);
+  border-top:1px solid var(--ink); padding-top:var(--sp-12); }
+.feedback h4 { display:flex; align-items:center; gap:var(--sp-8); color:var(--ink); }
 .feedback h4::before { content:""; flex:0 0 auto; width:9px; height:9px;
   border:1px solid var(--ink); background:var(--ink); }
-.feedback-hint { font-size:var(--fs-micro); }
+.feedback-hint { font-size:var(--fs-11); }
 .feedback-controls { display:inline-flex; flex-wrap:wrap; }
 .decision-btn { border-radius:0; border-left-width:0; background:var(--paper);
-  padding:9px 15px; }
+  padding:var(--sp-8) var(--sp-12); }
 .decision-btn:first-child { border-radius:2px 0 0 2px; border-left-width:1px; }
 .decision-btn:last-child { border-radius:0 2px 2px 0; }
-.decision-btn:hover:not(:disabled) { background:var(--hover-strong); border-color:var(--ink); }
-.decision-btn:active:not(:disabled) { background:var(--hairline); }
+.decision-btn:hover:not(:disabled), .decision-btn:focus-visible:not(:disabled) {
+  background:var(--rule-2); border-color:var(--ink); }
+.decision-btn:active:not(:disabled) { background:var(--rule); }
 .decision-btn.selected { background:var(--ink); border-color:var(--ink); color:var(--paper); }
-.decision-btn.selected:hover:not(:disabled) { background:var(--soft-ink);
-  border-color:var(--soft-ink); }
+.decision-btn.selected:hover:not(:disabled) { background:var(--ink-2);
+  border-color:var(--ink-2); }
 /* The check mark repeats the pressed state, so selection never rests on colour. */
-.decision-btn.selected::before { content:"\\2713"; margin-right:7px; }
-.feedback textarea { resize:vertical; min-height:56px; }
-.decision-state { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px;
-  font-size:var(--fs-small); color:var(--soft-ink); }
-/* A legacy ``consider`` decision is marked as historical with weight, not hue, so
-   it never reads as one of the two current choices. */
-.decision-state.legacy { font-style:italic; border-left:2px solid var(--rule-strong);
-  padding-left:8px; }
-/* Transient, per-row confirmation. It is a polite live region, so it is announced
-   once and then removed; it never blocks the next mark. */
-.decision-saved { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
-  letter-spacing:.07em; color:var(--ink); }
+.decision-btn.selected::before { content:"\\2713"; margin-right:var(--sp-8); }
+.feedback textarea { resize:vertical; min-height:56px; font-family:inherit;
+  font-size:var(--fs-13); width:100%; padding:var(--sp-8); color:var(--ink);
+  background:var(--sheet); border:1px solid var(--rule); border-radius:2px; }
+.decision-state { display:flex; flex-wrap:wrap; align-items:baseline;
+  gap:var(--sp-4) var(--sp-8); font-size:var(--fs-13); color:var(--ink-2); }
+/* A legacy ``consider`` decision is marked as historical with weight, not hue. */
+.decision-state.legacy { font-style:italic; border-left:2px solid var(--rule);
+  padding-left:var(--sp-8); }
+/* Transient, per-row confirmation, announced once and then removed. */
+.decision-saved { font-size:var(--fs-11); font-weight:600; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--ink); }
 
-/* The analytics region is one sunken surface panel, deliberately not a paper
-   sheet: the offers list is a run of separated paper blocks, so the two regions
-   can never be mistaken for each other. */
-.block { display:flex; flex-direction:column; gap:14px; background:var(--surface);
-  border:1px solid var(--rule-strong); border-radius:var(--radius);
-  padding:18px 20px; }
-.block > .muted { font-size:var(--fs-small); }
-.method { background:var(--paper); border:1px solid var(--hairline);
-  border-radius:var(--radius); padding:0; overflow:hidden; }
-.method > summary { display:flex; align-items:center; gap:9px; cursor:pointer;
-  padding:10px 12px; font-size:var(--fs-small); font-weight:700; color:var(--ink);
-  transition:background-color .14s ease; }
+/* The analytics region is a paper panel separated by one hairline, not a second
+   sheet with its own elevation. */
+.block { display:flex; flex-direction:column; gap:var(--sp-12); background:var(--paper);
+  border:1px solid var(--rule); border-radius:2px; padding:var(--sp-16) var(--sp-24); }
+.block > .muted { font-size:var(--fs-13); }
+.method { background:var(--paper); border:1px solid var(--rule);
+  border-radius:2px; padding:0; overflow:hidden; }
+.method > summary { display:flex; align-items:center; gap:var(--sp-8); cursor:pointer;
+  padding:var(--sp-8) var(--sp-12); font-size:var(--fs-13); font-weight:600;
+  color:var(--ink); }
 .method > summary::-webkit-details-marker { display:none; }
 .method > summary::before { content:""; flex:0 0 auto; width:0; height:0;
-  border-top:5px solid transparent; border-bottom:5px solid transparent;
-  border-left:7px solid var(--rule-strong);
-  transition:transform .16s ease, border-left-color .14s ease; }
-.method > summary:hover { background:var(--paper); }
-.method > summary:hover::before { border-left-color:var(--ink); }
+  border-top:6px solid transparent; border-bottom:6px solid transparent;
+  border-left:7px solid var(--rule); }
+.method > summary:hover, .method > summary:focus-visible { background:var(--sheet); }
+.method > summary:hover::before, .method > summary:focus-visible::before {
+  border-left-color:var(--ink); }
 .method[open] > summary::before { transform:rotate(90deg); border-left-color:var(--ink); }
-.method p { margin:0; padding:0 12px 12px; font-size:var(--fs-small);
-  color:var(--soft-ink); }
+.method p { margin:0; padding:0 var(--sp-12) var(--sp-12); font-size:var(--fs-13);
+  color:var(--ink-2); }
 
-.table-wrap { overflow-x:auto; border:1px solid var(--hairline);
-  border-radius:var(--radius); background:var(--paper); }
-table { border-collapse:collapse; width:100%; font-size:var(--fs-small); }
-caption { caption-side:top; text-align:left; padding:10px 12px;
-  font-size:var(--fs-small); color:var(--muted);
-  border-bottom:1px solid var(--hairline); }
-th, td { padding:7px 10px; text-align:left; white-space:nowrap;
-  border-bottom:1px solid var(--hairline); }
-thead th { background:var(--surface); color:var(--muted); font-size:var(--fs-micro);
-  font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
+.table-wrap { overflow-x:auto; border:1px solid var(--rule);
+  border-radius:2px; background:var(--paper); }
+table { border-collapse:collapse; width:100%; font-size:var(--fs-13); }
+caption { caption-side:top; text-align:left; padding:var(--sp-8) var(--sp-12);
+  font-size:var(--fs-13); color:var(--ink-3);
+  border-bottom:1px solid var(--rule); }
+th, td { padding:var(--sp-8); text-align:left; white-space:nowrap;
+  border-bottom:1px solid var(--rule); }
+thead th { background:var(--paper); color:var(--ink-3); font-size:var(--fs-11);
+  font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
 tbody tr:last-child td { border-bottom:0; }
-tbody tr:hover td { background:var(--surface); }
+tbody tr:hover td { background:var(--sheet); }
 /* Every column after the keyword is numeric, so it aligns, tabulates and uses mono. */
-th + th, td + td { text-align:right; font-family:var(--font-mono);
+th + th, td + td { text-align:right; font-family:var(--mono);
   font-variant-numeric:tabular-nums; }
-th:first-child, td:first-child { text-align:left; font-family:var(--font-sans); }
+th:first-child, td:first-child { text-align:left; font-family:var(--sans); }
 /* Each header cell holds the sort control, so the hit target is the whole label.
    The arrow is a faint "sortable" hint, ink when that column is the active sort,
    and the direction is mirrored in aria-sort so it is never glyph-only. */
-.sort-btn { font:inherit; color:inherit; background:none; border:0; padding:5px 0;
-  display:inline-flex; align-items:center; gap:6px; cursor:pointer;
-  transition:color .14s ease; }
-.sort-btn::after { content:"\\2191"; color:var(--rule-strong); font-family:var(--font-sans);
-  transition:color .14s ease; }
-.sort-btn:hover { color:var(--ink); }
-.sort-btn:hover::after { color:var(--ink); }
+.sort-btn { font:inherit; color:inherit; background:none; border:0;
+  padding:var(--sp-4) 0; display:inline-flex; align-items:center;
+  gap:var(--sp-4); cursor:pointer; }
+.sort-btn::after { content:"\\2191"; color:var(--rule); font-family:var(--sans); }
+.sort-btn:hover, .sort-btn:focus-visible { color:var(--ink); }
+.sort-btn:hover::after, .sort-btn:focus-visible::after { color:var(--ink); }
 th[aria-sort="ascending"] .sort-btn::after { content:"\\2191"; color:var(--ink); }
 th[aria-sort="descending"] .sort-btn::after { content:"\\2193"; color:var(--ink); }
 
-.two-col { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:10px; }
-.two-col > section { display:flex; flex-direction:column; gap:10px;
-  background:var(--paper); border:1px solid var(--hairline);
-  border-radius:var(--radius); padding:14px; }
-.two-col h3 { font-size:var(--fs-micro); font-weight:700; text-transform:uppercase;
-  letter-spacing:.07em; color:var(--ink); }
-.two-col ol { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:4px;
-  font-size:var(--fs-small); color:var(--soft-ink); }
+.two-col { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:var(--sp-12); }
+.two-col > section { display:flex; flex-direction:column; gap:var(--sp-8);
+  background:var(--paper); border:1px solid var(--rule);
+  border-radius:2px; padding:var(--sp-12); }
+.two-col h3 { font-size:var(--fs-11); font-weight:600; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--ink); }
+.two-col ol { margin:0; padding-left:var(--sp-16); display:flex; flex-direction:column;
+  gap:var(--sp-4); font-size:var(--fs-13); color:var(--ink-2); }
 
-.empty { padding:32px 16px; text-align:center; color:var(--muted);
-  background:var(--paper); border:1px dashed var(--rule-strong);
-  border-radius:var(--radius); }
-.toast { position:fixed; bottom:20px; right:20px; z-index:50;
-  max-width:min(420px, calc(100vw - 40px)); background:var(--ink); color:var(--paper);
-  border:1px solid var(--ink); border-radius:var(--radius); padding:10px 14px;
-  font-size:var(--fs-small); }
+.empty { padding:var(--sp-32) var(--sp-16); color:var(--ink-3);
+  background:var(--paper); border:1px dashed var(--rule); border-radius:2px; }
+.toast { position:fixed; bottom:var(--sp-24); right:var(--sp-24); z-index:50;
+  max-width:min(420px, calc(100vw - var(--sp-48))); background:var(--ink);
+  color:var(--paper); border:1px solid var(--ink); border-radius:2px;
+  padding:var(--sp-8) var(--sp-12); font-size:var(--fs-13); }
 
-/* Motion is limited to short colour transitions and the disclosure chevron that
-   answers the reader's own click. Nothing animates on load, nothing loops, and this
-   is the complete reduced-motion guard. */
+/* The complete reduced-motion guard: no transition or animation survives it. */
 @media (prefers-reduced-motion:reduce) {
   * { transition:none !important; animation:none !important; }
 }
@@ -2041,11 +1903,11 @@ _SCRIPT = r"""
   try {
     payload = JSON.parse(dataNode.textContent);
   } catch (err) {
-    document.getElementById("offer-count").textContent = "No se pudieron leer los datos del panel.";
+    document.getElementById("result-count").textContent = "No se pudieron leer los datos del panel.";
     return;
   }
   if (!payload || payload.schema !== EXPECTED_SCHEMA) {
-    document.getElementById("offer-count").textContent =
+    document.getElementById("result-count").textContent =
       "Este informe fue generado por una versión incompatible de jobscout; vuelva a generarlo.";
     return;
   }
@@ -2055,7 +1917,7 @@ _SCRIPT = r"""
   var STORAGE_KEY = payload.feedback_schema + ":" + payload.project_id;
 
   var feedback = loadFeedback();
-  var filters = { text: "", recommendation: "", minScore: null, keyword: "", review: "", importedReview: false, sort: "score" };
+  var filters = { text: "", recommendation: "", isNew: false, minScore: null, keyword: "", review: "", importedReview: false, sort: "score" };
 
   function labelFrom(map, value, fallback) {
     return Object.prototype.hasOwnProperty.call(map, value) ? map[value] : fallback;
@@ -2177,8 +2039,6 @@ _SCRIPT = r"""
     var count = feedbackCount();
     document.getElementById("feedback-count").textContent = count + " revisadas";
     document.getElementById("export-feedback").disabled = count === 0;
-    var kpi = document.getElementById("kpi-reviewed-value");
-    if (kpi) { kpi.textContent = String(count); }
   }
 
   // The effective model-axis value for one offer. A stored successful
@@ -2194,13 +2054,10 @@ _SCRIPT = r"""
   }
 
   function matches(offer) {
-    if (filters.recommendation === "unscored") {
-      // "Sin puntaje" is every offer without a successful score, whatever the
-      // reason; the more specific buckets narrow it from the card itself.
-      if (offer.score !== null) { return false; }
-    } else if (filters.recommendation && effectiveRecommendation(offer) !== filters.recommendation) {
+    if (filters.recommendation && effectiveRecommendation(offer) !== filters.recommendation) {
       return false;
     }
+    if (filters.isNew && !offer.is_new) { return false; }
     if (filters.minScore !== null && (offer.score === null || offer.score < filters.minScore)) {
       return false;
     }
@@ -2244,6 +2101,66 @@ _SCRIPT = r"""
     var scoreB = (b.score === null) ? -Infinity : b.score;
     if (scoreA !== scoreB) { return scoreB - scoreA; }
     return a.id - b.id;
+  }
+
+  // The header status is one line built only from payload.status. Each part is a
+  // span so the signal colour marks exactly the two failure states, never the rest.
+  function renderStatusLine() {
+    var host = document.getElementById("status-line");
+    if (!host) { return; }
+    host.textContent = "";
+    var status = payload.status || {};
+    var failed = status.failed_runs || {};
+    var totalFailed = (Number(failed.searches) || 0) + (Number(failed.details) || 0);
+    var newJobs = Number(status.new_jobs) || 0;
+    var newScored = Number(status.new_scored) || 0;
+    var pending = status.pending_details || {};
+    var pendingKeys = Object.keys(pending).filter(function (source) {
+      return (Number(pending[source]) || 0) > 0;
+    });
+    var parts = [];
+    parts.push([status.last_sweep_at
+      ? "Último barrido " + displayTimestamp(status.last_sweep_at)
+      : "Sin barridos", ""]);
+    parts.push([newJobs + " nuevas", ""]);
+    if (newScored < newJobs) {
+      parts.push([(newJobs - newScored) + " sin evaluar", "bad"]);
+    }
+    if (pendingKeys.length) {
+      parts.push(["Detalles pendientes: " + pendingKeys.map(function (source) {
+        return source + " " + pending[source];
+      }).join(" · "), ""]);
+    }
+    parts.push([totalFailed + " fallos", totalFailed > 0 ? "bad" : "calm"]);
+    parts.forEach(function (part, index) {
+      if (index > 0) { host.appendChild(document.createTextNode(" · ")); }
+      host.appendChild(el("span", part[1] || null, part[0]));
+    });
+  }
+
+  function bindTabs() {
+    var tabs = document.querySelectorAll('[role="tab"]');
+    var panels = document.querySelectorAll('[role="tabpanel"]');
+    function select(tab) {
+      for (var i = 0; i < tabs.length; i++) {
+        tabs[i].setAttribute("aria-selected", tabs[i] === tab ? "true" : "false");
+      }
+      for (var j = 0; j < panels.length; j++) {
+        panels[j].hidden = panels[j].id !== tab.getAttribute("aria-controls");
+      }
+    }
+    for (var k = 0; k < tabs.length; k++) {
+      tabs[k].addEventListener("click", function () { select(this); });
+    }
+  }
+
+  function bindBackToTop() {
+    var button = document.getElementById("back-to-top");
+    if (!button) { return; }
+    function sync() { button.hidden = window.scrollY <= window.innerHeight; }
+    button.addEventListener("click", function () { window.scrollTo(0, 0); });
+    window.addEventListener("scroll", sync, { passive: true });
+    sync();
   }
 
   function renderKeywords(offer) {
@@ -2555,8 +2472,12 @@ _SCRIPT = r"""
     var matchesList = payload.offers.filter(matches).sort(compare);
     matchesList.forEach(function (offer) { container.appendChild(renderCard(offer)); });
     document.getElementById("empty-state").hidden = matchesList.length !== 0;
-    document.getElementById("offer-count").textContent = "Mostrando " +
-      matchesList.length + " de " + payload.offers.length + " ofertas";
+    var resultCount = document.getElementById("result-count");
+    resultCount.textContent = (matchesList.length === payload.offers.length)
+      ? matchesList.length + " ofertas"
+      : matchesList.length + " de " + payload.offers.length + " ofertas";
+    var offersTab = document.getElementById("tab-offers-count");
+    if (offersTab) { offersTab.textContent = String(payload.offers.length); }
   }
 
   // Only the inputs that narrow the list; ordering is already reported by the
@@ -2565,6 +2486,7 @@ _SCRIPT = r"""
     var count = 0;
     if (filters.text) { count += 1; }
     if (filters.recommendation) { count += 1; }
+    if (filters.isNew) { count += 1; }
     if (filters.minScore !== null) { count += 1; }
     if (filters.keyword) { count += 1; }
     if (filters.review) { count += 1; }
@@ -2591,19 +2513,21 @@ _SCRIPT = r"""
       "este informe.";
   }
 
-  // The rail says how much is narrowing the list, and Restablecer is only offered
-  // when it would actually change something.
+  // The toolbar mirrors every control's state, and "limpiar" only appears when a
+  // filter or a non-default sort would actually change something.
   function refreshFilterState() {
     var count = activeFilterCount();
-    var summary = document.getElementById("filters-summary");
-    summary.textContent = (count === 0)
-      ? "Sin filtros activos"
-      : (count === 1 ? "1 filtro activo" : count + " filtros activos");
-    summary.classList.toggle("active", count > 0);
-    document.getElementById("reset-filters").disabled =
-      (count === 0 && filters.sort === "score");
+    var reset = document.getElementById("reset-filters");
+    reset.hidden = (count === 0 && filters.sort === "score");
     document.getElementById("filter-imported-review").setAttribute(
       "aria-pressed", filters.importedReview ? "true" : "false");
+    document.getElementById("filter-new").setAttribute(
+      "aria-pressed", filters.isNew ? "true" : "false");
+    var buttons = document.getElementById("filter-recommendation").querySelectorAll("button");
+    for (var i = 0; i < buttons.length; i++) {
+      var selected = buttons[i].getAttribute("data-value") === filters.recommendation;
+      buttons[i].setAttribute("aria-pressed", selected ? "true" : "false");
+    }
   }
 
   // Every control that changes the visible set goes through here, so the list and
@@ -2685,45 +2609,6 @@ _SCRIPT = r"""
     host.appendChild(list);
   }
 
-  function renderSummary() {
-    var host = document.getElementById("summary");
-    host.textContent = "";
-    var summary = payload.summary;
-    var recommendations = summary.recommendations || {};
-    var preferences = summary.preferences || {};
-    var cards = [
-      ["Ofertas mostradas", summary.jobs_shown, ""],
-      ["Con puntaje", summary.scored, ""],
-      ["Recomendación: aplicar", recommendations.apply || 0, "apply"],
-      ["Recomendación: considerar", recommendations.consider || 0, "consider"],
-      ["Recomendación: descartar", recommendations.skip || 0, "skip"],
-      ["Revisadas (tu decisión)", feedbackCount(), "reviewed"]
-    ];
-    cards.forEach(function (item) {
-      var card = el("article", "kpi" + (item[2] ? " kpi-" + item[2] : ""));
-      var value = el("span", "kpi-value", item[1]);
-      if (item[2] === "reviewed") { value.id = "kpi-reviewed-value"; }
-      card.appendChild(value);
-      card.appendChild(el("span", "kpi-label", item[0]));
-      host.appendChild(card);
-    });
-    var states = summary.evaluation_states || {};
-    var failedStates = (states.parse_error || 0) + (states.error || 0) +
-      (states.not_configured || 0);
-    document.getElementById("summary-note").textContent =
-      "Ofertas activas en la base: " + summary.active_jobs +
-      " \u00b7 Con puntaje: " + summary.scored +
-      " \u00b7 Sin puntaje entre las mostradas: " + summary.unscored +
-      " (incompletas: " + (states.needs_more_info || 0) +
-      ", fallidas: " + failedStates +
-      ", sin evaluar: " + (states.none || 0) + ")" +
-      " \u00b7 Preferencia: " + (preferences.fail || 0) + " excluida(s), " +
-      (preferences.flag || 0) + " por revisar" +
-      " \u00b7 Palabras clave analizadas: " + summary.keywords +
-      " (" + (summary.retired_keywords || 0) + " retiradas)" +
-      " \u00b7 Feedback humano importado: " + (summary.human_reviewed_jobs || 0);
-  }
-
   function populateKeywordFilter() {
     var select = document.getElementById("filter-keyword");
     payload.keywords.forEach(function (item) {
@@ -2761,8 +2646,14 @@ _SCRIPT = r"""
       filters.text = event.target.value.trim();
       applyFilters();
     });
-    document.getElementById("filter-recommendation").addEventListener("change", function (event) {
-      filters.recommendation = event.target.value;
+    document.getElementById("filter-recommendation").addEventListener("click", function (event) {
+      var button = event.target.closest("button");
+      if (!button) { return; }
+      filters.recommendation = button.getAttribute("data-value") || "";
+      applyFilters();
+    });
+    document.getElementById("filter-new").addEventListener("click", function () {
+      filters.isNew = !filters.isNew;
       applyFilters();
     });
     document.getElementById("filter-min-score").addEventListener("input", function (event) {
@@ -2788,9 +2679,8 @@ _SCRIPT = r"""
       applyFilters();
     });
     document.getElementById("reset-filters").addEventListener("click", function () {
-      filters = { text: "", recommendation: "", minScore: null, keyword: "", review: "", importedReview: false, sort: "score" };
+      filters = { text: "", recommendation: "", isNew: false, minScore: null, keyword: "", review: "", importedReview: false, sort: "score" };
       document.getElementById("filter-text").value = "";
-      document.getElementById("filter-recommendation").value = "";
       document.getElementById("filter-min-score").value = "";
       document.getElementById("filter-keyword").value = "";
       document.getElementById("filter-review").value = "";
@@ -2801,8 +2691,11 @@ _SCRIPT = r"""
     document.getElementById("export-feedback").addEventListener("click", exportFeedback);
   }
 
-  renderSummary();
+  renderStatusLine();
+  bindTabs();
+  bindBackToTop();
   populateKeywordFilter();
+  document.getElementById("tab-keywords-count").textContent = String(payload.keywords.length);
   renderKeywordTable();
   renderTopList("top-quality", payload.top_quality, function (item) {
     return (item.label || item.keyword) + " \u2014 promedio " + score(item.avg_score) +
@@ -2944,29 +2837,6 @@ _SCRIPT = r"""
   var keywordTable = document.querySelector("#keyword-table table");
   if (keywordTable) { makeSortable(keywordTable); }
 
-  function setAll(open) {
-    var blocks = container.querySelectorAll("details.explain");
-    for (var i = 0; i < blocks.length; i++) { blocks[i].open = open; }
-  }
-
-  var controls = document.getElementById("explain-controls");
-  if (controls) {
-    var expand = document.createElement("button");
-    expand.type = "button";
-    expand.className = "btn btn-ghost";
-    expand.textContent = "Expandir todo";
-    expand.title = "Abre la explicabilidad de todas las ofertas listadas";
-    expand.addEventListener("click", function () { setAll(true); });
-    var collapse = document.createElement("button");
-    collapse.type = "button";
-    collapse.className = "btn btn-ghost";
-    collapse.textContent = "Contraer todo";
-    collapse.title = "Cierra la explicabilidad de todas las ofertas listadas";
-    collapse.addEventListener("click", function () { setAll(false); });
-    controls.appendChild(expand);
-    controls.appendChild(collapse);
-  }
-
   enhanceAll();
   // renderOffers() rebuilds every card on each filter change, so re-apply the
   // disclosure to the freshly built nodes instead of holding card state.
@@ -3009,8 +2879,6 @@ def render_dashboard_html(payload: dict[str, Any]) -> str:
         if warnings
         else "<p>Sin avisos.</p>"
     )
-    feedback_schema = str(payload.get("feedback_schema") or FEEDBACK_SCHEMA)
-    storage_key = html.escape(f"{feedback_schema}:{payload.get('project_id') or ''}")
     heading = str(label) if label else "informe local"
     title = html.escape(f"Panel de jobscout \u2014 {heading}")
     return _render_template(
@@ -3021,7 +2889,6 @@ def render_dashboard_html(payload: dict[str, Any]) -> str:
             "META": meta,
             "WARNINGS": warnings_html,
             "WARNINGS_CLASS": "notice warn" if warnings else "notice",
-            "STORAGE_KEY": storage_key,
             "DATA": embed_json(payload),
             "SCRIPT": _SCRIPT,
         },
