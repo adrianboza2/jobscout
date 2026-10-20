@@ -112,7 +112,7 @@ Prepara el perfil real antes de cualquier barrido:
 | 1 | Barrido controlado | `python -m jobscout keyword-plan` y luego `python -m jobscout search-linkedin --keywords "..." --dry-run`; para ejecutarlo, cambia `--dry-run` por `--confirm-network` | Descubre ofertas nuevas. `keyword-plan` es offline; cada búsqueda real es un acto humano explícito. | Semiautomático: autorizas cada consulta |
 | 2 | Enriquecer | `python -m jobscout fetch-details --max-items 10 --confirm-network` (o `fetch-getmanfred-details` / `fetch-tecnoempleo-details` según la plataforma, o `--fixture` para trabajar offline) | Trae la descripción completa de cada oferta, acotado en volumen. Solo sube a `ok` cuando reconoce el detalle. | Semiautomático: autorizas cada corrida |
 | 3 | Puntuar con deepseek-v4.1-flash | `python -m jobscout score --all --scorer opencode` | El puntuador predeterminado (OpenCode + deepseek-v4.1-flash) evalúa solo las ofertas que aún no tienen evaluación. | El puntaje es automático; la decisión de postular no |
-| 4 | Generar dashboard | `python -m jobscout dashboard` | Escribe un HTML local con todas las ofertas activas, puntajes, evidencia del enlace y filtros de preferencia. | Automático y de solo lectura |
+| 4 | Generar dashboard | `python -m jobscout dashboard` | Escribe un HTML local con todas las ofertas activas, puntajes, justificación del modelo y avisos de preferencia. | Automático y de solo lectura |
 | 5 | Revisar ofertas | Abre `reports/jobscout-dashboard.html` | Tú marcas **Aplicar** o **Descartar** en el navegador. | Decisión humana exclusivamente |
 | 6 | Exportar/importar feedback | Exporta el JSON desde el tablero y ejecuta `python -m jobscout import-feedback jobscout-feedback.json` | Tus decisiones pasan de `localStorage` a la tabla `job_feedback` de SQLite. | Importar es automático una vez que lo invocas |
 | 7 | Calibrar | `python -m jobscout calibrate --scorer opencode` | Compara la recomendación del modelo con tu decisión humana importada. Solo lectura; no ajusta nada. | Automático y de solo lectura |
@@ -186,6 +186,19 @@ clave**, con el contador de decisiones y la exportación a la derecha. La vista 
 ofertas usa una única barra de herramientas horizontal, con el filtro **Solo
 nuevas** (ofertas vistas por primera vez en el último barrido); ya no hay rail
 lateral ni tarjetas KPI.
+
+Cada oferta es **una fila de una línea**: puntaje con barra coloreada por banda
+(≥ 70 / ≥ 50), título, empresa y ubicación, etiquetas (recomendación, `nueva`,
+`⚠ flag` o `veto` de la preferencia), salario con su procedencia (`indicado` o
+`sin dato`; nunca se inventa una cifra) y antigüedad. Una evaluación fallida se
+muestra como `sin evaluar (error)`, nunca como 0. Las filas se pintan de 50 en 50
+(**Mostrar 50 más**) y el detalle se construye solo al abrir la fila:
+justificación completa del modelo (ya no se recorta), salario indicado, desglose
+por dimensiones (o `sin desglose en esta evaluación`), Puntos fuertes / Carencias
+/ Bloqueos / Incógnitas cuando la evaluación las trae, y un pie con modelo,
+confianza, fecha, la decisión importada, los botones **✓ aplicar** / **✕
+descartar** (el motivo se abre al elegir) y **Ver la oferta ↗**. Los avisos del
+informe son líneas discretas al final, junto a los metadatos.
 
 ```bash
 # POSIX
@@ -272,9 +285,9 @@ contador de "pendientes" que la base no pueda respaldar.
   ese filtro lee tus marcas guardadas en `localStorage`, mientras que este lee la
   decisión humana importada en SQLite. La cabecera solo cuenta las decisiones
   guardadas en el navegador y nunca las mezcla con el feedback importado.
-- Si todavía no importaste ninguna decisión, el propio panel lo dice y remite a
-  `jobscout import-feedback`; no presenta todas las ofertas activas como un
-  backlog medido.
+- No hay nota explicativa: el título del botón indica que lee `job_feedback` en
+  SQLite. Sin decisiones importadas, el filtro no presenta las ofertas activas
+  como un backlog medido.
 - La razón de texto libre de una decisión importada **nunca** entra al HTML.
 - El botón es neutro (sin color) y su estado se expone con `aria-pressed`, así que
   no depende del color; no agrega ninguna animación ni consulta `@media` nueva.
@@ -325,10 +338,11 @@ sin evaluación válida (`status = 'ok'`) se cuenta aparte y queda fuera del cá
 
 ### Evidencia del enlace (detalle)
 
-Cada oferta muestra, junto al título, una línea de **evidencia del enlace**
-separada de los dos ejes de decisión. Es un hecho guardado, no una
-recomendación: se calcula solo con el último intento de `fetch-details` de esa
-oferta y nunca altera puntajes, recomendaciones ni la base.
+El payload clasifica para cada oferta la **evidencia del enlace**, separada de
+los dos ejes de decisión. Es un hecho guardado, no una recomendación: se calcula
+solo con el último intento de `fetch-details` de esa oferta y nunca altera
+puntajes, recomendaciones ni la base. Desde el rediseño (DR-3) la fila ya no la
+muestra: el dueño la consideró irrelevante para revisar ofertas.
 
 | Estado | Significado |
 |--------|-------------|
@@ -342,11 +356,11 @@ oferta y nunca altera puntajes, recomendaciones ni la base.
 
 - La ventana de 21 días es explícita; una evidencia sin fecha utilizable se
   informa como `stale`, nunca como vigente.
-- Un `final_url` de redirección se muestra solo como evidencia segura de un
+- Un `final_url` de redirección se guarda solo como evidencia segura de un
   intento exitoso, con la misma validación de URL que el resto de enlaces, y
   solo si difiere de la URL solicitada. Nunca se presenta como enlace roto.
 - Si una oferta visible tiene un 404/410 y hubo un re-avistamiento posterior, el
-  informe lo dice: la evidencia fue refutada. La rotura no se inventa ni se
+  payload lo marca: la evidencia fue refutada. La rotura no se inventa ni se
   deduce de una redirección.
 
 ### Filtros de preferencia (exclusiones)
@@ -375,8 +389,9 @@ Exclusiones implementadas:
   conocimiento o `SOC 2` (cumplimiento) quedan elegibles; un rol SOC sin
   evidencia operativa se marca `flag`.
 
-El informe muestra una banda neutra (sin color) junto al título con el resultado,
-la razón y la evidencia, y el resumen agrega cuántas ofertas quedan excluidas y
+En el informe, la fila lleva una etiqueta `⚠ flag` (ocre) o `veto` (rojo, porque
+es un bloqueo); al abrirla, la razón y la evidencia son el primer punto de
+Incógnitas (`flag`) o de Bloqueos (`fail`). El resumen agrega cuántas ofertas quedan excluidas y
 cuántas por revisar. El CLI expone el mismo veredicto en `list`, `rank` y `score`
 (marcador `[preference=...]` en texto y un objeto `preference` en `--json`).
 

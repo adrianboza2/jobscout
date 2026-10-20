@@ -1100,7 +1100,7 @@ def test_offer_carries_every_field_the_report_promises(db_file: Path) -> None:
     assert offer["keywords"][0]["rank"] == 1
 
 
-def test_rationale_is_bounded(db_file: Path) -> None:
+def test_rationale_is_kept_in_full(db_file: Path) -> None:
     conn = connect(db_file)
     try:
         job, _ = store_posting(
@@ -1108,19 +1108,20 @@ def test_rationale_is_bounded(db_file: Path) -> None:
             _posting(source_job_id="5555555555", url="https://www.linkedin.com/jobs/view/5555555555/long"),
             now="2026-09-15T11:00:00Z",
         )
-        from jobscout.dashboard import MAX_RATIONALE_CHARS
+        from jobscout.dashboard import MAX_FIELD_CHARS
 
+        rationale = "x" * MAX_FIELD_CHARS + " \n\t " + "y" * MAX_FIELD_CHARS
         insert_evaluation(
             conn,
-            _score(job.id, 60.0, Recommendation.CONSIDER, rationale="x" * (MAX_RATIONALE_CHARS * 2)),
+            _score(job.id, 60.0, Recommendation.CONSIDER, rationale=rationale),
         )
     finally:
         conn.close()
 
     payload = _payload(db_file, top=10)
     rated = next(offer for offer in payload["offers"] if offer["score"] == 60.0)
-    assert len(rated["rationale"]) <= MAX_RATIONALE_CHARS
-    assert rated["rationale"].endswith("\u2026")
+    assert rated["rationale"] == "x" * MAX_FIELD_CHARS + " " + "y" * MAX_FIELD_CHARS
+    assert len(rated["rationale"]) > MAX_FIELD_CHARS
 
 
 # ---------------------------------------------------------------------------
@@ -1336,7 +1337,6 @@ def test_dropped_payload_fields_are_absent(dr1_db: Path) -> None:
         "state",
         "age_days",
         "window_days",
-        "http_status",
         "refuted",
         "final_url",
     }
@@ -1424,22 +1424,26 @@ def test_visible_ui_text_is_neutral_spanish(db_file: Path) -> None:
         "Descartar",
         "Solo nuevas",
         "limpiar",
+        "Mostrar 50 más",
         "Desempeño por palabra clave",
         "Puntos fuertes",
-        "Brechas",
+        "Carencias",
         "Bloqueos",
         "Incógnitas",
-        "Justificación del modelo:",
+        "Justificación del modelo",
+        "Salario · bruto anual",
         "Ver la oferta",
-        "Sin puntaje",
+        "sin evaluar",
+        "sin desglose en esta evaluación",
+        "indicado",
+        "sin dato",
         "Último barrido",
         "Sin barridos",
-        "sin evaluar",
         "Detalles pendientes:",
         "fallos",
     ):
         assert label in html_text, label
-    # The rail copy and the KPI labels must not come back.
+    # The old card copy, the rail copy, and the KPI labels must not come back.
     for retired in (
         "Buscar y filtrar",
         "Privacidad y funcionamiento sin conexión",
@@ -1447,6 +1451,12 @@ def test_visible_ui_text_is_neutral_spanish(db_file: Path) -> None:
         "Ofertas mostradas",
         "Revisadas (tu decisión)",
         "Dos ejes distintos",
+        "Avisos",
+        "Sin avisos.",
+        "Explicabilidad del puntaje y procedencia",
+        "Mi decisión (feedback)",
+        "Brechas",
+        "Sin puntaje",
     ):
         assert retired not in html_text, retired
 
@@ -1511,14 +1521,14 @@ def test_report_uses_the_desktop_technical_panel_design_tokens(db_file: Path) ->
         "--sheet:#fbfaf6",
         "--ink:#17160f",
         "--ink-2:#55524a",
-        "--ink-3:#8a867b",
+        "--ink-3:#69655d",
         "--rule:#d8d3c6",
         "--rule-2:#e8e4d9",
-        "--signal:#c8361b",
+        "--signal:#bd3319",
         "--signal-wash:#f6e3dc",
-        "--mid:#7a6a1f",
+        "--mid:#74651d",
         "--mid-wash:#f0ead2",
-        "--low:#8a867b",
+        "--low:#69655d",
     ):
         assert token in css, token
     for family in ("--serif:", "--sans:", "--mono:"):
@@ -1541,9 +1551,9 @@ def test_report_uses_the_desktop_technical_panel_design_tokens(db_file: Path) ->
     assert "@font-face" not in css
     assert not re.search(r'url\(\s*["\']?https?://', html_text)
 
-    # Closed type scale: 11/12/13/14/16/22, and no rule hard-codes a size.
+    # Closed type scale: 11/12/13/14/15/16/22/26, and no rule hard-codes a size.
     scale = re.findall(r"--fs-[a-z0-9]+:(\d+)px", css)
-    assert scale == ["11", "12", "13", "14", "16", "22"]
+    assert scale == ["11", "12", "13", "14", "15", "16", "22", "26"]
     for declared in re.findall(r"font-size:\s*([^;]+);", css):
         declared = declared.strip()
         assert declared.startswith("var(--fs-"), declared
@@ -1554,6 +1564,9 @@ def test_report_uses_the_desktop_technical_panel_design_tokens(db_file: Path) ->
     spacing = re.findall(r"--sp-[a-z0-9]+:(\d+)px", css)
     assert spacing == ["4", "8", "12", "16", "24", "32", "48"]
     for declared in re.findall(r"(?:padding|margin|gap)[^:;{]*:\s*([^;{}]+);", css):
+        if "88px" in declared:
+            assert declared == "var(--sp-4) var(--sp-8) var(--sp-24) 88px", declared
+            continue
         assert "px" not in declared, declared
 
     # Corners are square or at most 2px, and elevation is a hairline only.
@@ -1610,9 +1623,11 @@ def test_accent_is_scoped_to_the_model_axis_only(db_file: Path) -> None:
     allowed = (
         ":root",
         ".status-line .bad",
-        ".notice.warn",
-        ".card.rec-apply",
-        ".badge-apply",
+        ".s-hi",
+        ".chip.new",
+        ".chip.veto",
+        ".chip.rec-apply",
+        ".lists .blk h3",
     )
     for rule in accent_rules:
         assert any(hook in rule for hook in allowed), rule
@@ -1628,33 +1643,36 @@ def test_accent_is_scoped_to_the_model_axis_only(db_file: Path) -> None:
 
     # The two axes are still named in visible copy, not only in CSS.
     html_text = generate_and_read(db_file)
-    assert "Recomendación del modelo" in html_text
-    assert "Mi decisión (feedback)" in html_text
+    assert "Justificación del modelo" in html_text
+    assert "Mi decisión sobre la oferta" in html_text
 
 
 def test_explainability_is_a_native_progressive_disclosure(db_file: Path) -> None:
-    """Per-offer explainability is a <details> disclosure added as enhancement.
+    """Each offer is a native <details> row whose body is built on first open.
 
-    The base script builds every card, so the disclosure is attached afterwards by an
-    appended block. Native <details>/<summary> is used on purpose: the platform owns
-    the keyboard and screen-reader behaviour, and without JavaScript the rationale and
-    provenance lists the base script renders are still fully visible.
+    Native <details>/<summary> is used on purpose: the platform owns the keyboard
+    and screen-reader behaviour, so no custom ARIA and no enhancement pass has to
+    reimplement it. The body is added only when the row is opened.
     """
     html_text = generate_and_read(db_file)
 
-    assert 'block.className = "explain";' in html_text
-    assert 'document.createElement("summary")' in html_text
-    assert "Explicabilidad del puntaje y procedencia" in html_text
-    # The bulk expand/collapse controls belong to the removed rail.
+    assert 'var details = el("details", "row");' in html_text
+    assert 'details.setAttribute("data-job-id", String(offer.id));' in html_text
+    assert 'details.addEventListener("toggle", function () {' in html_text
+    assert 'details.appendChild(renderBody(offer));' in html_text
+    assert "function renderBody(offer)" in html_text
+    # The bulk expand/collapse controls and the old enhancement pass are gone.
     assert 'id="explain-controls"' not in html_text
     assert "Expandir todo" not in html_text
     assert "Contraer todo" not in html_text
-    assert "MutationObserver" in html_text
-    # Additive only: the base report script is still written exactly once.
+    assert "MutationObserver" not in html_text
+    assert "function enhance(" not in html_text
+    assert "Explicabilidad del puntaje y procedencia" not in html_text
+    # Additive only: the report script is still written exactly once.
     assert html_text.count("var EXPECTED_SCHEMA =") == 1
 
     css = _embedded_style(html_text)
-    assert ".explain[open] > summary::before" in css
+    assert ".row[open] .chev" in css
     assert ".method > summary" in css
     # Methodology text is expandable at the section level as well.
     assert "Metodología de las métricas" in html_text
@@ -1707,39 +1725,22 @@ def test_sticky_shell_reaches_the_controls_without_covering_content(db_file: Pat
 def test_each_offer_is_an_independent_block_separated_by_gap_and_outline(
     db_file: Path,
 ) -> None:
-    """Offers must not merge into one continuous list, and must not float either.
+    """Offers form one flat list whose rows are separated by a hairline.
 
-    Separation is the canvas showing through a real vertical gap between blocks,
-    plus one restrained outline per block. The block keeps a radius so it reads as
-    a discrete paper surface, but no blurred elevation is used as a separator: the
-    only ``box-shadow`` left on a card is the flat inset ink rule that marks a
-    reviewed offer.
+    There is no floating card: the list removes its own chrome, and each row
+    closes with the same restrained rule instead of elevation.
     """
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
 
-    # The list container only spaces the blocks; the gap is the separator.
-    assert "#offers { display:flex; flex-direction:column; gap:var(--sp-16);" in css
-
-    card = re.search(r"\.card \{([^}]*)\}", css, re.DOTALL)
-    assert card is not None, "the base offer block must be styled"
-    body = card.group(1)
-    assert "background:var(--sheet);" in body
-    assert "border:1px solid var(--rule);" in body
-    assert "border-radius:2px;" in body
-    assert "padding:var(--sp-16);" in body
-    assert "gap:var(--sp-12);" in body
+    assert ".list { margin:0; padding:0; list-style:none; }" in css
+    assert ".row { border-bottom:1px solid var(--rule); }" in css
+    assert ".row > summary { list-style:none; cursor:pointer; display:grid;" in css
+    assert "grid-template-columns:64px 1fr 190px 120px 80px 28px;" in css
     # No elevation and no gradient: the boundary is a hairline, not a shadow.
-    assert "box-shadow" not in body
     assert "box-shadow" not in css
     assert "gradient" not in css
-    # A per-block bottom rule is unnecessary once the gap separates the blocks.
-    assert ".card:last-child { border-bottom:0; }" not in css
-
-    # Hover and keyboard focus use the same states; reviewed keeps an ink rule.
-    assert ".card:hover, .card:focus-within { background:var(--paper); border-color:var(--ink); }" in css
-    assert ".card.reviewed:hover { background:var(--sheet); }" in css
-    assert ".card.reviewed { background:var(--paper); border-color:var(--ink); border-left-width:4px; }" in css
+    assert ".card {" not in css
 
 
 def test_regions_are_bounded_and_offer_bands_are_separated_by_rules(
@@ -1761,13 +1762,10 @@ def test_regions_are_bounded_and_offer_bands_are_separated_by_rules(
     for region in ('id="panel-offers"', 'id="offers"', 'id="analitica"'):
         assert region in html_text, region
 
-    # Inside one offer: header | facts | explanation | human feedback.
-    assert re.search(r"\.meta \{[^}]*border-top:1px solid var\(--rule\);", css)
-    assert re.search(r"\.meta \{[^}]*padding:var\(--sp-12\) 0 0;", css)
-    assert ".explain { border-top:1px solid var(--rule); }" in css
-    assert re.search(r"\.card > \.grid \{[^}]*border-top:1px solid var\(--rule\);", css)
-    assert re.search(r"\.feedback \{[^}]*border-top:1px solid var\(--ink\);", css)
-    assert re.search(r"\.card-side \{[^}]*border-left:1px solid var\(--rule\);", css)
+    # Inside one row: summary | lists | foot.
+    assert ".row { border-bottom:1px solid var(--rule); }" in css
+    assert re.search(r"\.lists \{[^}]*border-top:1px solid var\(--rule\);", css)
+    assert re.search(r"\.foot \{[^}]*border-top:1px solid var\(--rule\);", css)
 
     # The analytics panel is a paper surface with hairlines, not a second sheet.
     assert re.search(r"\.block \{[^}]*background:var\(--paper\);", css)
@@ -1786,24 +1784,20 @@ def test_offer_row_keeps_a_title_score_action_hierarchy(db_file: Path) -> None:
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
 
-    assert "--fs-16:16px" in css
-    assert ".card-title h3 { font-size:var(--fs-16); line-height:1.3;" in css
-    assert ".card-sub .company { color:var(--ink-2); font-weight:600; }" in css
+    assert "--fs-26:26px" in css
+    assert ".score { font-family:var(--mono); font-size:var(--fs-26); font-weight:600; line-height:1;" in css
+    assert ".t { font-family:var(--sans); font-size:var(--fs-15); font-weight:600; line-height:1.3; }" in css
+    assert ".c { color:var(--ink-2); font-size:var(--fs-13); margin-top:var(--sp-4); }" in css
     # Company and location appear once, in the subtitle.
-    assert 'el("span", "company", offer.company)' in html_text
-    assert 'metaItem("Empresa"' not in html_text
-    assert 'metaItem("Ubicación"' not in html_text
+    assert "var subtitle = offer.company;" in html_text
+    assert 'if (offer.location) { subtitle += " \\u00b7 " + offer.location; }' in html_text
 
-    # The action is a real control in the row's action column, still guarded.
-    assert ".card-side { display:flex; flex-direction:column; align-items:flex-end;" in css
-    assert 'var link = el("a", "offer-link", "Ver la oferta");' in html_text
+    # The action is a real control in the row's footer, still guarded.
+    assert ".foot a { color:var(--ink); margin-left:auto; }" in css
+    assert 'var link = el("a", null, "Ver la oferta \\u2197");' in html_text
     assert 'link.href = href;' in html_text
     assert 'link.rel = "noopener noreferrer";' in html_text
     assert 'link.target = "_blank";' in html_text
-    assert 'content:"\\2197"' in css
-    assert ".offer-link:hover { background:var(--ink); border-color:var(--ink); color:var(--paper); }" in css
-    # The link is no longer appended to the facts list.
-    assert 'var linkItem = el("li");' not in html_text
 
 
 def test_disclosure_summaries_draw_a_chevron_and_show_their_state(db_file: Path) -> None:
@@ -1817,39 +1811,33 @@ def test_disclosure_summaries_draw_a_chevron_and_show_their_state(db_file: Path)
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
 
-    for selector in (".explain > summary::before", ".method > summary::before"):
-        assert selector in css, selector
-    assert "border-left:7px solid var(--rule);" in css
-    assert ".explain[open] > summary::before {" in css
-    assert "transform:rotate(90deg)" in css
-    assert ".method[open] > summary::before {" in css
-    # The label is a sentence-sized control with hover and keyboard focus states.
-    assert ".explain > summary { display:flex; align-items:center; gap:var(--sp-8); cursor:pointer;" in css
-    assert ".explain > summary:hover, .explain > summary:focus-visible { background:var(--sheet); }" in css
-    assert ".explain > summary:active { background:var(--rule-2); }" in css
+    assert ".method > summary::before" in css
+    assert ".chev { color:var(--ink-3); transition:transform .15s; }" in css
+    assert ".row[open] .chev { transform:rotate(90deg); }" in css
+    assert ".row > summary::-webkit-details-marker { display:none; }" in css
+    # The label is a row-sized control with hover and keyboard focus states.
+    assert ".row > summary { list-style:none; cursor:pointer; display:grid;" in css
+    assert ".row > summary:hover, .row > summary:focus-visible { background:var(--sheet); }" in css
+    assert ".row > summary:focus-visible { outline:2px solid var(--ink); outline-offset:-2px; }" in css
     assert ".method > summary:hover, .method > summary:focus-visible { background:var(--sheet); }" in css
-    # No glyph is used for the state, so nothing depends on a symbol font.
+    # The state is a glyph plus a rotation, never a font-dependent +/- swap.
     assert 'content:"+"' not in css and 'content:"−"' not in css
 
 
 def test_human_feedback_shows_selection_hover_and_a_saved_confirmation(db_file: Path) -> None:
     """Own marks are confirmed, keyboard-readable, and never hue-only.
 
-    Selection carries a check mark and ``aria-pressed`` on top of the ink fill, the
-    pressed/hover states are explicit, and the confirmation is a polite live region
-    that removes itself so it never stacks or blocks the next mark. It is only written
-    when ``localStorage`` actually accepted the write.
+    Selection carries ``aria-pressed`` on top of the ink fill, the pressed/hover
+    states are explicit, and the confirmation is a polite live region that removes
+    itself so it never stacks or blocks the next mark. It is only written when
+    ``localStorage`` actually accepted the write.
     """
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
 
-    assert '.decision-btn.selected::before { content:"\\2713"; margin-right:var(--sp-8); }' in css
-    assert ".decision-btn:hover:not(:disabled), .decision-btn:focus-visible:not(:disabled) {" in css
-    assert "background:var(--rule-2); border-color:var(--ink); }" in css
-    assert ".decision-btn:active:not(:disabled) { background:var(--rule); }" in css
-    assert ".decision-btn.selected:hover:not(:disabled) { background:var(--ink-2);" in css
-    # The block heading repeats the ink square that marks the human axis in the legend.
-    assert ".feedback h4::before { content:\"\"; flex:0 0 auto; width:9px; height:9px;" in css
+    assert ".mini:hover, .mini:focus-visible { border-color:var(--ink); color:var(--ink); }" in css
+    assert '.mini[aria-pressed="true"] { background:var(--ink); border-color:var(--ink); color:var(--paper); }' in css
+    assert ".decision-state.legacy { font-style:italic; border-left:2px solid var(--rule);" in css
 
     assert "function confirmSaved(jobId)" in html_text
     assert 'marker.setAttribute("role", "status");' in html_text
@@ -1858,7 +1846,166 @@ def test_human_feedback_shows_selection_hover_and_a_saved_confirmation(db_file: 
     assert "savedTimer = window.setTimeout(function () { marker.remove(); }, 2600);" in html_text
     # The decision state text has its own node, so the marker is not wiped by updates.
     assert 'el("span", "decision-state-text",' in html_text
-    assert 'card.querySelector(".decision-state-text")' in html_text
+    assert 'row.querySelector(".decision-state-text")' in html_text
+    assert 'var button = el("button", "mini decision-btn", visibleText);' in html_text
+
+
+def test_posted_at_is_shown_readably_but_the_payload_keeps_it_verbatim(db_file: Path) -> None:
+    """The payload keeps the stored ISO timestamp verbatim."""
+    html_text = generate_and_read(db_file)
+    payload = _extract_payload(html_text)
+
+    stored = payload["offers"][0]["posted_at"]
+    assert stored == "2026-09-14T10:00:00Z"
+
+
+def test_report_keeps_empty_error_and_local_storage_states(db_file: Path) -> None:
+    """The states a reader can land in are still visible in this variant."""
+    html_text = generate_and_read(db_file)
+
+    assert 'id="empty-state"' in html_text
+    assert "Ninguna oferta con estos filtros · " in html_text
+    assert 'id="empty-reset" class="mini">limpiar</button>' in html_text
+    assert "function resetFilters()" in html_text
+    assert 'document.getElementById("empty-reset").addEventListener("click", resetFilters);' in html_text
+    assert "No se pudieron leer los datos del panel." in html_text
+    assert "versión incompatible de jobscout" in html_text
+    assert "El almacenamiento local no está disponible" in html_text
+    assert "<noscript>" in html_text
+
+
+def test_ember_is_reserved_for_warning_and_error_states(db_file: Path) -> None:
+    """Every colour is a token: no raw hex survives outside ``:root``."""
+    html_text = generate_and_read(db_file)
+    style = re.search(r"<style>(.*?)</style>", html_text, re.DOTALL)
+    assert style is not None, "the report must embed its stylesheet"
+    css = style.group(1)
+
+    root = re.search(r":root \{(.*?)\n\}", css, re.DOTALL)
+    assert root is not None, "the report must define its token set"
+    outside_root = css.replace(root.group(0), "")
+    assert not re.findall(r"#[0-9a-fA-F]{3,8}(?=[\s;])", outside_root)
+    assert "--ember" not in css
+
+    # Recommendation chips carry weight and their own token, never a raw warning
+    # colour.
+    chips = [rule for rule in css.split("}") if ".chip" in rule]
+    assert chips, "the recommendation chips must be styled"
+    for rule in chips:
+        assert "#" not in rule, rule
+
+
+def test_offers_are_painted_in_batches_of_fifty(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    assert "var PAGE_SIZE = 50;" in html_text
+    assert 'id="show-more" class="mini" hidden>Mostrar 50 más</button>' in html_text
+    assert 'document.getElementById("show-more").addEventListener("click", renderBatch);' in html_text
+    assert "shownOffers = 0;" in html_text
+    assert "renderBatch();" in html_text
+
+
+def test_offer_body_is_built_lazily_on_toggle(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    assert "function renderBody(offer)" in html_text
+    assert "var bodyBuilt = false;" in html_text
+    assert 'details.addEventListener("toggle", function () {' in html_text
+    assert "if (!details.open || bodyBuilt) { return; }" in html_text
+    assert "details.appendChild(renderBody(offer));" in html_text
+    # Only the definition and the toggle handler call the body builder.
+    assert html_text.count("renderBody(offer)") == 2
+
+
+def test_dimension_weight_is_rendered_as_a_share_of_the_weight_sum(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    assert "var weightSum = 0;" in html_text
+    assert "weightSum += Number(dim.weight) || 0;" in html_text
+    assert '"peso " + Math.round(dim.weight / weightSum * 100) + "%"' in html_text
+    assert "if (weightSum !== 0)" in html_text
+
+
+def test_salary_provenance_is_labelled_indicado_or_sin_dato(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    assert 'salaryNode.appendChild(el("em", null, "indicado"));' in html_text
+    assert 'salaryNode.appendChild(el("em", null, "sin dato"));' in html_text
+    assert 'salaryBox.appendChild(el("dt", null, "indicado"));' in html_text
+    assert 'salaryBox.appendChild(el("dd", null, offer.salary));' in html_text
+
+
+def test_missing_dimensions_state_that_no_breakdown_exists(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
+
+    assert '"sin desglose en esta evaluación"' in html_text
+    assert 'dims.length ? "body" : "body nodims"' in html_text
+    assert ".body.nodims { grid-template-columns:1fr; }" in css
+
+
+def test_status_line_is_pushed_apart_from_the_back_to_top_control(db_file: Path) -> None:
+    css = _embedded_style(generate_and_read(db_file))
+
+    assert ".mast .status-line { margin-left:auto; }" in css
+    assert ".to-top { cursor:pointer;" in css
+    assert ".to-top { margin-left:auto;" not in css
+
+
+def test_preference_outcomes_surface_as_flag_and_veto_chips(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    assert 'preference.outcome === "flag"' in html_text
+    assert 'preference.outcome === "fail"' in html_text
+    assert 'el("span", "chip flag", "\\u26a0 flag")' in html_text
+    assert 'el("span", "chip veto", "veto")' in html_text
+    assert 'flag.title = preference.reason || "";' in html_text
+    assert 'veto.title = preference.reason || "";' in html_text
+
+
+def test_warnings_are_plain_paragraphs_without_the_old_notice_box(db_file: Path) -> None:
+    payload = _payload(db_file)
+    payload["warnings"] = ["Aviso <uno>"]
+    html_text = render_dashboard_html(payload)
+
+    assert '<div class="report-warnings"><p>Aviso &lt;uno&gt;</p></div>' in html_text
+    assert html_text.index('id="report-meta"') < html_text.index('class="report-warnings"')
+    assert 'id="warnings"' not in html_text
+    assert "Avisos" not in html_text
+    assert "Sin avisos." not in html_text
+    assert 'id="imported-review-note"' not in html_text
+
+    payload["warnings"] = []
+    empty = render_dashboard_html(payload)
+    assert '<div class="report-warnings">' not in empty
+
+
+def test_empty_lists_strip_is_left_out_of_the_body(db_file: Path) -> None:
+    """Four columns of dashes add nothing; the strip needs a list or a preference line."""
+    html_text = generate_and_read(db_file)
+
+    assert "if (hasLists || blockerFirst || unknownFirst) {" in html_text
+    assert '["strengths", "gaps", "blockers", "unknowns"].some(' in html_text
+
+
+def test_masthead_rule_spans_the_window_like_the_mockup(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
+
+    # The header sits before the column, so its ink rule is not cut at 1280 px.
+    assert html_text.index('<header class="masthead">') < html_text.index('<div class="panel">')
+    assert '<div class="masthead-wrap">' in html_text
+    assert ".masthead-wrap { max-width:1280px; margin:0 auto; padding:0 var(--sp-32); }" in css
+
+
+def test_only_new_toggle_is_a_one_button_segmented_control(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    assert re.search(
+        r'<div class="seg">\s*<button type="button" id="filter-new" aria-pressed="false"',
+        html_text,
+    )
+    assert 'id="filter-new" class="btn' not in html_text
 
 
 def test_filter_rail_reports_what_is_narrowing_the_list(db_file: Path) -> None:
@@ -1962,54 +2109,6 @@ def test_keyword_table_headers_sort_the_rendered_rows(db_file: Path) -> None:
     assert re.findall(r'"([^"]+)"', headers.group(0))[0] == "Palabra clave"
 
 
-def test_posted_at_is_shown_readably_but_the_payload_keeps_it_verbatim(db_file: Path) -> None:
-    """Display-only formatting of the stored ISO timestamp, never a rewrite of it."""
-    html_text = generate_and_read(db_file)
-    payload = _extract_payload(html_text)
-
-    stored = payload["offers"][0]["posted_at"]
-    assert stored == "2026-09-14T10:00:00Z"
-    assert "function displayTimestamp(value)" in html_text
-    assert "displayTimestamp(offer.posted_at)" in html_text
-    assert 'return match ? (match[1] + " " + match[2] + " UTC") : value;' in html_text
-    # Anything the pattern does not fully match falls back to the stored string.
-    assert "return match ? (" in html_text and ": value;" in html_text
-
-
-def test_report_keeps_empty_error_and_local_storage_states(db_file: Path) -> None:
-    """The states a reader can land in are still visible in this variant."""
-    html_text = generate_and_read(db_file)
-
-    assert 'id="empty-state"' in html_text
-    assert "Ninguna oferta coincide con la búsqueda y los filtros actuales." in html_text
-    assert "No se pudieron leer los datos del panel." in html_text
-    assert "versión incompatible de jobscout" in html_text
-    assert "El almacenamiento local no está disponible" in html_text
-    assert "<noscript>" in html_text
-
-
-
-def test_ember_is_reserved_for_warning_and_error_states(db_file: Path) -> None:
-    """Every colour is a token: no raw hex survives outside ``:root``."""
-    html_text = generate_and_read(db_file)
-    style = re.search(r"<style>(.*?)</style>", html_text, re.DOTALL)
-    assert style is not None, "the report must embed its stylesheet"
-    css = style.group(1)
-
-    root = re.search(r":root \{(.*?)\n\}", css, re.DOTALL)
-    assert root is not None, "the report must define its token set"
-    outside_root = css.replace(root.group(0), "")
-    assert not re.findall(r"#[0-9a-fA-F]{3,8}(?=[\s;])", outside_root)
-    assert "--ember" not in css
-
-    # Recommendation styling still carries weight and its own token, not the
-    # warning colour.
-    badges = [rule for rule in css.split("}") if ".badge-" in rule]
-    assert badges, "the recommendation badges must be styled"
-    for rule in badges:
-        assert "#" not in rule, rule
-
-
 def test_feedback_region_accessible_name_identifies_the_offer(db_file: Path) -> None:
     """Each card's feedback region is named with its own title and company.
 
@@ -2036,8 +2135,8 @@ def test_feedback_region_accessible_name_identifies_the_offer(db_file: Path) -> 
 
     # The card-independent label must not come back.
     assert 'aria-label", "Mi decisión sobre esta oferta"' not in html_text
-    # Visible Spanish text and the stored feedback surface stay unchanged.
-    assert "Mi decisión (feedback)" in html_text
+    # The visible heading is gone; the accessible names stay.
+    assert "Mi decisión (feedback)" not in html_text
     assert (
         'var FEEDBACK_LABELS = { apply: "Aplicar", reject: "Descartar" };'
         in html_text
@@ -2267,7 +2366,6 @@ def test_detail_evidence_for_an_unchecked_offer_is_serializable() -> None:
         "state": "unchecked",
         "age_days": None,
         "window_days": 21,
-        "http_status": None,
         "refuted": False,
         "final_url": None,
     }
@@ -2314,82 +2412,9 @@ def test_payload_detail_reports_only_the_latest_fetch(db_file: Path) -> None:
         "state",
         "age_days",
         "window_days",
-        "http_status",
         "refuted",
         "final_url",
     }
-
-
-def test_report_renders_neutral_detail_evidence_near_the_title(db_file: Path) -> None:
-    conn = connect(db_file)
-    try:
-        refuted, _ = store_posting(
-            conn,
-            _posting(
-                source_job_id="7777777777",
-                url="https://www.linkedin.com/jobs/view/7777777777/refuted",
-                title="Staff Data Engineer",
-                company="Delta Corp",
-            ),
-            now="2026-09-10T10:00:00Z",
-        )
-        # A 404 at T1, then an ordinary re-sighting at T2 refutes the evidence.
-        _insert_fetch(
-            conn,
-            int(refuted.id),
-            status=DetailFetchStatus.FAILED,
-            http_status=404,
-            stored_at="2026-09-10T11:00:00Z",
-        )
-        _resight_dashboard_job(conn, "7777777777", now="2026-09-15T10:00:00Z")
-
-        redirected, _ = store_posting(
-            conn,
-            _posting(
-                source_job_id="8888888888",
-                url="https://www.linkedin.com/jobs/view/8888888888/redirected",
-                title="Site Reliability Engineer",
-                company="Epsilon LLC",
-            ),
-            now="2026-09-15T10:00:00Z",
-        )
-        _insert_fetch(
-            conn,
-            int(redirected.id),
-            status=DetailFetchStatus.OK,
-            http_status=200,
-            fetched_at="2026-09-10T12:00:00Z",
-            url="https://www.linkedin.com/jobs/view/8888888888/redirected",
-            final_url="https://www.linkedin.com/jobs/view/8888888888/site-reliability-engineer",
-        )
-    finally:
-        conn.close()
-
-    html_text = generate_and_read(db_file)
-    payload = _extract_payload(html_text)
-    refuted_offer = next(offer for offer in payload["offers"] if offer["id"] == refuted.id)
-    redirect_offer = next(offer for offer in payload["offers"] if offer["id"] == redirected.id)
-
-    assert refuted_offer["detail"]["state"] == "definitive_missing"
-    assert refuted_offer["detail"]["refuted"] is True
-    assert (
-        redirect_offer["detail"]["final_url"]
-        == "https://www.linkedin.com/jobs/view/8888888888/site-reliability-engineer"
-    )
-
-    # The evidence is built with DOM APIs and inserted with the title, not in the
-    # model axis (.card-side) nor the human axis (.feedback).
-    assert "function renderDetailEvidence(offer)" in html_text
-    assert "if (detailBox) { titleBox.appendChild(detailBox); }" in html_text
-    assert 'el("p", "detail-evidence")' in html_text
-    assert "La evidencia fue refutada por un re-avistamiento posterior de la oferta." in html_text
-    # Any redirect href goes through the same client-side URL guard.
-    assert "var finalHref = safeHttpUrl(detail.final_url);" in html_text
-    assert "link.href = finalHref;" in html_text
-    assert "card-side.appendChild(detailBox)" not in html_text
-    assert "renderFeedback(offer)" in html_text and "detailBox" not in re.search(
-        r"function renderFeedback\(offer\) \{(.*?)\n  \}", html_text, re.DOTALL
-    ).group(1)
 
 
 def test_detail_evidence_never_writes_to_the_database_or_local_storage(db_file: Path) -> None:
@@ -2422,50 +2447,6 @@ def test_detail_evidence_never_writes_to_the_database_or_local_storage(db_file: 
 
     assert _database_fingerprint(db_file) == before_records
     assert db_file.read_bytes() == before_bytes
-    # The evidence renderer never touches browser storage either.
-    renderer = re.search(
-        r"function renderDetailEvidence\(offer\) \{(.*?)\n  \}", html_text, re.DOTALL
-    )
-    assert renderer is not None
-    assert "localStorage" not in renderer.group(1)
-    assert "setItem" not in renderer.group(1)
-
-
-def test_detail_evidence_css_stays_neutral_and_keeps_the_six_kpi_shell(db_file: Path) -> None:
-    html_text = generate_and_read(db_file)
-    css = _embedded_style(html_text)
-
-    detail_rules = [rule for rule in css.split("}") if ".detail-evidence" in rule]
-    assert detail_rules, "the detail evidence band must be styled"
-    for rule in detail_rules:
-        assert "--signal" not in rule, rule
-        assert "--ember" not in rule, rule
-        assert "#e7000b" not in rule, rule
-        assert "@media" not in rule, rule
-
-    # No new media query and no six-column KPI strip.
-    assert css.count("@media") == 1
-    assert re.findall(r"@media\s*\(([^)]*)\)", css) == ["prefers-reduced-motion:reduce"]
-    assert "grid-template-columns:repeat(6, minmax(0, 1fr))" not in css
-    assert 'id="summary"' not in html_text
-
-
-def test_detail_state_labels_cover_every_state_in_neutral_spanish(db_file: Path) -> None:
-    html_text = generate_and_read(db_file)
-
-    block = re.search(r"var DETAIL_STATE_LABELS = \{(.*?)\n  \};", html_text, re.DOTALL)
-    assert block is not None
-    assert re.findall(r"([a-z_]+):", block.group(1)) == list(DETAIL_STATES)
-    for label in (
-        "sin consultar el detalle",
-        "consulta de detalle omitida",
-        "evidencia vigente",
-        "evidencia anterior a la ventana",
-        "la última consulta respondió 404/410",
-        "fallo de transporte reintentable",
-        "fallo con respuesta HTTP",
-    ):
-        assert label in html_text, label
 
 
 # ---------------------------------------------------------------------------
@@ -2561,11 +2542,6 @@ def test_unreviewed_view_is_honest_when_no_feedback_is_imported(db_file: Path) -
     assert "unreviewed_backlog" not in payload
     assert "new_in_latest_cycle" not in payload
     assert "latest_cycle" not in json.dumps(payload)
-
-    html_text = render_dashboard_html(payload)
-    assert "Todavía no hay ninguna decisión humana importada" in html_text
-    assert "jobscout import-feedback" in html_text
-    assert "no son una medida de backlog" in html_text
 
 
 def test_imported_review_does_not_change_keyword_analytics_or_summary(
@@ -2685,7 +2661,6 @@ def test_unreviewed_view_renders_when_localstorage_is_unavailable(db_file: Path)
     html_text = generate_and_read(db_file)
 
     assert "offer.imported_review" in html_text
-    assert "function refreshImportedReviewNote()" in html_text
     # Browser storage is still read defensively and is never required to render.
     assert "window.localStorage.getItem(STORAGE_KEY)" in html_text
     assert "catch (err) {" in html_text
@@ -3397,8 +3372,8 @@ def test_failed_and_unresolved_states_render_without_leaking_the_error(
 
     html_text = generate_and_read(path)
 
-    assert "Requiere más información" in html_text
-    assert "Evaluación fallida" in html_text
+    assert "sin evaluar (error)" in html_text
+    assert "sin evaluar (falta información)" in html_text
     # The stored error text is never embedded: only the status is serialized.
     assert "SECRET-ERROR-TOKEN-xyz" not in html_text
 

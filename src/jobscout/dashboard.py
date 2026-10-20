@@ -87,9 +87,10 @@ FEEDBACK_SCHEMA = "jobscout.feedback.v1"
 DASHBOARD_FEEDBACK_DECISIONS: tuple[str, ...] = ACTIVE_FEEDBACK_DECISIONS
 DASHBOARD_LEGACY_FEEDBACK_DECISIONS: tuple[str, ...] = LEGACY_FEEDBACK_DECISIONS
 
-#: Rationale longer than this is truncated in the report so one verbose model
-#: response cannot dominate the page. The stored evaluation keeps the full text.
-MAX_RATIONALE_CHARS = 800
+#: Title, company, and location longer than this are truncated in the report so
+#: one verbose value cannot dominate the row. The stored rationale is shown in
+#: full; only its whitespace is collapsed.
+MAX_FIELD_CHARS = 800
 
 #: A posting counts as *fresh* in keyword analytics when it is at most this many
 #: days old. jobscout has no verified "expired on LinkedIn" signal, so freshness
@@ -361,13 +362,17 @@ def _age_days(value: str | None, *, now: datetime) -> float | None:
     return None if exact is None else round(exact, 2)
 
 
-def _concisify(text: str | None) -> str:
+def _collapse_whitespace(text: str | None) -> str:
     if not text:
         return ""
-    collapsed = " ".join(str(text).split())
-    if len(collapsed) <= MAX_RATIONALE_CHARS:
+    return " ".join(str(text).split())
+
+
+def _concisify(text: str | None) -> str:
+    collapsed = _collapse_whitespace(text)
+    if len(collapsed) <= MAX_FIELD_CHARS:
         return collapsed
-    return collapsed[: MAX_RATIONALE_CHARS - 1].rstrip() + "\u2026"
+    return collapsed[: MAX_FIELD_CHARS - 1].rstrip() + "\u2026"
 
 
 def _fetch_active_jobs(
@@ -1081,7 +1086,7 @@ def build_payload(
                 "scorer": str(row["scorer"]) if row["scorer"] else "",
                 "model": str(row["model"]) if row["model"] else "",
                 "evaluated_at": row["evaluated_at"],
-                "rationale": _concisify(row["rationale"]),
+                "rationale": _collapse_whitespace(row["rationale"]),
                 "dimensions": _dimensions(row["dimensions_json"]),
                 "strengths": _string_list(row["strengths_json"]),
                 "gaps": _string_list(row["gaps_json"]),
@@ -1227,7 +1232,6 @@ def _detail_evidence(
             "state": state,
             "age_days": None,
             "window_days": int(window_days),
-            "http_status": None,
             "refuted": False,
             "final_url": None,
         }
@@ -1243,7 +1247,6 @@ def _detail_evidence(
         "state": state,
         "age_days": _age_days(checked_at, now=now),
         "window_days": int(window_days),
-        "http_status": fetch.http_status,
         "refuted": refuted,
         "final_url": _redirect_evidence(fetch, is_success=is_success),
     }
@@ -1314,9 +1317,8 @@ __STYLE__
 <body>
 <a class="skip-link" href="#contenido">Saltar al contenido principal</a>
 
-<div class="panel">
-
 <header class="masthead">
+  <div class="masthead-wrap">
   <div class="mast">
     <h1>jobscout</h1>
     <p class="status-line" id="status-line" aria-label="Estado del último barrido"></p>
@@ -1333,14 +1335,12 @@ __STYLE__
       title="Descarga un archivo JSON con sus decisiones guardadas en este navegador"
       disabled>Exportar feedback local (JSON)</button>
   </nav>
+  </div>
 </header>
 
-<div class="content">
+<div class="panel">
 
-<section class="__WARNINGS_CLASS__" id="warnings" aria-labelledby="warnings-title">
-  <h2 id="warnings-title" class="notice-title">Avisos</h2>
-  __WARNINGS__
-</section>
+<div class="content">
 
 <main id="contenido">
   <section id="panel-offers" role="tabpanel" aria-labelledby="tab-offers">
@@ -1354,8 +1354,10 @@ __STYLE__
         <button type="button" data-value="consider" aria-pressed="false">Considerar</button>
         <button type="button" data-value="skip" aria-pressed="false">Descartar</button>
       </div>
-      <button type="button" id="filter-new" class="btn btn-ghost filter-toggle"
-        aria-pressed="false" title="Muestra solo las ofertas nuevas del último barrido">Solo nuevas</button>
+      <div class="seg">
+        <button type="button" id="filter-new" aria-pressed="false"
+          title="Muestra solo las ofertas nuevas del último barrido">Solo nuevas</button>
+      </div>
       <input type="number" id="filter-min-score" min="0" max="100" step="1"
         inputmode="numeric" placeholder="Score ≥ 0" aria-label="Puntaje mínimo">
       <select id="filter-keyword" aria-label="Palabra clave de origen">
@@ -1374,16 +1376,17 @@ __STYLE__
       </select>
       <button type="button" id="filter-imported-review" class="btn btn-ghost filter-toggle"
         aria-pressed="false"
-        title="Muestra solo las ofertas sin una decisión humana importada en SQLite">
+        title="Muestra solo las ofertas sin una decisión humana importada (job_feedback en SQLite)">
         Solo sin decisión importada
       </button>
     </div>
-    <p class="muted toolbar-note" id="imported-review-note"></p>
-    <div id="offers"></div>
+    <ul class="list" id="offers"></ul>
+    <button type="button" id="show-more" class="mini" hidden>Mostrar 50 más</button>
     <p id="empty-state" class="empty" hidden>
-      Ninguna oferta coincide con la búsqueda y los filtros actuales.
+      Ninguna oferta con estos filtros · <button type="button" id="empty-reset" class="mini">limpiar</button>
     </p>
     <p class="report-meta" id="report-meta">__META__</p>
+    __WARNINGS__
   </section>
 
 <section id="panel-keywords" role="tabpanel" aria-labelledby="tab-keywords" hidden>
@@ -1451,14 +1454,14 @@ _STYLE = """
   --sheet:#fbfaf6;
   --ink:#17160f;
   --ink-2:#55524a;
-  --ink-3:#8a867b;
+  --ink-3:#69655d;
   --rule:#d8d3c6;
   --rule-2:#e8e4d9;
-  --signal:#c8361b;
+  --signal:#bd3319;
   --signal-wash:#f6e3dc;
-  --mid:#7a6a1f;
+  --mid:#74651d;
   --mid-wash:#f0ead2;
-  --low:#8a867b;
+  --low:#69655d;
   --serif:"Iowan Old Style","Charter","Georgia",serif;
   --sans:system-ui,-apple-system,"Segoe UI",sans-serif;
   --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Mono",monospace;
@@ -1466,8 +1469,10 @@ _STYLE = """
   --fs-12:12px;
   --fs-13:13px;
   --fs-14:14px;
+  --fs-15:15px;
   --fs-16:16px;
   --fs-22:22px;
+  --fs-26:26px;
   --sp-4:4px;
   --sp-8:8px;
   --sp-12:12px;
@@ -1501,6 +1506,9 @@ a:hover, a:focus-visible { text-decoration-color:var(--ink); }
 .skip-link:focus { left:0; }
 
 .panel { max-width:1280px; margin:0 auto; padding:0 var(--sp-32) var(--sp-48); }
+/* The masthead sits outside the column so its ink rule spans the whole window,
+   while its content keeps the same width as the list below. */
+.masthead-wrap { max-width:1280px; margin:0 auto; padding:0 var(--sp-32); }
 /* The masthead is the report's only sticky element: status, tabs, decisions and
    export stay reachable while the offer list scrolls. Its opaque paper keeps rows
    from showing through, and it stays in the normal flow so it never covers content
@@ -1510,11 +1518,12 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 .mast { display:flex; align-items:baseline; gap:var(--sp-24);
   padding:var(--sp-16) 0 var(--sp-8); }
 .mast h1 { font-size:var(--fs-22); }
+.mast .status-line { margin-left:auto; }
 .status-line { margin:0; display:flex; flex-wrap:wrap; gap:var(--sp-16);
   font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-2); }
 .status-line .bad { color:var(--signal); }
 .status-line .calm { color:var(--ink-3); }
-.to-top { margin-left:auto; cursor:pointer; background:var(--paper); color:var(--ink);
+.to-top { cursor:pointer; background:var(--paper); color:var(--ink);
   border:1px solid var(--rule); font-family:var(--mono); font-size:var(--fs-12);
   padding:var(--sp-4) var(--sp-8); }
 .to-top:hover, .to-top:focus-visible { border-color:var(--ink); background:var(--sheet); }
@@ -1561,7 +1570,6 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
   font-family:var(--sans); font-size:var(--fs-12); padding:0;
   text-decoration:underline; text-underline-offset:2px; }
 #reset-filters:hover, #reset-filters:focus-visible { color:var(--ink); }
-.toolbar-note { font-size:var(--fs-12); }
 
 .btn { font-family:inherit; font-size:var(--fs-13); font-weight:600;
   padding:var(--sp-4) var(--sp-8); cursor:pointer; color:var(--ink);
@@ -1583,15 +1591,6 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 .filter-toggle[aria-pressed="true"]:hover {
   background:var(--ink); border-color:var(--ink); color:var(--paper); }
 
-.notice { display:flex; flex-direction:column; gap:var(--sp-4); background:var(--sheet);
-  border:1px solid var(--rule); border-radius:2px; padding:var(--sp-12); }
-.notice-title { font-size:var(--fs-13); }
-.notice p { font-size:var(--fs-13); color:var(--ink-2); }
-/* The signal colour is reserved for real warning/error states, never decoration. */
-.notice.warn { background:var(--signal-wash); border-color:var(--signal); border-left-width:4px; }
-.notice.warn .notice-title { color:var(--signal); }
-.notice.warn p { color:var(--ink-2); }
-
 .section-label { font-size:var(--fs-11); font-weight:600; text-transform:uppercase;
   letter-spacing:.06em; color:var(--ink-3); }
 /* Region boundary: every region heading closes with a hairline ink rule. */
@@ -1599,179 +1598,87 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
   gap:var(--sp-12); padding-bottom:var(--sp-8); border-bottom:1px solid var(--ink); }
 .section-head h2 { font-size:var(--fs-16); }
 #panel-offers { display:flex; flex-direction:column; min-width:0; }
-#offers { display:flex; flex-direction:column; gap:var(--sp-16); padding-top:var(--sp-16); }
 .report-meta { margin:var(--sp-24) 0 0; font-family:var(--mono);
   font-size:var(--fs-12); color:var(--ink-3); }
 
 #contenido { display:flex; flex-direction:column; gap:var(--sp-24); min-width:0; }
-/* Each offer is its own paper block. The list container paints nothing: separation
-   is the vertical gap between blocks plus one hairline per block, never elevation. */
-.card { display:flex; flex-direction:column; gap:var(--sp-12);
-  padding:var(--sp-16); background:var(--sheet);
-  border:1px solid var(--rule); border-radius:2px; }
-.card:hover, .card:focus-within { background:var(--paper); border-color:var(--ink); }
-/* Reviewed means "you touched this one": an ink rule, not a hue or a shadow. */
-.card.reviewed { background:var(--paper); border-color:var(--ink); border-left-width:4px; }
-.card.reviewed:hover { background:var(--sheet); }
-/* Two fixed header columns instead of a wrapping flex row: the title column takes
-   the remaining width and the score/recommendation column keeps its hairline. */
-.card-head { display:grid; grid-template-columns:minmax(0, 1fr) auto;
-  gap:var(--sp-12) var(--sp-24); align-items:start; }
-.card-title { min-width:0; display:flex; flex-direction:column; gap:var(--sp-4); }
-.card-title h3 { font-size:var(--fs-16); line-height:1.3; letter-spacing:-.01em;
-  overflow-wrap:anywhere; }
-.card-sub { display:flex; flex-wrap:wrap; gap:var(--sp-4); align-items:baseline;
-  font-size:var(--fs-13); }
-.card-sub .company { color:var(--ink-2); font-weight:600; }
-.card-sub .location { color:var(--ink-3); }
-.card-sub .dot { color:var(--rule); }
-/* Link-liveness evidence is a neutral fact band inside the title column. It is
-   neither the model axis nor the human axis, so it carries no hue at all. */
-.detail-evidence { display:flex; flex-wrap:wrap; gap:var(--sp-4) var(--sp-8);
-  align-items:baseline; font-size:var(--fs-11); color:var(--ink-3); }
-.detail-evidence-state { font-weight:600; letter-spacing:.04em; }
-.detail-evidence-note { color:var(--ink-2); }
-.detail-evidence-redirect { font-family:var(--mono); overflow-wrap:anywhere; }
-.detail-evidence-link { color:var(--ink-3); }
-.detail-evidence-link:hover { color:var(--ink); }
-/* Preference exclusions are a third, independent fact band and stay hue-free. */
-.preference-evidence { display:flex; flex-wrap:wrap; gap:var(--sp-4) var(--sp-8);
-  align-items:baseline; font-size:var(--fs-11); color:var(--ink-3); }
-.preference-evidence-state { font-weight:600; letter-spacing:.04em; }
-.preference-fail .preference-evidence-state { color:var(--ink); }
-.preference-evidence-reason { color:var(--ink-2); }
-.preference-evidence-cue { font-family:var(--mono); overflow-wrap:anywhere; }
-/* The right-hand side of a row: the model's score and badge, then the one action
-   that leaves the report. A hairline marks where the header's title column ends
-   and the score/recommendation column begins. */
-.card-side { display:flex; flex-direction:column; align-items:flex-end;
-  gap:var(--sp-12); min-width:0; padding-left:var(--sp-12);
-  border-left:1px solid var(--rule); }
-.card-score { display:flex; align-items:center; gap:var(--sp-8); }
-.offer-link { display:inline-flex; align-items:center; gap:var(--sp-4);
-  font-size:var(--fs-13); font-weight:600; text-decoration:none; color:var(--ink);
-  background:var(--paper); border:1px solid var(--rule);
-  border-radius:2px; padding:var(--sp-4) var(--sp-8); }
-.offer-link::after { content:"\\2197"; font-family:var(--mono); }
-.offer-link:hover { background:var(--ink); border-color:var(--ink); color:var(--paper); }
-.offer-link:active { background:var(--ink-2); border-color:var(--ink-2); }
-.score { display:inline-flex; align-items:baseline; gap:var(--sp-4);
-  font-family:var(--mono); font-size:var(--fs-22); line-height:1;
-  font-weight:600; letter-spacing:-.02em; color:var(--ink);
-  font-variant-numeric:tabular-nums; }
-.score-max { font-family:var(--sans); font-size:var(--fs-11); font-weight:600;
-  color:var(--ink-3); letter-spacing:0; }
-/* Model-axis weight only: apply reads loudest, consider mid, skip recedes. */
-.card.rec-apply .score { color:var(--signal); }
-.card.rec-consider .score { color:var(--mid); }
-.card.rec-skip .score, .card.rec-need_more_info .score { color:var(--low); }
-/* A missing, incomplete or failed evaluation is stated in words, never shown as
-   a numeric score: the display type is deliberately smaller than a real score. */
-.score-state { font-family:var(--sans); font-size:var(--fs-13); font-weight:600;
-  letter-spacing:0; }
-.card.rec-failed .score, .card.rec-unscored .score { color:var(--low); }
-
-/* The badge belongs to the model axis. The accent marks "apply" and nothing else;
-   human feedback never uses it (see .decision-btn below). */
-.badge { display:inline-flex; align-items:baseline; font-family:var(--sans);
-  font-size:var(--fs-11); font-weight:600; text-transform:uppercase;
-  letter-spacing:.05em; white-space:nowrap; padding:var(--sp-4) var(--sp-8);
-  border:1px solid var(--rule); border-radius:2px; background:var(--sheet);
-  color:var(--ink-3); }
-.badge::before { content:"Modelo"; margin-right:var(--sp-4); padding-right:var(--sp-4);
-  border-right:1px solid currentColor; }
-.badge-apply { background:var(--signal-wash); border-color:var(--signal); color:var(--signal); }
-.badge-consider { background:var(--mid-wash); border-color:var(--mid); color:var(--mid); }
-.badge-skip { background:var(--sheet); border-color:var(--rule); color:var(--ink-3); }
-.badge-need_more_info { background:transparent; border-style:dashed;
-  border-color:var(--rule); color:var(--ink-3); }
-.badge-unscored { background:transparent; border-style:dashed;
-  border-color:var(--rule); color:var(--ink-3); }
-.badge-failed { background:transparent; border-style:dashed;
-  border-color:var(--rule); color:var(--ink-3); }
-
-/* Exactly six facts per offer, so three fixed columns fill two tidy rows and the
-   longer values ("27.82 días (fecha de publicación)") stop wrapping mid-phrase.
-   The rule above the facts is the boundary between the offer header (title, score,
-   recommendation) and the stored facts underneath; the whitespace carries the rest. */
-.meta { list-style:none; display:grid;
-  grid-template-columns:repeat(3, minmax(0, 1fr)); gap:var(--sp-8) var(--sp-16);
-  margin:0; padding:var(--sp-12) 0 0; border-top:1px solid var(--rule);
-  font-size:var(--fs-13); }
-.meta li { display:flex; gap:var(--sp-4); align-items:baseline; min-width:0; }
-.meta-key { flex:0 0 auto; font-size:var(--fs-11); text-transform:uppercase;
-  letter-spacing:.06em; color:var(--ink-3); }
-.meta-value { color:var(--ink-2); overflow-wrap:anywhere; }
-
-/* An inset rule block rather than a colour band, so it reads as a quotation. */
-.rationale { font-size:var(--fs-13); color:var(--ink-2); background:var(--paper);
-  border:1px solid var(--rule); border-left:4px solid var(--rule);
-  padding:var(--sp-8) var(--sp-12); }
-.rationale strong { display:block; font-size:var(--fs-11); text-transform:uppercase;
-  letter-spacing:.06em; color:var(--ink-3); }
-
-/* Native disclosure: the platform owns the keyboard and screen-reader behaviour.
-   The whole row is the hit target, the chevron states open/closed, and hovering or
-   focusing it is obvious without a heavy chrome. */
-.explain { border-top:1px solid var(--rule); }
-.explain > summary { display:flex; align-items:center; gap:var(--sp-8); cursor:pointer;
-  padding:var(--sp-8) var(--sp-12); border-radius:2px; font-size:var(--fs-13);
-  font-weight:600; color:var(--ink); }
-.explain > summary::-webkit-details-marker { display:none; }
-.explain > summary::before { content:""; flex:0 0 auto; width:0; height:0;
-  border-top:6px solid transparent; border-bottom:6px solid transparent;
-  border-left:7px solid var(--rule); }
-.explain > summary:hover, .explain > summary:focus-visible { background:var(--sheet); }
-.explain > summary:hover::before, .explain > summary:focus-visible::before {
-  border-left-color:var(--ink); }
-.explain > summary:active { background:var(--rule-2); }
-.explain[open] > summary::before { transform:rotate(90deg); border-left-color:var(--ink); }
-.explain-body { display:flex; flex-direction:column; gap:var(--sp-12);
-  padding:var(--sp-4) var(--sp-12) var(--sp-12); }
-
-/* Provenance and the four scoring lists are the last band of the explanation. With
-   JavaScript off they are direct children of the offer, so they carry the same
-   hairline boundary the disclosure draws when it is present. */
-.grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr));
-  gap:var(--sp-12); }
-.card > .grid { border-top:1px solid var(--rule); padding-top:var(--sp-12); }
-.grid > div { display:flex; flex-direction:column; gap:var(--sp-4); background:var(--paper);
-  border:1px solid var(--rule); border-radius:2px; padding:var(--sp-8) var(--sp-12); }
-.grid ul { margin:0; padding-left:var(--sp-16); display:flex; flex-direction:column;
-  gap:var(--sp-4); font-size:var(--fs-13); color:var(--ink-2); }
-
-/* Human axis: weight, shape and an ink rule. No accent colour anywhere here, so a
-   reader can never mistake this for the model recommendation. */
-.feedback { display:flex; flex-direction:column; gap:var(--sp-12);
-  border-top:1px solid var(--ink); padding-top:var(--sp-12); }
-.feedback h4 { display:flex; align-items:center; gap:var(--sp-8); color:var(--ink); }
-.feedback h4::before { content:""; flex:0 0 auto; width:9px; height:9px;
-  border:1px solid var(--ink); background:var(--ink); }
-.feedback-hint { font-size:var(--fs-11); }
-.feedback-controls { display:inline-flex; flex-wrap:wrap; }
-.decision-btn { border-radius:0; border-left-width:0; background:var(--paper);
-  padding:var(--sp-8) var(--sp-12); }
-.decision-btn:first-child { border-radius:2px 0 0 2px; border-left-width:1px; }
-.decision-btn:last-child { border-radius:0 2px 2px 0; }
-.decision-btn:hover:not(:disabled), .decision-btn:focus-visible:not(:disabled) {
-  background:var(--rule-2); border-color:var(--ink); }
-.decision-btn:active:not(:disabled) { background:var(--rule); }
-.decision-btn.selected { background:var(--ink); border-color:var(--ink); color:var(--paper); }
-.decision-btn.selected:hover:not(:disabled) { background:var(--ink-2);
-  border-color:var(--ink-2); }
-/* The check mark repeats the pressed state, so selection never rests on colour. */
-.decision-btn.selected::before { content:"\\2713"; margin-right:var(--sp-8); }
-.feedback textarea { resize:vertical; min-height:56px; font-family:inherit;
-  font-size:var(--fs-13); width:100%; padding:var(--sp-8); color:var(--ink);
-  background:var(--sheet); border:1px solid var(--rule); border-radius:2px; }
+.mast .status-line { margin-left:auto; }
+.list { margin:0; padding:0; list-style:none; }
+.row { border-bottom:1px solid var(--rule); }
+.row > summary { list-style:none; cursor:pointer; display:grid;
+  grid-template-columns:64px 1fr 190px 120px 80px 28px; gap:var(--sp-16);
+  align-items:center; padding:var(--sp-12) var(--sp-8); }
+.row > summary::-webkit-details-marker { display:none; }
+.row > summary:hover, .row > summary:focus-visible { background:var(--sheet); }
+.row > summary:focus-visible { outline:2px solid var(--ink); outline-offset:-2px; }
+.score { font-family:var(--mono); font-size:var(--fs-26); font-weight:600; line-height:1;
+  font-variant-numeric:tabular-nums; letter-spacing:-.03em; }
+.score small { display:block; height:3px; margin-top:var(--sp-8); background:var(--rule-2); }
+.score small i { display:block; height:100%; background:currentColor; }
+.score.score-state { font-size:var(--fs-11); font-weight:400; letter-spacing:0; color:var(--ink-3); }
+.s-hi { color:var(--signal); } .s-mid { color:var(--mid); } .s-lo { color:var(--low); }
+.t { font-family:var(--sans); font-size:var(--fs-15); font-weight:600; line-height:1.3; }
+.c { color:var(--ink-2); font-size:var(--fs-13); margin-top:var(--sp-4); }
+.chips { display:flex; gap:var(--sp-8); flex-wrap:wrap; }
+.chip { font-family:var(--mono); font-size:var(--fs-11); line-height:1; padding:var(--sp-4) var(--sp-8);
+  border:1px solid var(--rule); color:var(--ink-2); text-transform:uppercase; letter-spacing:.04em; }
+.chip.new { border-color:var(--signal); color:var(--signal); }
+.chip.veto { border-color:var(--signal); color:var(--signal); }
+.chip.rec-apply { background:var(--signal-wash); border-color:transparent; color:var(--signal); }
+.chip.rec-consider { background:var(--mid-wash); border-color:transparent; color:var(--mid); }
+.chip.flag { border-color:var(--mid); color:var(--mid); }
+.sal { font-family:var(--mono); font-size:var(--fs-13); font-variant-numeric:tabular-nums; text-align:right; }
+.sal em { display:block; font-family:var(--mono); font-size:var(--fs-11); font-style:normal; color:var(--ink-3); }
+.sal.unk { color:var(--ink-3); }
+.salbox { display:grid; grid-template-columns:auto 1fr; gap:var(--sp-4) var(--sp-16); font-size:var(--fs-13); margin:0; }
+.salbox dt { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); }
+.salbox dd { margin:0; }
+.age { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); text-align:right; font-variant-numeric:tabular-nums; }
+.chev { color:var(--ink-3); transition:transform .15s; }
+.row[open] .chev { transform:rotate(90deg); }
+.row[open] > summary { background:var(--sheet); }
+.body { background:var(--sheet); padding:var(--sp-4) var(--sp-8) var(--sp-24) 88px;
+  display:grid; grid-template-columns:1.1fr 1fr; gap:var(--sp-32); }
+.body.nodims { grid-template-columns:1fr; }
+.body h3 { font-family:var(--mono); font-size:var(--fs-11); font-weight:600; line-height:1;
+  text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); margin:var(--sp-16) 0 var(--sp-8); }
+.why { font-family:var(--serif); font-size:var(--fs-16); line-height:1.55; margin:0; max-width:62ch; }
+.nodims-note { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); margin-top:var(--sp-8); }
+.dims { display:grid; gap:var(--sp-12); }
+.dim { display:grid; grid-template-columns:110px 1fr 34px; gap:var(--sp-8); align-items:start; }
+.dim .k { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-2); }
+.dim .k em { display:block; font-style:normal; color:var(--ink-3); font-size:var(--fs-11); }
+.bar { height:6px; background:var(--rule-2); margin-top:var(--sp-4); }
+.bar i { display:block; height:100%; background:var(--ink); }
+.dim .v { font-family:var(--mono); font-size:var(--fs-12); text-align:right; font-variant-numeric:tabular-nums; }
+.dim p { grid-column:2/4; margin:var(--sp-4) 0 0; font-size:var(--fs-13); color:var(--ink-2); }
+.dim q { display:block; font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); quotes:none;
+  border-left:2px solid var(--rule); padding-left:var(--sp-8); margin-top:var(--sp-4); }
+.lists { grid-column:1/-1; display:grid; grid-template-columns:repeat(4,1fr); gap:var(--sp-24);
+  border-top:1px solid var(--rule); padding-top:var(--sp-4); }
+.lists ul { margin:0; padding-left:var(--sp-16); font-size:var(--fs-13); color:var(--ink-2); }
+.lists li { margin-bottom:var(--sp-4); }
+.lists .blk h3 { color:var(--signal); }
+.foot { grid-column:1/-1; display:flex; gap:var(--sp-16); align-items:center; flex-wrap:wrap;
+  font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3);
+  border-top:1px solid var(--rule); padding-top:var(--sp-12); }
+.foot a { color:var(--ink); margin-left:auto; }
+.feedback { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-8); }
+.feedback-controls { display:inline-flex; gap:var(--sp-4); }
+.mini { cursor:pointer; background:transparent; border:1px solid var(--rule); padding:var(--sp-4) var(--sp-8);
+  font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-2); }
+.mini:hover, .mini:focus-visible { border-color:var(--ink); color:var(--ink); }
+.mini[aria-pressed="true"] { background:var(--ink); border-color:var(--ink); color:var(--paper); }
+.foot textarea { flex-basis:100%; font-family:var(--sans); font-size:var(--fs-13); background:var(--paper);
+  color:var(--ink); border:1px solid var(--rule); padding:var(--sp-8); min-height:56px; }
+.decision-saved { color:var(--ink-2); margin-left:var(--sp-8); transition:opacity .15s; }
 .decision-state { display:flex; flex-wrap:wrap; align-items:baseline;
   gap:var(--sp-4) var(--sp-8); font-size:var(--fs-13); color:var(--ink-2); }
 /* A legacy ``consider`` decision is marked as historical with weight, not hue. */
 .decision-state.legacy { font-style:italic; border-left:2px solid var(--rule);
   padding-left:var(--sp-8); }
-/* Transient, per-row confirmation, announced once and then removed. */
-.decision-saved { font-size:var(--fs-11); font-weight:600; text-transform:uppercase;
-  letter-spacing:.06em; color:var(--ink); }
+#show-more { display:block; margin:var(--sp-16) auto 0 var(--sp-8); }
+.report-warnings p { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); }
 
 /* The analytics region is a paper panel separated by one hairline, not a second
    sheet with its own elevation. */
@@ -1831,8 +1738,8 @@ th[aria-sort="descending"] .sort-btn::after { content:"\\2193"; color:var(--ink)
 .two-col ol { margin:0; padding-left:var(--sp-16); display:flex; flex-direction:column;
   gap:var(--sp-4); font-size:var(--fs-13); color:var(--ink-2); }
 
-.empty { padding:var(--sp-32) var(--sp-16); color:var(--ink-3);
-  background:var(--paper); border:1px dashed var(--rule); border-radius:2px; }
+.empty { padding:var(--sp-24) 0; font-family:var(--mono); font-size:var(--fs-12);
+  color:var(--ink-3); }
 .toast { position:fixed; bottom:var(--sp-24); right:var(--sp-24); z-index:50;
   max-width:min(420px, calc(100vw - var(--sp-48))); background:var(--ink);
   color:var(--paper); border:1px solid var(--ink); border-radius:2px;
@@ -1868,36 +1775,6 @@ _SCRIPT = r"""
   // legacy value. The legacy value is never a button.
   var FEEDBACK_LABELS = { apply: "Aplicar", reject: "Descartar" };
   var LEGACY_FEEDBACK_LABELS = { consider: "Considerar (histórico)" };
-  var AGE_SOURCE_LABELS = {
-    posted: "fecha de publicación", first_seen: "primera vez visto", unknown: "origen desconocido"
-  };
-  var CONTENT_STATUS_LABELS = {
-    ok: "contenido completo", partial: "contenido parcial", empty: "sin contenido",
-    unknown: "contenido desconocido", blocked: "contenido bloqueado", error: "error de contenido"
-  };
-  var DUPLICATE_LABELS = {
-    new: "nueva", exact_duplicate: "duplicado exacto", probable_duplicate: "duplicado probable"
-  };
-  // Neutral link-evidence wording. The state keys stay English in the payload;
-  // only these labels are translated, and none of them asserts that a link is
-  // broken: each one restates the stored evidence, nothing more.
-  var DETAIL_STATE_LABELS = {
-    unchecked: "sin consultar el detalle",
-    skipped: "consulta de detalle omitida",
-    ok: "evidencia vigente",
-    stale: "evidencia anterior a la ventana",
-    definitive_missing: "la última consulta respondió 404/410",
-    retryable_failure: "fallo de transporte reintentable",
-    failed: "fallo con respuesta HTTP"
-  };
-  // Preference verdicts are a separate axis from the model recommendation and
-  // the human decision. The stored keys stay English; only the labels change.
-  var PREFERENCE_LABELS = {
-    pass: "sin exclusión",
-    flag: "revisar exclusión",
-    fail: "coincide con una exclusión"
-  };
-
   var dataNode = document.getElementById("jobscout-data");
   var payload;
   try {
@@ -1936,12 +1813,13 @@ _SCRIPT = r"""
   }
 
   function decisionStateText(decision) {
-    if (!decision) { return "Sin decisión registrada"; }
+    // The pressed button already shows an active decision; only a legacy value,
+    // which has no button of its own, needs words.
     if (isLegacyFeedback(decision)) {
       return "Decisión histórica (legacy): " + feedbackLabel(decision) +
         ". Puede reemplazarla con Aplicar o Descartar.";
     }
-    return "Tu decisión: " + feedbackLabel(decision);
+    return "";
   }
 
   function el(tag, className, text) {
@@ -1964,27 +1842,6 @@ _SCRIPT = r"""
       return null;
     }
     return null;
-  }
-
-  function listBlock(title, items) {
-    var box = el("div");
-    box.appendChild(el("h4", null, title));
-    if (!items.length) {
-      box.appendChild(el("p", "muted", "Sin datos"));
-      return box;
-    }
-    var list = el("ul");
-    items.forEach(function (item) { list.appendChild(el("li", null, item)); });
-    box.appendChild(list);
-    return box;
-  }
-
-  function metaItem(key, value) {
-    var item = el("li");
-    item.appendChild(el("span", "meta-key", key));
-    item.appendChild(document.createTextNode(" "));
-    item.appendChild(el("span", "meta-value", String(value)));
-    return item;
   }
 
   // Display-only shortening of the stored ISO timestamp: ``2026-09-08T00:00:00Z``
@@ -2163,46 +2020,22 @@ _SCRIPT = r"""
     sync();
   }
 
-  function renderKeywords(offer) {
-    var box = el("div");
-    box.appendChild(el("h4", null, "Origen: palabra clave / posición observada"));
-    if (!offer.keywords.length) {
-      box.appendChild(el("p", "muted", "Sin procedencia guardada"));
-      return box;
-    }
-    var list = el("ul");
-    offer.keywords.forEach(function (entry) {
-      // An inventory source has no ordered search result, so its stored rank is
-      // shown as "sin dato" instead of a number that would read as relevance.
-      var rank = (entry.position_kind === "none" || !(entry.rank > 0))
-        ? "sin dato" : entry.rank;
-      var decision = labelFrom(DUPLICATE_LABELS, entry.decision, entry.decision);
-      var provider = entry.provider ? " \u00b7 " + entry.provider : "";
-      list.appendChild(el("li", null, entry.keyword + provider + " \u2014 posición observada " +
-        rank + " (" + decision + ")"));
-    });
-    box.appendChild(list);
-    return box;
-  }
-
   function renderFeedback(offer) {
-    var box = el("section", "feedback");
-    // The accessible names carry the card's own title/company, so a screen-reader
-    // user can tell one offer's feedback controls from another. The visible
-    // heading and the stored decision values stay untouched.
+    var box = el("span", "feedback");
+    // The accessible names carry the row's own title/company, so a screen-reader
+    // user can tell one offer's feedback controls from another.
     var offerLabel = offer.title + " \u2014 " + offer.company;
+    box.setAttribute("role", "group");
     box.setAttribute("aria-label", "Mi decisión sobre la oferta: " + offerLabel);
-    box.appendChild(el("h4", null, "Mi decisión (feedback)"));
-    box.appendChild(el("p", "feedback-hint muted",
-      "Elija Aplicar o Descartar. Se guarda solo en este navegador; no postula ni " +
-      "escribe en la base de datos."));
+    box.title = "Se guarda solo en este navegador; no postula ni escribe en la base de datos.";
     var entry = feedback[offer.id] || { decision: "", reason: "" };
     var controls = el("div", "feedback-controls");
     controls.setAttribute("role", "group");
     controls.setAttribute("aria-label", "Marca esta oferta: " + offerLabel);
     FEEDBACK_DECISIONS.forEach(function (decision) {
       var decisionText = labelFrom(FEEDBACK_LABELS, decision, decision);
-      var button = el("button", "btn decision-btn", decisionText);
+      var visibleText = decision === "apply" ? "\u2713 aplicar" : "\u2715 descartar";
+      var button = el("button", "mini decision-btn", visibleText);
       button.type = "button";
       button.setAttribute("data-decision", decision);
       button.title = "Marca esta oferta como: " + decisionText;
@@ -2213,8 +2046,8 @@ _SCRIPT = r"""
         entry.updated_at = new Date().toISOString();
         feedback[offer.id] = entry;
         var stored = saveFeedback();
-        // Confirm after the re-render so the marker lands on the card that survived
-        // the reviewed/unreviewed filter, not on a node that is about to be replaced.
+        // Confirm after the re-render so the marker lands on the row that survived
+        // the reviewed/unreviewed filter, not on a node about to be replaced.
         syncFeedback(offer.id, { rerender: true });
         if (stored) { confirmSaved(offer.id); }
       });
@@ -2225,6 +2058,7 @@ _SCRIPT = r"""
     reason.placeholder = "Motivo opcional (se guarda en este navegador)";
     reason.setAttribute("aria-label", "Motivo opcional de la decisión");
     reason.value = entry.reason || "";
+    reason.hidden = !entry.decision;
     var timer = null;
     reason.addEventListener("input", function () {
       if (timer) { window.clearTimeout(timer); }
@@ -2237,7 +2071,7 @@ _SCRIPT = r"""
       }, 300);
     });
     box.appendChild(reason);
-    var state = el("p", "decision-state");
+    var state = el("span", "decision-state");
     if (isLegacyFeedback(entry.decision)) { state.classList.add("legacy"); }
     // The text lives in its own node so the transient save confirmation can be
     // appended next to it without being wiped by the next state update.
@@ -2253,7 +2087,7 @@ _SCRIPT = r"""
   function confirmSaved(jobId) {
     var existing = document.querySelectorAll(".decision-saved");
     for (var i = 0; i < existing.length; i++) { existing[i].remove(); }
-    var state = document.querySelector('.card[data-job-id="' + jobId + '"] .decision-state');
+    var state = document.querySelector('.row[data-job-id="' + jobId + '"] .decision-state');
     if (!state) { return; }
     var marker = el("span", "decision-saved", "Guardado en este navegador");
     marker.setAttribute("role", "status");
@@ -2264,7 +2098,7 @@ _SCRIPT = r"""
 
   function syncFeedback(jobId, options) {
     refreshFeedbackCount();
-    // A decision can move a card in or out of the reviewed/unreviewed filter, so
+    // A decision can move a row in or out of the reviewed/unreviewed filter, so
     // re-filter when one is active. Reason typing must not re-render: it would
     // steal focus from the textarea.
     if (options && options.rerender && filters.review) {
@@ -2272,210 +2106,294 @@ _SCRIPT = r"""
       return;
     }
     var entry = feedback[jobId] || {};
-    var card = document.querySelector('.card[data-job-id="' + jobId + '"]');
-    if (!card) { return; }
-    card.classList.toggle("reviewed", Boolean(entry.decision));
-    var buttons = card.querySelectorAll(".feedback-controls .decision-btn");
+    var row = document.querySelector('.row[data-job-id="' + jobId + '"]');
+    if (!row) { return; }
+    row.classList.toggle("reviewed", Boolean(entry.decision));
+    var buttons = row.querySelectorAll(".feedback-controls .decision-btn");
     FEEDBACK_DECISIONS.forEach(function (decision, index) {
       if (!buttons[index]) { return; }
       var selected = entry.decision === decision;
       buttons[index].classList.toggle("selected", selected);
       buttons[index].setAttribute("aria-pressed", selected ? "true" : "false");
     });
-    var state = card.querySelector(".decision-state-text");
+    var state = row.querySelector(".decision-state-text");
     if (state) {
       state.textContent = decisionStateText(entry.decision);
     }
-    var stateBox = card.querySelector(".decision-state");
+    var stateBox = row.querySelector(".decision-state");
     if (stateBox) { stateBox.classList.toggle("legacy", isLegacyFeedback(entry.decision)); }
+    var reason = row.querySelector(".foot textarea");
+    if (reason) { reason.hidden = !entry.decision; }
   }
 
-  function detailAgeText(detail) {
-    var age = detail.age_days;
-    if (age === null || age === undefined) { return "sin fecha utilizable"; }
-    return "hace " + age + (age === 1 ? " día" : " días");
+  function isReviewed(offer) {
+    return Boolean(feedback[offer.id] && feedback[offer.id].decision);
   }
 
-  function detailStateText(detail) {
-    if (detail.state === "ok") {
-      return "Detalle: " + detailAgeText(detail);
-    }
-    if (detail.state === "stale") {
-      return "Detalle: evidencia con más de " + detail.window_days +
-        " días (" + detailAgeText(detail) + ")";
-    }
-    if (detail.state === "definitive_missing") {
-      var code = (detail.http_status === null || detail.http_status === undefined)
-        ? "404/410" : String(detail.http_status);
-      return "Detalle: la última consulta respondió " + code;
-    }
-    return "Detalle: " + labelFrom(DETAIL_STATE_LABELS, detail.state, detail.state);
+  function scoreStateText(status) {
+    if (status === "error" || status === "parse_error") { return "sin evaluar (error)"; }
+    if (status === "needs_more_info") { return "sin evaluar (falta información)"; }
+    if (status === "not_configured") { return "sin evaluar (sin evaluador)"; }
+    return "sin evaluar";
   }
 
-  // Link evidence sits with the offer title, kept apart from both judgement axes
-  // (the model badge/score and the human feedback block). Every value is written
-  // through textContent and any href goes through safeHttpUrl, so a stored URL can
-  // never become an unguarded or broken link.
-  function renderDetailEvidence(offer) {
-    var detail = offer.detail;
-    if (!detail || !detail.state) { return null; }
-    var box = el("p", "detail-evidence");
-    box.appendChild(el("span", "detail-evidence-state", detailStateText(detail)));
-    if (detail.refuted) {
-      box.appendChild(el("span", "detail-evidence-note",
-        "La evidencia fue refutada por un re-avistamiento posterior de la oferta."));
-    }
-    var finalHref = safeHttpUrl(detail.final_url);
-    if (finalHref) {
-      var redirect = el("span", "detail-evidence-redirect");
-      redirect.appendChild(document.createTextNode("Redirección observada: "));
-      var link = el("a", "detail-evidence-link", finalHref);
-      link.href = finalHref;
-      link.rel = "noopener noreferrer";
-      link.target = "_blank";
-      redirect.appendChild(link);
-      box.appendChild(redirect);
-    }
-    return box;
+  function scoreBand(score) {
+    if (score >= 70) { return "s-hi"; }
+    if (score >= 50) { return "s-mid"; }
+    return "s-lo";
   }
 
-  // Preference evidence sits with the offer title, apart from the model and
-  // human axes. A PASS stays quiet: the absence of an exclusion is the default,
-  // and only FAIL/FLAG justify a band a reader has to see.
-  function preferenceStateText(preference) {
-    return "Preferencia: " + labelFrom(PREFERENCE_LABELS, preference.outcome, preference.outcome);
-  }
-
-  function renderPreference(offer) {
-    var preference = offer.preference;
-    if (!preference || !preference.outcome || preference.outcome === "pass") { return null; }
-    var box = el("p", "preference-evidence preference-" + preference.outcome);
-    box.appendChild(el("span", "preference-evidence-state", preferenceStateText(preference)));
-    if (preference.reason) {
-      box.appendChild(el("span", "preference-evidence-reason", preference.reason));
-    }
+  // The preference is a separate axis: only a real FAIL/FLAG earns a line, and
+  // it is prepended so it cannot be missed among the model's own findings.
+  function preferenceFirst(offer, outcome) {
+    var preference = offer.preference || {};
+    if (preference.outcome !== outcome) { return null; }
+    var text = "Preferencia: " + (preference.reason || "");
     if (preference.evidence && preference.evidence.length) {
-      box.appendChild(el("span", "preference-evidence-cue",
-        "Evidencia: " + preference.evidence.join(", ")));
+      text += " (" + preference.evidence.join(", ") + ")";
     }
+    return text;
+  }
+
+  function renderList(title, items, className, firstItem) {
+    var box = el("div", className);
+    box.appendChild(el("h3", null, title));
+    var list = el("ul");
+    if (firstItem) { list.appendChild(el("li", null, firstItem)); }
+    var values = Array.isArray(items) ? items : [];
+    if (values.length) {
+      values.forEach(function (item) { list.appendChild(el("li", null, item)); });
+    } else if (!firstItem) {
+      list.appendChild(el("li", null, "\u2014"));
+    }
+    box.appendChild(list);
     return box;
   }
 
-  function renderCard(offer) {
-    var card = el("article", "card");
-    card.setAttribute("data-job-id", String(offer.id));
-    if (offer.recommendation) { card.classList.add("rec-" + offer.recommendation); }
+  var MONTHS_ES = ["ene", "feb", "mar", "abr", "may", "jun",
+    "jul", "ago", "sep", "oct", "nov", "dic"];
 
-    var head = el("header", "card-head");
-    var titleBox = el("div", "card-title");
-    titleBox.appendChild(el("h3", null, offer.title));
-    // Company and location live here and only here: the meta grid below carries the
-    // scoring facts, so the row does not repeat the same two values twice.
-    var sub = el("p", "card-sub");
-    sub.appendChild(el("span", "company", offer.company));
-    if (offer.location) {
-      sub.appendChild(el("span", "dot", "\u00b7"));
-      sub.appendChild(el("span", "location", offer.location));
+  function evaluatedDate(value) {
+    if (typeof value !== "string") { return null; }
+    var match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+    if (!match) { return null; }
+    var month = parseInt(match[2], 10) - 1;
+    if (month < 0 || month > 11) { return null; }
+    return parseInt(match[3], 10) + " " + MONTHS_ES[month];
+  }
+
+  function provenanceText(offer) {
+    var parts = [];
+    if (offer.model) {
+      var segments = String(offer.model).split("/");
+      var model = segments[segments.length - 1];
+      if (model) { parts.push(model); }
     }
-    titleBox.appendChild(sub);
-    var detailBox = renderDetailEvidence(offer);
-    if (detailBox) { titleBox.appendChild(detailBox); }
-    var preferenceBox = renderPreference(offer);
-    if (preferenceBox) { titleBox.appendChild(preferenceBox); }
-    head.appendChild(titleBox);
+    if (offer.confidence !== null && offer.confidence !== undefined) {
+      parts.push("confianza " + String(offer.confidence).replace(".", ","));
+    }
+    var date = evaluatedDate(offer.evaluated_at);
+    if (date) { parts.push("evaluada " + date); }
+    return parts.join(" \u00b7 ");
+  }
 
-    var scoreBox = el("div", "card-score");
+  function renderRow(offer) {
+    var item = el("li");
+    var details = el("details", "row");
+    details.setAttribute("data-job-id", String(offer.id));
+    if (isReviewed(offer)) { details.classList.add("reviewed"); }
+
+    var summary = el("summary");
     var scoreNode;
-    if (offer.score === null) {
-      // A scoreless offer states its real evaluation state instead of showing a
-      // blank or placeholder number: a failed or unresolved evaluation is a fact
-      // about the scoring pipeline, not a hidden detail.
-      if (offer.evaluation_status === "needs_more_info") {
-        scoreNode = el("span", "score score-state", "Requiere más información");
-      } else if (offer.evaluation_status === "parse_error" || offer.evaluation_status === "error") {
-        scoreNode = el("span", "score score-state", "Evaluación fallida");
-      } else if (offer.evaluation_status === "not_configured") {
-        scoreNode = el("span", "score score-state", "Evaluador sin configurar");
-      } else {
-        scoreNode = el("span", "score", "Sin puntaje");
-      }
+    if (offer.score !== null) {
+      var rounded = Math.round(offer.score);
+      scoreNode = el("div", "score " + scoreBand(offer.score), rounded);
+      scoreNode.setAttribute("aria-label", "Puntaje " + rounded + " sobre 100");
+      var track = el("small");
+      var fill = el("i");
+      fill.style.width = String(offer.score) + "%";
+      track.appendChild(fill);
+      scoreNode.appendChild(track);
     } else {
-      scoreNode = el("span", "score", offer.score.toFixed(1));
-      scoreNode.appendChild(el("span", "score-max", " / 100"));
-      scoreNode.setAttribute("aria-label", "Puntaje " + offer.score.toFixed(1) + " sobre 100");
+      scoreNode = el("div", "score score-state", scoreStateText(offer.evaluation_status));
     }
-    scoreBox.appendChild(scoreNode);
+    summary.appendChild(scoreNode);
+
+    var titleBox = el("div");
+    titleBox.appendChild(el("div", "t", offer.title));
+    var subtitle = offer.company;
+    if (offer.location) { subtitle += " \u00b7 " + offer.location; }
+    titleBox.appendChild(el("div", "c", subtitle));
+    summary.appendChild(titleBox);
+
+    var chips = el("div", "chips");
     var recommendation = effectiveRecommendation(offer);
-    var recommendationText = labelFrom(RECOMMENDATION_LABELS, recommendation, recommendation);
-    var badge = el("span", "badge badge-" + recommendation, recommendationText);
-    badge.title = "Recomendación del modelo: " + recommendationText;
-    scoreBox.appendChild(badge);
-    // The right-hand column: the model's score and badge, then the one control that
-    // leaves the report, as a bordered link rather than underlined prose buried in
-    // the facts list.
-    var side = el("div", "card-side");
-    side.appendChild(scoreBox);
+    if (recommendation === "apply") {
+      chips.appendChild(el("span", "chip rec-apply", "aplicar"));
+    } else if (recommendation === "consider") {
+      chips.appendChild(el("span", "chip rec-consider", "considerar"));
+    } else if (recommendation === "skip") {
+      chips.appendChild(el("span", "chip", "descartar"));
+    }
+    if (offer.is_new) { chips.appendChild(el("span", "chip new", "nueva")); }
+    var preference = offer.preference || {};
+    if (preference.outcome === "flag") {
+      var flag = el("span", "chip flag", "\u26a0 flag");
+      flag.title = preference.reason || "";
+      chips.appendChild(flag);
+    } else if (preference.outcome === "fail") {
+      var veto = el("span", "chip veto", "veto");
+      veto.title = preference.reason || "";
+      chips.appendChild(veto);
+    }
+    summary.appendChild(chips);
+
+    var salaryNode;
+    if (offer.salary) {
+      salaryNode = el("div", "sal", offer.salary);
+      salaryNode.appendChild(el("em", null, "indicado"));
+    } else {
+      salaryNode = el("div", "sal unk", "\u2014");
+      salaryNode.appendChild(el("em", null, "sin dato"));
+    }
+    summary.appendChild(salaryNode);
+
+    var age = (offer.age_days === null)
+      ? "\u2014" : "hace " + Math.round(offer.age_days) + " d";
+    summary.appendChild(el("div", "age", age));
+
+    var chev = el("div", "chev", "\u203a");
+    chev.setAttribute("aria-hidden", "true");
+    summary.appendChild(chev);
+
+    details.appendChild(summary);
+    var bodyBuilt = false;
+    details.addEventListener("toggle", function () {
+      if (!details.open || bodyBuilt) { return; }
+      details.appendChild(renderBody(offer));
+      bodyBuilt = true;
+    });
+    item.appendChild(details);
+    return item;
+  }
+
+  function renderBody(offer) {
+    var dims = Array.isArray(offer.dimensions) ? offer.dimensions : [];
+    var body = el("div", dims.length ? "body" : "body nodims");
+
+    var left = el("div");
+    left.appendChild(el("h3", null, "Justificación del modelo"));
+    if (offer.rationale) {
+      left.appendChild(el("p", "why", offer.rationale));
+    } else {
+      left.appendChild(el("p", "why muted", "sin justificación"));
+    }
+    if (offer.salary) {
+      left.appendChild(el("h3", null, "Salario · bruto anual"));
+      var salaryBox = el("dl", "salbox");
+      salaryBox.appendChild(el("dt", null, "indicado"));
+      salaryBox.appendChild(el("dd", null, offer.salary));
+      left.appendChild(salaryBox);
+    }
+    if (!dims.length) {
+      left.appendChild(el("p", "nodims-note", "sin desglose en esta evaluación"));
+    }
+    body.appendChild(left);
+
+    if (dims.length) {
+      var right = el("div");
+      right.appendChild(el("h3", null, "Desglose por dimensiones"));
+      var dimsBox = el("div", "dims");
+      var weightSum = 0;
+      dims.forEach(function (dim) { weightSum += Number(dim.weight) || 0; });
+      dims.forEach(function (dim) {
+        var row = el("div", "dim");
+        var key = el("div", "k", dim.name);
+        if (weightSum !== 0) {
+          key.appendChild(el("em", null,
+            "peso " + Math.round(dim.weight / weightSum * 100) + "%"));
+        }
+        row.appendChild(key);
+        var bar = el("div", "bar");
+        var fill = el("i");
+        fill.style.width = String(dim.score) + "%";
+        bar.appendChild(fill);
+        row.appendChild(bar);
+        row.appendChild(el("div", "v", Math.round(dim.score)));
+        if (dim.rationale) { row.appendChild(el("p", null, dim.rationale)); }
+        (dim.evidence || []).forEach(function (evidence) {
+          row.appendChild(el("q", null, evidence));
+        });
+        dimsBox.appendChild(row);
+      });
+      right.appendChild(dimsBox);
+      body.appendChild(right);
+    }
+
+    var hasLists = ["strengths", "gaps", "blockers", "unknowns"].some(function (key) {
+      return Array.isArray(offer[key]) && offer[key].length > 0;
+    });
+    var blockerFirst = preferenceFirst(offer, "fail");
+    var unknownFirst = preferenceFirst(offer, "flag");
+    // Most stored evaluations carry no lists; four columns of dashes would only
+    // add height, so the strip appears when there is something to read.
+    if (hasLists || blockerFirst || unknownFirst) {
+      var lists = el("div", "lists");
+      lists.appendChild(renderList("Puntos fuertes", offer.strengths, null, null));
+      lists.appendChild(renderList("Carencias", offer.gaps, null, null));
+      lists.appendChild(renderList("Bloqueos", offer.blockers, "blk", blockerFirst));
+      lists.appendChild(renderList("Incógnitas", offer.unknowns, null, unknownFirst));
+      body.appendChild(lists);
+    }
+
+    var foot = el("div", "foot");
+    foot.appendChild(el("span", null, provenanceText(offer)));
+    if (offer.imported_review && offer.imported_review.reviewed) {
+      foot.appendChild(el("span", null,
+        "decisión importada: " + feedbackLabel(offer.imported_review.decision)));
+    }
+    var feedbackBox = renderFeedback(offer);
+    foot.appendChild(feedbackBox);
     var href = safeHttpUrl(offer.url);
     if (href) {
-      var link = el("a", "offer-link", "Ver la oferta");
+      var link = el("a", null, "Ver la oferta \u2197");
       link.href = href;
       link.rel = "noopener noreferrer";
       link.target = "_blank";
-      link.title = "Abre la oferta en LinkedIn en una pestaña nueva";
-      side.appendChild(link);
+      foot.appendChild(link);
     }
-    head.appendChild(side);
-    card.appendChild(head);
+    // The reason opens under the whole footer line, not squeezed between buttons.
+    var reasonBox = feedbackBox.querySelector("textarea");
+    if (reasonBox) { foot.appendChild(reasonBox); }
+    body.appendChild(foot);
+    return body;
+  }
 
-    var meta = el("ul", "meta");
-    if (offer.posted_at) {
-      meta.appendChild(metaItem("Publicada", displayTimestamp(offer.posted_at)));
+  var PAGE_SIZE = 50;
+  var matchedOffers = [];
+  var shownOffers = 0;
+
+  function renderBatch() {
+    var container = document.getElementById("offers");
+    var end = Math.min(shownOffers + PAGE_SIZE, matchedOffers.length);
+    for (var i = shownOffers; i < end; i++) {
+      container.appendChild(renderRow(matchedOffers[i]));
     }
-    var age = (offer.age_days === null)
-      ? "antigüedad desconocida"
-      : (offer.age_days + (offer.age_days === 1 ? " día" : " días") +
-         " (" + labelFrom(AGE_SOURCE_LABELS, offer.age_source, offer.age_source) + ")");
-    meta.appendChild(metaItem("Antigüedad", age));
-    meta.appendChild(metaItem("Estado", labelFrom(CONTENT_STATUS_LABELS, offer.content_status, offer.content_status)));
-    meta.appendChild(metaItem("Oferta", "#" + offer.id));
-    if (offer.confidence !== null) { meta.appendChild(metaItem("Confianza", offer.confidence)); }
-    if (offer.scorer) {
-      var scorerText = offer.scorer + (offer.model ? " (" + offer.model + ")" : "");
-      meta.appendChild(metaItem("Evaluador", scorerText));
-    }
-    card.appendChild(meta);
-
-    if (offer.rationale) {
-      var rationale = el("p", "rationale");
-      rationale.appendChild(el("strong", null, "Justificación del modelo: "));
-      rationale.appendChild(document.createTextNode(offer.rationale));
-      card.appendChild(rationale);
-    }
-
-    var grid = el("div", "grid");
-    grid.appendChild(listBlock("Puntos fuertes", offer.strengths));
-    grid.appendChild(listBlock("Brechas", offer.gaps));
-    grid.appendChild(listBlock("Bloqueos", offer.blockers));
-    grid.appendChild(listBlock("Incógnitas", offer.unknowns));
-    grid.appendChild(renderKeywords(offer));
-    card.appendChild(grid);
-    card.appendChild(renderFeedback(offer));
-
-    var entry = feedback[offer.id] || {};
-    if (entry.decision) { card.classList.add("reviewed"); }
-    return card;
+    shownOffers = end;
+    document.getElementById("show-more").hidden = shownOffers >= matchedOffers.length;
   }
 
   function renderOffers() {
     var container = document.getElementById("offers");
     container.textContent = "";
-    var matchesList = payload.offers.filter(matches).sort(compare);
-    matchesList.forEach(function (offer) { container.appendChild(renderCard(offer)); });
-    document.getElementById("empty-state").hidden = matchesList.length !== 0;
+    matchedOffers = payload.offers.filter(matches).sort(compare);
+    shownOffers = 0;
+    renderBatch();
+    document.getElementById("empty-state").hidden = matchedOffers.length !== 0;
     var resultCount = document.getElementById("result-count");
-    resultCount.textContent = (matchesList.length === payload.offers.length)
-      ? matchesList.length + " ofertas"
-      : matchesList.length + " de " + payload.offers.length + " ofertas";
+    resultCount.textContent = (matchedOffers.length === payload.offers.length)
+      ? matchedOffers.length + " ofertas"
+      : matchedOffers.length + " de " + payload.offers.length + " ofertas";
     var offersTab = document.getElementById("tab-offers-count");
     if (offersTab) { offersTab.textContent = String(payload.offers.length); }
   }
@@ -2492,25 +2410,6 @@ _SCRIPT = r"""
     if (filters.review) { count += 1; }
     if (filters.importedReview) { count += 1; }
     return count;
-  }
-
-  // Honest empty state for the imported-decision axis. With no imported decision
-  // the view says so and points at the import command; it never presents every
-  // active offer as a measured backlog, and it never derives a count from
-  // cycle_id.
-  function refreshImportedReviewNote() {
-    var note = document.getElementById("imported-review-note");
-    if (!note) { return; }
-    var imported = (payload.summary && payload.summary.human_reviewed_jobs) || 0;
-    if (imported > 0) {
-      note.textContent = "La decisión importada proviene de job_feedback en SQLite y es " +
-        "independiente de sus marcas guardadas en este navegador.";
-      return;
-    }
-    note.textContent = "Todavía no hay ninguna decisión humana importada. Las ofertas " +
-      "sin fila en job_feedback no son una medida de backlog: ejecute " +
-      "'jobscout import-feedback' para importar sus decisiones y vuelva a generar " +
-      "este informe.";
   }
 
   // The toolbar mirrors every control's state, and "limpiar" only appears when a
@@ -2641,6 +2540,17 @@ _SCRIPT = r"""
     setToast("Feedback exportado. Conserve el archivo como respaldo.");
   }
 
+  function resetFilters() {
+    filters = { text: "", recommendation: "", isNew: false, minScore: null, keyword: "", review: "", importedReview: false, sort: "score" };
+    document.getElementById("filter-text").value = "";
+    document.getElementById("filter-min-score").value = "";
+    document.getElementById("filter-keyword").value = "";
+    document.getElementById("filter-review").value = "";
+    document.getElementById("filter-sort").value = "score";
+    applyFilters();
+    document.getElementById("filter-text").focus();
+  }
+
   function bindFilters() {
     document.getElementById("filter-text").addEventListener("input", function (event) {
       filters.text = event.target.value.trim();
@@ -2678,16 +2588,9 @@ _SCRIPT = r"""
       filters.sort = event.target.value;
       applyFilters();
     });
-    document.getElementById("reset-filters").addEventListener("click", function () {
-      filters = { text: "", recommendation: "", isNew: false, minScore: null, keyword: "", review: "", importedReview: false, sort: "score" };
-      document.getElementById("filter-text").value = "";
-      document.getElementById("filter-min-score").value = "";
-      document.getElementById("filter-keyword").value = "";
-      document.getElementById("filter-review").value = "";
-      document.getElementById("filter-sort").value = "score";
-      applyFilters();
-      document.getElementById("filter-text").focus();
-    });
+    document.getElementById("reset-filters").addEventListener("click", resetFilters);
+    document.getElementById("empty-reset").addEventListener("click", resetFilters);
+    document.getElementById("show-more").addEventListener("click", renderBatch);
     document.getElementById("export-feedback").addEventListener("click", exportFeedback);
   }
 
@@ -2715,53 +2618,17 @@ _SCRIPT = r"""
   });
   bindFilters();
   refreshFeedbackCount();
-  refreshImportedReviewNote();
   applyFilters();
 })();
 
 // ---------------------------------------------------------------------------
-// Progressive enhancement appended after the report script above. The offer cards,
-// their rationale, and their provenance lists are already complete and readable
-// without this block; it only adds a native disclosure so a long offer list stays
-// fast to scan. <details>/<summary> is used on purpose: the platform owns the
-// keyboard and screen-reader behaviour, so no custom ARIA has to reimplement it.
-// The report script itself is untouched.
+// Keyword table: reorder the rows already in the DOM by clicking a header. The
+// analytics values are computed in Python and never change here; only the display
+// order of the rendered rows does, so sorting costs a handful of comparisons.
 // ---------------------------------------------------------------------------
 (function () {
   "use strict";
 
-  var container = document.getElementById("offers");
-  if (!container) { return; }
-
-  function enhance(card) {
-    if (card.getAttribute("data-explain") === "ready") { return; }
-    var grid = card.querySelector(".grid");
-    if (!grid) { return; }
-    var rationale = card.querySelector(".rationale");
-    var block = document.createElement("details");
-    block.className = "explain";
-    var summary = document.createElement("summary");
-    summary.textContent = "Explicabilidad del puntaje y procedencia";
-    var body = document.createElement("div");
-    body.className = "explain-body";
-    if (rationale) { body.appendChild(rationale); }
-    body.appendChild(grid);
-    block.appendChild(summary);
-    block.appendChild(body);
-    card.insertBefore(block, card.querySelector(".feedback"));
-    card.setAttribute("data-explain", "ready");
-  }
-
-  function enhanceAll() {
-    var cards = container.querySelectorAll(".card");
-    for (var i = 0; i < cards.length; i++) { enhance(cards[i]); }
-  }
-
-  // -------------------------------------------------------------------------
-  // Keyword table: reorder the rows already in the DOM by clicking a header. The
-  // analytics values are computed in Python and never change here; only the display
-  // order of the rendered rows does, so sorting costs a handful of comparisons.
-  // -------------------------------------------------------------------------
   function sortCell(text) {
     var cleaned = text.replace("%", "").trim();
     var parsed = parseFloat(cleaned);
@@ -2836,13 +2703,6 @@ _SCRIPT = r"""
 
   var keywordTable = document.querySelector("#keyword-table table");
   if (keywordTable) { makeSortable(keywordTable); }
-
-  enhanceAll();
-  // renderOffers() rebuilds every card on each filter change, so re-apply the
-  // disclosure to the freshly built nodes instead of holding card state.
-  if (window.MutationObserver) {
-    new MutationObserver(enhanceAll).observe(container, { childList: true });
-  }
 })();
 """
 
@@ -2874,11 +2734,10 @@ def render_dashboard_html(payload: dict[str, Any]) -> str:
     meta_parts.append(scope)
     meta = " &middot; ".join(meta_parts)
     warnings = payload.get("warnings") or []
-    warnings_html = (
-        "".join(f"<p>{html.escape(str(item))}</p>" for item in warnings)
-        if warnings
-        else "<p>Sin avisos.</p>"
-    )
+    warnings_html = ""
+    if warnings:
+        paragraphs = "".join(f"<p>{html.escape(str(item))}</p>" for item in warnings)
+        warnings_html = f'<div class="report-warnings">{paragraphs}</div>'
     heading = str(label) if label else "informe local"
     title = html.escape(f"Panel de jobscout \u2014 {heading}")
     return _render_template(
@@ -2888,7 +2747,6 @@ def render_dashboard_html(payload: dict[str, Any]) -> str:
             "STYLE": _STYLE,
             "META": meta,
             "WARNINGS": warnings_html,
-            "WARNINGS_CLASS": "notice warn" if warnings else "notice",
             "DATA": embed_json(payload),
             "SCRIPT": _SCRIPT,
         },

@@ -3,6 +3,22 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-20 (f) — dashboard redesign DR-3: offer row
+
+Done (`odd/tasks/dashboard-redesign.md`, DR-3): offers are one-line `<details>`
+rows ported from the mockup, rendered 50 at a time, with the body built on first
+open (full rationale, stated salary, dimensions or `sin desglose`, lists only when
+present, footer with apply/reject). AA colours from DR-2 applied. Avisos box,
+imported-review note, detail evidence and the old cards removed.
+
+- **Finding:** only 5 of 700 offers have dimensions or lists; most rows open to
+  the rationale only. Same root as the pending dimensions investigation.
+- **Lesson:** the DeepSeek ejecutor ran out of steps on the first pass, and its
+  shell was denied even for the exact pytest command, so it never ran a test.
+  The explorer's map missed `tests/test_preference.py`, which also pins the
+  dashboard.
+- **Next:** DR-4 (Palabras clave view).
+
 ## Session 2026-10-20 (e) — dashboard redesign DR-2: shell and visual system
 
 Done (`odd/tasks/dashboard-redesign.md`, DR-2): new tokens, sticky header

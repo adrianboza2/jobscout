@@ -115,7 +115,7 @@ Prepare the real profile before any sweep:
 | 1 | Controlled sweep | `python -m jobscout keyword-plan`, then `python -m jobscout search-linkedin --keywords "..." --dry-run`; to run it, replace `--dry-run` with `--confirm-network` | Discovers new offers. `keyword-plan` is offline; every live search is an explicit human action. | Semi-automatic: you authorize each query |
 | 2 | Enrich | `python -m jobscout fetch-details --max-items 10 --confirm-network` (or `fetch-getmanfred-details` / `fetch-tecnoempleo-details` per platform, or `--fixture` to stay offline) | Fetches each offer's full description, bounded in volume. | Semi-automatic: you authorize each run |
 | 3 | Score with deepseek-v4.1-flash | `python -m jobscout score --all --scorer opencode` | The default scorer (OpenCode + deepseek-v4.1-flash) evaluates only offers that have no evaluation yet. | Scoring is automatic; the apply decision is not |
-| 4 | Generate the dashboard | `python -m jobscout dashboard` | Writes a local HTML report with every active offer, scores, link evidence, and preference filters. | Automatic and read-only |
+| 4 | Generate the dashboard | `python -m jobscout dashboard` | Writes a local HTML report with every active offer, scores, the model's rationale, and preference flags. | Automatic and read-only |
 | 5 | Review offers | Open `reports/jobscout-dashboard.html` | You mark **Aplicar** or **Descartar** in the browser. | Human decision only |
 | 6 | Export/import feedback | Export the JSON from the dashboard, then run `python -m jobscout import-feedback jobscout-feedback.json` | Your decisions move from `localStorage` to the SQLite `job_feedback` table. | Import runs automatically once you invoke it |
 | 7 | Calibrate | `python -m jobscout calibrate --scorer opencode` | Compares the model recommendation with your imported human decision. Read-only; it adjusts nothing. | Automatic and read-only |
@@ -184,6 +184,19 @@ unscored new offers and failures show in red) and offers two tabs, **Ofertas** a
 export control on the right. The offers view uses a single horizontal toolbar,
 including a **Solo nuevas** toggle (offers first seen in the latest sweep); there
 is no side rail and no KPI cards.
+
+Each offer is **a one-line row**: score with a bar coloured by band (≥ 70 / ≥ 50),
+title, company and location, chips (recommendation, `nueva`, the preference's
+`⚠ flag` or `veto`), salary with its provenance (`indicado` or `sin dato`; a
+number is never invented) and age. A failed evaluation shows as `sin evaluar
+(error)`, never as 0. Rows are painted 50 at a time (**Mostrar 50 más**) and the
+detail is built only when a row is opened: the model's full rationale (no longer
+truncated), the stated salary, the per-dimension breakdown (or `sin desglose en
+esta evaluación`), Puntos fuertes / Carencias / Bloqueos / Incógnitas when the
+evaluation has them, and a footer with model, confidence, date, the imported
+decision, the **✓ aplicar** / **✕ descartar** buttons (the reason field opens after
+choosing) and **Ver la oferta ↗**. Report warnings are quiet lines at the end, next
+to the metadata.
 
 ```bash
 # POSIX
@@ -268,9 +281,9 @@ shows a "pending" counter the database cannot support.
   revisar`): that filter reads your marks in `localStorage`, while this one reads
   the imported human decision in SQLite. The header counter only reflects browser
   decisions and is never merged with the imported feedback.
-- When no decision has been imported yet, the panel says so and points to
-  `jobscout import-feedback`; it does not present every active offer as a
-  measured backlog.
+- There is no explanatory note: the toggle's title says it reads `job_feedback`
+  in SQLite. With no imported decisions, the filter does not present every active
+  offer as a measured backlog.
 - An imported decision's free-text reason **never** enters the HTML.
 - The control is hue-free and exposes its state through `aria-pressed`, so it
   never relies on colour; it adds no animation and no new `@media` query.
@@ -323,10 +336,11 @@ stays out of the agreement math.
 
 ### Link evidence (detail)
 
-Each offer shows a **link evidence** line next to its title, kept apart from the
-two decision axes. It is a stored fact, not a recommendation: it is computed only
-from that offer's latest `fetch-details` attempt, and it never changes scores,
-recommendations, or the database.
+The payload classifies each offer's **link evidence**, kept apart from the two
+decision axes. It is a stored fact, not a recommendation: it is computed only from
+that offer's latest `fetch-details` attempt, and it never changes scores,
+recommendations, or the database. Since the redesign (DR-3) the row no longer
+shows it: the owner found it irrelevant for reviewing offers.
 
 | State | Meaning |
 |-------|---------|
@@ -340,11 +354,11 @@ recommendations, or the database.
 
 - The 21-day window is explicit; evidence with no usable date is reported as
   `stale`, never as current.
-- A redirect's `final_url` is shown only as safe evidence of a successful
+- A redirect's `final_url` is kept only as safe evidence of a successful
   attempt, goes through the same URL validation as every other link, and only
   when it differs from the requested URL. It is never presented as a broken link.
-- If a visible offer has a 404/410 and a later re-sighting exists, the report
-  says so: the evidence was refuted. Brokenness is never invented or inferred
+- If a visible offer has a 404/410 and a later re-sighting exists, the
+  payload marks it: the evidence was refuted. Brokenness is never invented or inferred
   from a redirect.
 
 ### Preference filters (exclusions)
@@ -373,8 +387,9 @@ Implemented exclusions:
   knowledge requirement, or `SOC 2` (compliance) stay eligible; a SOC role with
   no operational evidence is `flag`.
 
-The report shows a neutral (hue-free) band next to the title with the outcome,
-the reason, and the evidence, and the summary counts excluded vs. flagged
+In the report, the row carries a `⚠ flag` chip (ochre) or a `veto` chip (red,
+since it is a blocker); when opened, the reason and evidence are the first item of
+Incógnitas (`flag`) or Bloqueos (`fail`). The summary counts excluded vs. flagged
 offers. The CLI exposes the same verdict in `list`, `rank`, and `score` (a
 `[preference=...]` marker in text and a `preference` object in `--json`).
 

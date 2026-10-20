@@ -352,15 +352,15 @@ def test_dashboard_never_serializes_the_description_used_for_detection(
 
     assert DESCRIPTION_TOKEN not in json.dumps(payload)
     assert DESCRIPTION_TOKEN not in html_text
-    # The band is rendered for a FAIL, with the reason and the cue.
-    assert "PREFERENCE_LABELS" in html_text
-    assert "preference-fail" in html_text
-    assert "Preferencia:" in html_text
+    # A FAIL surfaces as the veto chip, with its reason first in Bloqueos.
+    assert 'el("span", "chip veto", "veto")' in html_text
+    assert '"Preferencia: "' in html_text
 
 
-def test_preference_band_stays_hue_free(
+def test_preference_chips_use_only_their_meaning_colours(
     tmp_path: Path,
 ) -> None:
+    """FLAG reads as the mid tone and FAIL as a blocker (signal), owner 2026-10-20."""
     db_path = tmp_path / "preference-css.sqlite3"
     conn = connect(db_path)
     try:
@@ -375,16 +375,9 @@ def test_preference_band_stays_hue_free(
     finally:
         conn.close()
 
-    css_rules = [
-        rule
-        for rule in html_text.split("}")
-        if ".preference-evidence" in rule or ".preference-fail" in rule
-    ]
-    assert css_rules
-    for rule in css_rules:
-        assert "--signal" not in rule, rule
-        assert "--ember" not in rule, rule
-        assert "#e7000b" not in rule, rule
+    assert ".chip.flag { border-color:var(--mid); color:var(--mid); }" in html_text
+    assert ".chip.veto { border-color:var(--signal); color:var(--signal); }" in html_text
+    assert ".preference-evidence" not in html_text
 
     # The single reduced-motion media query stays.
     import re

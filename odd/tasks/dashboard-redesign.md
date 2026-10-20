@@ -163,10 +163,10 @@ shadowed cards, one signal colour. Serif for reading, monospace for numbers, san
 |---|---|---|
 | `--paper` | `#f3f0e8` | page |
 | `--sheet` | `#fbfaf6` | hover / expanded row / inputs |
-| `--ink` / `--ink-2` / `--ink-3` | `#17160f` / `#55524a` / `#8a867b` | text levels |
+| `--ink` / `--ink-2` / `--ink-3` | `#17160f` / `#55524a` / `#69655d` | text levels |
 | `--rule` / `--rule-2` | `#d8d3c6` / `#e8e4d9` | hairlines, bar tracks |
-| `--signal` / `--signal-wash` | `#c8361b` / `#f6e3dc` | high score, apply, blockers, failures |
-| `--mid` / `--mid-wash` | `#7a6a1f` / `#f0ead2` | mid score, consider, flag |
+| `--signal` / `--signal-wash` | `#bd3319` / `#f6e3dc` | high score, apply, blockers, failures |
+| `--mid` / `--mid-wash` | `#74651d` / `#f0ead2` | mid score, consider, flag |
 
 ### Typography
 
@@ -184,7 +184,8 @@ measurable discipline is adopted. Its yellow, its `lausanne` web font, its radii
 marketing components are not.
 
 - Spacing comes only from a 4 px base scale: 4, 8, 12, 16, 24, 32, 48. Use no other values.
-- Type sizes are a closed set of tokens: 11, 12, 13, 14, 16, 22. Hierarchy comes from size,
+- Type sizes are a closed set of tokens: 11, 12, 13, 14, 15, 16, 22, 26 (15 for the row
+  title and 26 for the score, as in the mockup; owner, 2026-10-20). Hierarchy comes from size,
   case and tracking before weight. 600 is the only bold.
 - Micro-labels are uppercase at 11 px with 0.05–0.08em tracking.
 - Elevation is a 1 px hairline, never a shadow. Body text is never centred.
@@ -237,7 +238,8 @@ marketing components are not.
 4. `prefers-reduced-motion` removes every transition.
 5. Every colour and font size comes from a token; no raw hex outside `:root`.
 6. Numbers are tabular and right-aligned in tables.
-7. The signal colour is used only for its four meanings (high score, apply, blocker, failure).
+7. The signal colour is used only for its five meanings (high score, apply, blocker, failure,
+   new since the last sweep).
 8. Empty and error states render (no offers, no dimensions, evaluation error, no salary).
 9. Nothing on the banned list.
 10. Compare against `dashboard-redesign-mockup.html` at a desktop width of 1280–1440 px.
@@ -280,13 +282,35 @@ marketing components are not.
     - Export moves to the header, visible and disabled without decisions, so the
       export test stays untouched. DR-5 must reconcile "visible only when N > 0"
       with `test_export_button_is_visible_and_disabled_until_reviewed`.
-- [ ] DR-3 **Offer row.** Collapsed line, batched rendering, lazy expanded body (justification,
+- [x] DR-3 **Offer row.** Collapsed line, batched rendering, lazy expanded body (justification,
   dimensions or their absence, four lists, salary block with the stated value, footer), and
   the empty/error states. Roadmap item 1 is closed here.
   - The payload still cuts `rationale` at `MAX_RATIONALE_CHARS` (800). Remove that cut here
     so the expanded row shows the full justification (owner, 2026-10-20). Not done in DR-1
     because the old UI would change.
   - Drop `detail.http_status` from the payload here, with the old detail text that used it.
+  - DR-2 leftovers to fix here (owner, 2026-10-20: the page must look like the mockup):
+    the "Avisos" box above the list, the prose note under the toolbar
+    (`#imported-review-note`), and the status line not right-aligned (`margin-left:auto`
+    as in the mockup).
+  - Port the mockup's row CSS and markup literally (tokenised), then compare section by
+    section with the mockup before handing back.
+  - Decisions (owner, 2026-10-20):
+    - The stored preference outcome shows now: a `⚠ flag` chip (mid) or a `veto` chip
+      (signal, it is a blocker); its reason and evidence are the first item of Incógnitas
+      (flag) or Bloqueos (fail). The Vetos tab still waits for item 4.
+    - Apply/reject move to the footer line now as small buttons (same storage, same export);
+      the reason field opens after choosing. DR-5 keeps the length cap and the conditional
+      export.
+    - No salary range bar yet: without a reference it has no honest scale. Only `indicado`
+      shows. The owner may propose the bar again with item 3.
+    - The `nueva` chip uses the signal colour, as in the mockup: "new" is a fifth meaning
+      of the signal colour (pre-flight item 7).
+    - `payload.warnings` render as muted lines after the report metadata; no box.
+    - The four-list strip is left out when all four lists are empty and there is no
+      preference line (today only 5 of 700 offers have lists).
+    - The masthead moves out of the column so its rule spans the window, and "Solo nuevas"
+      becomes a one-button segmented control, both as in the mockup.
 - [ ] DR-4 **Palabras clave view.** One sortable table, retired pairs greyed, Top 10 lists
   removed.
 - [ ] DR-5 **Minimal decision + conditional export.** Buttons in the footer line, the export
@@ -325,3 +349,16 @@ marketing components are not.
   motion `@media`. Open: `--ink-3` (3.2:1 on paper), `--signal` and `--mid` on their washes
   (4.2 and 4.3:1) are below AA; darker values proposed to the owner. Page weight unchanged
   (2.2 MB) until DR-3/DR-6. Next: colour decision, then DR-3.
+- 2026-10-20: DR-3 done. Offers are the mockup's `<details>` rows (CSS ported literally, on
+  tokens; spacing rounded to the 4 px scale, `--fs-15`/`--fs-26` added), painted 50 at a
+  time with a lazy body. The rationale is no longer cut, `detail.http_status` is dropped,
+  and the Avisos box, `#imported-review-note`, the detail-evidence/"Origen" UI and the
+  `<details>` IIFE are gone. Apply/reject live in the row footer. FAIL/FLAG show as
+  `veto`/`⚠ flag` chips. Masthead rule spans the window; "Solo nuevas" is a segmented
+  control. Suite 1141 passed. Page weight 2.19 MB (payload-bound; DR-6). Not checked in a
+  browser (none on this machine); the owner reviewed `reports/dr3-fila.html`. Finding:
+  only 5 of 700 offers carry dimensions or lists, so most expanded rows show only the
+  rationale (max 151 chars) and the footer; that is the scheduled dimensions
+  investigation. Still unlike the mockup: the imported-decision toggle keeps the old
+  button look (pinned by two tests; DR-5), and the export shows "0 revisadas" plus a
+  disabled button instead of "Exportar N decisiones" (DR-5). Next: DR-4.
