@@ -95,6 +95,12 @@ May–June 2027; no post-application outcome tracking for now.
    scorer-vs-scorer comparison (read-only, same evidence-report policy).
    Human cost target: one ~10-minute weekly session; no offer-by-offer
    evaluation.
+6. **Redo the dashboard HTML UI (owner request, 2026-10-20).** Redesign the
+   generated report (`dashboard.py`, ~2,900 lines) rather than adding views on
+   top of the current one; items 1 and 5 should land in the new UI, not the
+   old one. Contract unchanged: self-contained, offline, safe over `file://`,
+   feedback still exported through `import-feedback`. Scope and design to be
+   agreed with the owner before any code.
 
 ### Carried-over priorities (unchanged, still first if a sweep session comes)
 

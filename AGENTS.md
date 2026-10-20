@@ -23,9 +23,8 @@ an answer only.
     files, check whether something exists, with `path:line`.
   - `--agent ejecutor` (with `--skill tdd` for logic) for bounded, verifiable implementation
     with an exact success command.
-  - In this repo always pass `--allow-unignored-secrets`: the committed template
-    `.env.example` trips the script's secret check. It holds no secrets; the real `.env` stays
-    gitignored and the delegate cannot read it. Owner-approved on 2026-10-20.
+  - The delegate may read and edit `.env` (owner decision, 2026-10-20); key files
+    (`auth.json`, `*.pem`, `*.key`) stay blocked.
 - **Keep for the orchestrator:** design decisions, briefs, reviewing every delegated diff,
   running the test gate, and talking to the owner. Trivial one-liners are cheaper to do than to
   brief. When something is not delegated, say so and why.
@@ -34,6 +33,14 @@ an answer only.
   single-owner work, DeepSeek delegation is cheaper. Use it only when the owner asks for
   supervised parallel workers.
 - `.claude/settings.json` injects this rule on every prompt so it is not forgotten.
+- **Worktrees** are for independent tasks only; sequential tasks are done on `master`. One
+  coordinator in the main checkout writes the task cards, creates one worktree per task with
+  one worker each, then reviews, tests and merges one branch at a time. The local
+  `.git/hooks/post-checkout` links `.env` and `profile.yaml` into new worktrees; the database
+  is not linked, so live checks there use a copy. In a worktree run the CLI as
+  `PYTHONPATH=src /home/adrian/jobscout/.venv/bin/python -m jobscout`, because the shared
+  venv's editable install points at the main checkout. Changes to the Hermes sweep script
+  (outside the repo) are made once, after merging, never by parallel workers.
 
 ## Environment
 

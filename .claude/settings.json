@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo 'jobscout rule (AGENTS.md > Agent workflow): delegate reading, searching, summarising and bounded verifiable implementation to DeepSeek via the deepseek-delegate skill (add --allow-unignored-secrets in this repo); bring back only the answer. Keep design decisions, diff review and the test gate yourself, and say when and why you did not delegate.'"
+            "command": "echo 'jobscout rule (AGENTS.md > Agent workflow): delegate reading, searching, summarising and bounded verifiable implementation to DeepSeek via the deepseek-delegate skill; bring back only the answer. Keep design decisions, diff review and the test gate yourself, and say when and why you did not delegate.'"
           }
         ]
       }
