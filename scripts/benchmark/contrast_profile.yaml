@@ -1,0 +1,30 @@
+name: bench-contrast-senior-frontend
+summary: >-
+  Senior frontend engineer with 10 years building React and TypeScript web
+  applications, design systems and accessibility. No cloud, infrastructure,
+  security or operations experience and no interest in those roles.
+target_roles:
+  - Senior Frontend Engineer
+  - Staff Frontend Engineer
+seniority: senior
+years_experience: 10
+locations:
+  - Barcelona
+remote_preference: onsite_ok
+languages:
+  - name: Spanish
+    level: native
+  - name: English
+    level: advanced
+must_have_skills:
+  - React
+  - TypeScript
+  - CSS
+nice_to_have_skills:
+  - Next.js
+  - Storybook
+  - Accessibility
+dealbreakers: []
+excluded_companies: []
+require_all_must_have: false
+max_posting_age_days: null

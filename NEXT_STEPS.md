@@ -78,6 +78,11 @@ May–June 2027; no post-application outcome tracking for now.
    no FX, hard-reject otherwise). Fills the "Later features: Salary and
    compensation analysis" slot. Refresh cadence: Nothiring monthly, Manfred
    each January (2027 guide lands ~5 months before applications start).
+   **Acceptance (owner, 2026-10-20):** the classification step changes the
+   prompt, so re-run `scripts/benchmark/` on the same offers and models before
+   keeping the scoring model, and compare with the 2026-10-20 table in its
+   README. Scoring quality (separation, scores of known-good offers, stability)
+   decides, not speed.
 4. **Gates: FAIL / FLAG.** FAIL fires only on an explicit profile
    deal-breaker or zero overlap with the profile; everything questionable
    becomes FLAG (⚠, stays ranked, quoted posting evidence persisted). The
