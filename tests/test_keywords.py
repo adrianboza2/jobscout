@@ -136,6 +136,14 @@ def test_planned_queries_include_family_provenance_and_a_command() -> None:
     assert all("--dry-run" in item["command"] for item in planned)
 
 
+def test_planned_queries_report_retired_providers() -> None:
+    planned = {item["query"]: item for item in planned_queries()}
+    assert planned["Platform Engineer"]["retired_for"] == ["tecnoempleo"]
+    assert planned["Junior Cloud Security Engineer"]["retired_for"] == ["tecnoempleo"]
+    assert planned["Junior Cloud Engineer"]["retired_for"] == []
+    assert all("retired_for" in item for item in planned.values())
+
+
 # ---------------------------------------------------------------------------
 # Retired searches (provider-keyed history)
 # ---------------------------------------------------------------------------
@@ -313,6 +321,30 @@ def test_keyword_plan_json_payload_is_machine_readable(capsys, monkeypatch) -> N
     assert len(payload["planned"]) == payload["query_count"]
     assert payload["planned"][0]["command"].endswith("--dry-run")
     assert payload["families"][0]["id"] == family_ids()[0]
+
+
+def test_keyword_plan_json_reports_retired_providers(capsys, monkeypatch) -> None:
+    no_network(monkeypatch)
+
+    assert main(["keyword-plan", "--json"]) == EXIT_OK
+
+    payload = json.loads(capsys.readouterr().out)
+    retired = {item["query"]: item["retired_for"] for item in payload["planned"]}
+    assert retired["Platform Engineer"] == ["tecnoempleo"]
+    assert retired["Junior Cloud Engineer"] == []
+    assert all("retired_for" in item for item in payload["planned"])
+
+
+def test_keyword_plan_text_marks_retired_queries(capsys, monkeypatch) -> None:
+    no_network(monkeypatch)
+
+    assert main(["keyword-plan"]) == EXIT_OK
+
+    output = capsys.readouterr().out
+    assert "- Platform Engineer (retired for: tecnoempleo)" in output
+    assert "- Junior Cloud Security Engineer (retired for: tecnoempleo)" in output
+    assert "- Junior Cloud Engineer" in output
+    assert "- Junior Cloud Engineer (retired for:" not in output
 
 
 def test_keyword_plan_uses_the_configured_families(capsys, monkeypatch) -> None:

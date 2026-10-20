@@ -323,6 +323,17 @@ def search_command(
     return " ".join(parts)
 
 
+def _retired_providers(query: str) -> list[str]:
+    """Providers that retired ``query``, sorted and deduplicated."""
+    return sorted(
+        {
+            entry.provider
+            for entry in RETIRED_SEARCHES
+            if retired_search(entry.provider, query) is not None
+        }
+    )
+
+
 def planned_queries(
     family_ids_requested: Sequence[str] | None = None,
     *,
@@ -340,6 +351,7 @@ def planned_queries(
                     "group": family.group,
                     "query": query,
                     "command": search_command(query, location=location, remote=remote),
+                    "retired_for": _retired_providers(query),
                 }
             )
     return planned

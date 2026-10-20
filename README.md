@@ -752,6 +752,10 @@ python -m jobscout keyword-plan --family cloud-security --location "Madrid, Spai
 python -m jobscout keyword-plan --json                   # informe legible por máquina
 ```
 
+`keyword-plan --json` añade `retired_for` a cada entrada de `planned`: la lista
+ordenada de proveedores que retiraron esa consulta (`[]` si ninguno). En el texto,
+esas consultas se marcan como `- Platform Engineer (retired for: tecnoempleo)`.
+
 Cada línea impresa es un comando de vista previa (`--dry-run`). Convertirlo en una
 búsqueda real es reemplazar `--dry-run` por `--confirm-network`, siempre una
 acción humana explícita. `JOBSCOUT_KEYWORD_FAMILIES` fija qué familias se listan

@@ -1732,11 +1732,14 @@ def cmd_keyword_plan(args: argparse.Namespace, settings: Settings) -> int:
         f"keyword plan: {len(families)} family(ies), {len(planned)} bounded query(ies); "
         "no request was performed"
     ]
+    retired_for_by_query = {item["query"]: item["retired_for"] for item in planned}
     for family in families:
         lines.append(f"[{family.id}] {family.label} ({family.group})")
         lines.append(f"  {family.focus}")
         for query in family.queries:
-            lines.append(f"  - {query}")
+            retired_for = retired_for_by_query.get(query, [])
+            marker = f" (retired for: {', '.join(retired_for)})" if retired_for else ""
+            lines.append(f"  - {query}{marker}")
             lines.append(
                 f"    {search_command(query, location=args.location, remote=args.remote)}"
             )

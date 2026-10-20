@@ -106,8 +106,10 @@ May–June 2027; no post-application outcome tracking for now.
 
 The 2026-10-16 sweep findings remain the immediate fixes: expose keyword
 retirements in `keyword-plan --json` so the sweep skips dead
-provider+query pairs, and the LinkedIn 429 watch item (widen keyword spacing,
-never touch pacing).
+provider+query pairs (repo side done 2026-10-20: `retired_for` per planned
+entry, see `odd/tasks/keyword-plan-retirements.md`; the sweep script change is
+KR-4), and the LinkedIn 429 watch item (widen keyword spacing, never touch
+pacing).
 
 ## Next session (2026-10-16) — sweep findings
 
