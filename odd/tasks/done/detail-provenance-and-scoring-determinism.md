@@ -67,7 +67,7 @@ the input actually changed.
 
 ## Tasks
 
-- [ ] DP-1 (first) Restrict LinkedIn detail targets to `source = 'linkedin'`:
+- [x] DP-1 (first) Restrict LinkedIn detail targets to `source = 'linkedin'`:
   - `_detail_selection` in `src/jobscout/cli.py:1013-1014` calls
     `jobs_needing_details(conn, limit=limit)` with no `source`, so
     `fetch-details` walks every provider. Pass `source="linkedin"` (the function
@@ -86,7 +86,7 @@ the input actually changed.
     no network) must show zero non-LinkedIn targets; after one
     `--confirm-network` run, re-run the join query below and expect no new rows
     where `jobs.source <> job_detail_fetches.source`.
-- [ ] DP-2 Record the reasoning variant in provenance:
+- [x] DP-2 Record the reasoning variant in provenance:
   - `OPENCODE_PROMPT_VERSION` (`src/jobscout/scoring/opencode.py:83`) and the
     four construction sites that write `prompt_version` / `model` (same file,
     ~650-722).
@@ -100,7 +100,7 @@ the input actually changed.
     `prompt_version`; with no variant configured the value is unchanged.
   - Verify: `JOBSCOUT_OPENCODE_VARIANT=max PYTHONPATH=src python -m jobscout score
     --job-id <ID> --scorer opencode --rescore` and read the column.
-- [ ] DP-3 Skip re-evaluation when the input did not change:
+- [x] DP-3 Skip re-evaluation when the input did not change:
   - `jobs_needing_evaluation` (`src/jobscout/db.py:869-889`) ignores
     `input_fingerprint`. Skip an offer when a successful evaluation already
     exists with the same `(scorer, model, prompt_version, input_fingerprint)`.
@@ -230,19 +230,19 @@ archived HTML and matched the stored text character for character (5/5 samples,
 
 ## Checks
 
-- [ ] `python -m pytest -q` passes (offline, no network).
-- [ ] `fetch-details --dry-run` plans no non-LinkedIn target.
-- [ ] One `score --all --scorer heuristic` run on a database copy followed by a
+- [x] `python -m pytest -q` passes (offline, no network).
+- [x] `fetch-details --dry-run` plans no non-LinkedIn target.
+- [x] One `score --all --scorer heuristic` run on a database copy followed by a
       second run selects 0 offers; `--rescore` still selects all active ones.
-- [ ] A `--variant max` evaluation and a `--variant minimal` evaluation of the
+- [x] A `--variant max` evaluation and a `--variant minimal` evaluation of the
       same offer differ in `prompt_version`.
-- [ ] The join query above shows no row where `jobs.source <> job_detail_fetches.source`
+- [x] The join query above shows no row where `jobs.source <> job_detail_fetches.source`
       after the next confirmed run.
-- [ ] DP-4 live check (orchestrator): `fetch-getmanfred-details --dry-run` plans only
+- [x] DP-4 live check (orchestrator): `fetch-getmanfred-details --dry-run` plans only
       GetManfred `/ofertas-empleo/{id}/...` URLs, then ONE offer with
       `--confirm-network` moves `content_status` to `ok` with a non-zero description.
-      Pending; the offline adapter work does not substitute for it.
-- [ ] README.md and README.en.md updated in the same commit as DP-3 (the
+      Done (see DP-4: job 937, then 128 enrichments).
+- [x] README.md and README.en.md updated in the same commit as DP-3 (the
       `--rescore` contract changes meaning).
 
 ## Order and rationale
@@ -253,3 +253,34 @@ scoring (minimal for the whole corpus, a higher variant for the shortlist)
 auditable and cheap. DP-4 last of the code work, and only after its gate. DP-5 is
 an investigation with a single-request budget. DP-6 is an explicit operator
 decision.
+
+## Progress, verification, and next step
+
+- 2026-10-21: audit of the open boxes. DP-1 and DP-2 landed in afa279a
+  (2026-09-26, the commit that wrote this card) and DP-3 in a4c700b
+  (2026-09-29); only the checkboxes were never ticked. No code change was
+  needed. Evidence, read-only on a database copy:
+  - DP-1: `_select_detail_jobs` defaults to `source="linkedin"` on every route
+    (`--job-id`, `--all`, `--refresh`, default) and `resolve_source_job_id`
+    refuses a present non-LinkedIn `source`. `fetch-details --dry-run` planned
+    20 LinkedIn guest-API URLs only. The join query shows 0 rows with
+    `jobs.source <> job_detail_fetches.source` fetched after 2026-09-26; the 32
+    cross-provider rows are all from 2026-09-25, and DP-6 already corrected
+    their text. Tests: `test_resolve_source_job_id_refuses_a_present_non_linkedin_source`,
+    `test_detail_selection_is_linkedin_only`,
+    `test_detail_refresh_selection_is_linkedin_only`,
+    `test_plan_targets_of_a_mixed_selection_contains_only_linkedin`
+    (`tests/test_detail_fetcher.py`).
+  - DP-2: stored rows carry `opencode-v5-seniority-aware+minimal` (963) and
+    `+max` (103); rows without a variant keep the bare version. Tests:
+    `test_effective_prompt_version_mirrors_the_variant_setting`,
+    `test_two_variants_produce_distinguishable_prompt_versions`
+    (`tests/test_opencode.py`).
+  - DP-3: `score --all --scorer heuristic` on a copy scored 700 (654 ok); the
+    second run selected only the 46 failures (LinkedIn `partial` offers without
+    a description, where the heuristic returns `need_more_info`), none of the
+    654 successes; `--rescore` selected all 700 again. Failures are retried by
+    design. Test: `test_jobs_needing_evaluation_is_input_aware` (`tests/test_db.py`).
+    The READMEs document the `--rescore` contract.
+- All tasks DP-1..DP-6 and every check are done; card archived to
+  `odd/tasks/done/` (owner OK, 2026-10-21).

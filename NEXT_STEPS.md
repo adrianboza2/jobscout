@@ -3,6 +3,30 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-21 (b) — scoring diagnosis, DP card audit
+
+- **Scoring diagnosis:** the 2026-10-19 sweep failed 21/21 because OpenCode
+  2.0.32 (installed 2026-10-18) rejects `--pure`/`--variant`; the fix (d1e2798)
+  landed 2026-10-20 09:05, after that sweep. The only later evaluations are
+  the 2026-10-20 manual probe: primary failed with an expired Zen API key
+  (since renewed), fallback succeeded. No `score` run has used the current
+  configuration since. The model is part of the input fingerprint, so all 700
+  active offers are due for re-scoring, 180 per sweep.
+- **DP card:** DP-1..DP-3 were already in the code (afa279a, a4c700b); only
+  the checkboxes were open. Verified on a database copy and ticked; no code
+  change. Evidence in the card's progress log.
+- **Owner decision:** the fallback is `opencode-go/longcat-2.5-preview-free`
+  (best quality in the 2026-10-20 benchmark), replacing
+  `opencode-go/deepseek-v4.1-flash#low`. Both models are free, so if both
+  quotas run out a sweep scores nothing; check the `succeeded` count in
+  `reports/sweep-2026-10-22.log`.
+- **Archived:** `dashboard-redesign.md`, its mockup,
+  `keyword-plan-retirements.md` and, closed, the DP card
+  (`detail-provenance-and-scoring-determinism.md`) moved to `odd/tasks/done/`.
+  No open task card remains.
+- **Lesson:** check `git log -S` for the fix before implementing a card task:
+  a card can be older than the code it describes.
+
 ## Session 2026-10-21 — dashboard redesign DR-6: speed pass
 
 Done (`odd/tasks/dashboard-redesign.md`, DR-6): the payload ships only what the
