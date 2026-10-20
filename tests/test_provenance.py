@@ -357,7 +357,7 @@ def test_linkedin_regression_provenance_and_rank(conn, settings) -> None:
     assert run.provider == "linkedin"
     assert run.cycle_id is None
     assert run.params["keywords"] == "cloud"
-    assert run.params["page_size"] == 25
+    assert run.params["page_size"] == 10
     assert run.params["planned_urls"]
     rows = conn.execute(
         "SELECT position_kind, rank_in_run FROM search_run_items ORDER BY rank_in_run"

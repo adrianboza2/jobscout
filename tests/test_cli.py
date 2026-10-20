@@ -499,7 +499,9 @@ def test_search_linkedin_dry_run_needs_no_network(db_path: Path, capsys, monkeyp
     output = capsys.readouterr().out
     assert "dry run" in output
     assert output.count("seeMoreJobPostings") == 2
-    assert "start=0" in output and "start=25" in output
+    # The guest endpoint serves 10 cards per page, so page 2 starts at 10.
+    assert "start=0" in output and "start=10" in output
+    assert "start=25" not in output
 
 
 def test_search_linkedin_dry_run_respects_settings_bounds(db_path: Path, capsys, monkeypatch) -> None:

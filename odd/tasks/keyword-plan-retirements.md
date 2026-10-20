@@ -47,7 +47,7 @@ failures: six sweeps in a row, 4 dead runs in the 2026-10-13 sweep alone (see `N
   for the text marker.
 - [x] KR-2 Implement in `keywords.planned_queries` and `cli.cmd_keyword_plan`.
 - [x] KR-3 Bilingual README note; full suite.
-- [ ] KR-4 Sweep script: skip retired provider+query pairs (owner reviews the diff first).
+- [x] KR-4 Sweep script: skip retired provider+query pairs (owner reviews the diff first).
 
 ## Progress, verification, and next step
 
@@ -55,4 +55,5 @@ failures: six sweeps in a row, 4 dead runs in the 2026-10-13 sweep alone (see `N
   passed. `keyword-plan` marks exactly the four Tecnoempleo pairs the 2026-10-13 sweep
   wasted (Platform Engineer, Junior Cloud Security Engineer, Azure Security Engineer,
   Security Infrastructure Engineer).
-- Next: KR-4, sweep script change, pending owner review of the diff.
+- KR-4 applied 2026-10-20 after owner OK; previous script kept as
+  `~/.hermes/scripts/jobscout_sweep.py.bak-20261020`.

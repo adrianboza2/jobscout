@@ -3,6 +3,43 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-20 (b) — sweep fixes: retirements, LinkedIn pagination, detail backlog
+
+Done:
+
+- `keyword-plan --json` exposes `retired_for`; the sweep skips retired
+  provider+query pairs (`odd/tasks/keyword-plan-retirements.md`): 22 → 18
+  search commands per sweep, no more false Tecnoempleo failures.
+- **LinkedIn pagination fixed.** The collector stepped `start` by 25, but every
+  stored live page (266 of them) holds exactly 10 cards, so results 10-24 of
+  every search were never seen. `DEFAULT_PAGE_SIZE` is now 10: same number of
+  requests, contiguous top-20 results. Live check on the next sweep: two-page
+  LinkedIn runs should still report 20 items (no in-run duplicates).
+
+Owner decisions: keep the 8 s pacing; the `*/3` day-of-month cron quirk (day 31
+and day 1 run 24 h apart) is accepted; no Telegram notification from the sweep.
+
+Pending, owner to decide (not started):
+
+1. **GetManfred inventory filter is effectively dead.** Eight sweeps in a row
+   (2026-09-29 → 10-19) returned the same 23 matches and 0 new, while the
+   sitemap gained ~22 offers. The filter requires every token of a query in the
+   URL slug, so only `Platform Engineer` ever matches (the others carry
+   `Junior`/`Azure`), and most of the 23 matches date from 2022-2025 because the
+   sitemap (1675 offers) keeps old offers. Relevant slugs are missed
+   (`fcm-sre-devops-engineer-jul26`, `valsea-technologies-devops-engineer-jun26`,
+   `todo-en-cloud-sre-devops-ago26`; ~178 slugs match looser terms). Separate
+   runs per query would not help: it is one sitemap download filtered locally.
+   Proposal: GetManfred-specific short terms (devops, sre, cloud, security,
+   platform…) plus a `lastmod` recency cut; still one request. Side effect to
+   keep in mind: the run's `query` is the whole comma-joined list, so
+   dashboard/prune see one `getmanfred|a,b,c` series, not per-keyword series.
+2. **Detail cap mismatch in the sweep.** The script passes up to 40 ids
+   (`JOBSCOUT_SWEEP_DETAIL_CAP`) but `fetch-details` processes 20
+   (`detail_max_items`) and drops the rest ("20 selected job(s) omitted by
+   --max-items"). Harmless but misleading; align the script cap with the
+   command's.
+
 ## Session 2026-10-20 — OpenCode 2.x migration: scoring restored, docs aligned
 
 The 2026-10-19 sweep scored 0 of 21 offers. Cause: OpenCode 2.0.32 (installed

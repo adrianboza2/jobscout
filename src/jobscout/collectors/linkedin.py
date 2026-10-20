@@ -65,7 +65,9 @@ from .base import (
 from .htmlutil import VOID_TAGS
 from .ratelimit import BackoffPolicy, RequestPacer
 
-DEFAULT_PAGE_SIZE = 25
+#: The guest endpoint serves 10 cards per page (all 266 stored live pages, captured
+#: 2026-09-28..10-19). Stepping by 25 silently skipped results 10-24 of every search.
+DEFAULT_PAGE_SIZE = 10
 DEFAULT_BASE_URL = "https://www.linkedin.com"
 
 
