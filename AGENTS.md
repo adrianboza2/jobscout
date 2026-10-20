@@ -65,9 +65,15 @@ The full offline suite is the acceptance gate for any change.
 ## Outside this repository (part of the system, not versioned here)
 
 - `~/.hermes/scripts/jobscout_sweep.py` — Hermes' scheduler runs the full cycle every three
-  days at 07:00: searches → details → `score --all` (capped at 180 offers) → dashboard →
-  notify → DB backup. It writes `reports/sweep-YYYY-MM-DD.log`; read that log first when
+  days at 07:00: LinkedIn details → searches (skipping `retired_for` pairs from
+  `keyword-plan --json`) → Tecnoempleo/GetManfred details → `score --all` (capped at 180
+  offers) → dashboard → DB backup. Delivery is `local`: the owner wants no Telegram
+  notification. It writes `reports/sweep-YYYY-MM-DD.log`; read that log first when
   something "stopped working".
+- `~/.hermes/scripts/jobscout_linkedin_details.py` — Hermes job `jobscout-linkedin-details`
+  (`0 19 2-31/3 * *`, ~36 h after each sweep, delivery `local`): runs only the LinkedIn
+  detail batch (`jobscout_sweep.py --linkedin-details`) so the backlog drains without
+  stacking more requests on the sweep's searches. Pacing stays at 8 s (owner, 2026-10-20).
 - `~/.config/systemd/user/jobscout-dashboard.service` — serves `reports/` over Tailscale on
   port 8080.
 - OpenCode (`~/.local/bin/opencode`) is updated outside this repo. A CLI update broke scoring

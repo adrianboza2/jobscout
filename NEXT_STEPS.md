@@ -15,6 +15,13 @@ Done:
   every search were never seen. `DEFAULT_PAGE_SIZE` is now 10: same number of
   requests, contiguous top-20 results. Live check on the next sweep: two-page
   LinkedIn runs should still report 20 items (no in-run duplicates).
+- **LinkedIn detail backlog (113 pending variants, 69 active offers with no
+  enriched variant).** Outside the repo, see AGENTS.md: the sweep now fetches
+  LinkedIn details *before* its searches (the 10-13/10-16 detail runs died on
+  429 after the searches), and a new Hermes job runs only that 20-item batch
+  ~36 h after each sweep, doubling the drain without touching pacing. The
+  sweep's "no human decision" block and its Telegram delivery are removed.
+  Watch: the pending count in the next sweep logs should fall.
 
 Owner decisions: keep the 8 s pacing; the `*/3` day-of-month cron quirk (day 31
 and day 1 run 24 h apart) is accepted; no Telegram notification from the sweep.
