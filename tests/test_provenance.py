@@ -246,10 +246,13 @@ def test_analytics_separate_same_keyword_across_providers(conn) -> None:
         != series[("getmanfred", "backend engineer")]["source_key"]
     )
     # The offer provenance entry carries the series key and the position kind.
-    offers = {offer["source"]: offer for offer in payload["offers"]}
-    assert offers["getmanfred"]["keywords"][0]["source_key"].startswith("getmanfred|")
-    assert offers["getmanfred"]["keywords"][0]["position_kind"] == "none"
-    assert offers["linkedin"]["keywords"][0]["position_kind"] == "search_rank"
+    # Offers are keyed by id: the payload no longer serializes the provider.
+    offers = {offer["id"]: offer for offer in payload["offers"]}
+    getmanfred_offer = offers[getmanfred_jobs[0]]
+    linkedin_offer = offers[linkedin_jobs[0]]
+    assert getmanfred_offer["keywords"][0]["source_key"].startswith("getmanfred|")
+    assert getmanfred_offer["keywords"][0]["position_kind"] == "none"
+    assert linkedin_offer["keywords"][0]["position_kind"] == "search_rank"
 
 
 def test_analytics_merge_cycles_for_same_provider_and_keyword(conn) -> None:

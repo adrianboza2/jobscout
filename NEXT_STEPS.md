@@ -3,6 +3,19 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-20 (d) — dashboard redesign DR-1: payload
+
+Done (`odd/tasks/dashboard-redesign.md`, DR-1): the dashboard payload gains
+`offer.is_new` (first seen at or after the latest non-smoke `cycle_id`'s
+first run), `offer.salary`, `offer.dimensions` and `payload.status` (latest
+sweep, new and new-scored counts, pending details per source, failed runs).
+Unused fields dropped; `detail.http_status` stays until DR-3. UI unchanged.
+
+- **Finding, not investigated:** the 2026-10-19 sweep scored 0 of 21
+  (`scored 21 job(s), 0 succeeded, 21 failed`), so the 18 new offers are
+  unscored. Check the next sweep log (the OpenCode key was renewed).
+- **Next:** DR-2 (shell and visual system) in a new session.
+
 ## Session 2026-10-20 (c) — dashboard redesign: scope and design agreed
 
 No code changed. The owner approved the redesign card

@@ -44,7 +44,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
 
-from .db import connect_readonly, latest_detail_fetches_for_jobs
+from .db import (
+    connect_readonly,
+    count_variants_needing_details,
+    latest_detail_fetches_for_jobs,
+)
 from .keywords import retired_search
 from .models import (
     ACTIVE_FEEDBACK_DECISIONS,
@@ -300,6 +304,49 @@ def _string_list(value: Any) -> list[str]:
     return [text for item in loaded if (text := str(item).strip())]
 
 
+def _salary(value: Any) -> str | None:
+    """The stated salary with collapsed whitespace, or ``None`` when empty."""
+    if value is None:
+        return None
+    collapsed = " ".join(str(value).split())
+    return collapsed or None
+
+
+def _dimensions(value: Any) -> list[dict[str, Any]]:
+    """Parse ``dimensions_json`` without inventing a score for a broken entry.
+
+    ``DimensionScore.from_dict`` defaults a missing score to ``0.0``, which would
+    turn malformed stored data into a fake dimension. Here every element that is
+    not a usable dict is dropped, so absent evidence stays absent.
+    """
+    loaded = _loads(value, [])
+    if not isinstance(loaded, list):
+        return []
+    dimensions: list[dict[str, Any]] = []
+    for item in loaded:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        score = item.get("score")
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            continue
+        weight = item.get("weight")
+        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
+            weight = 1.0
+        dimensions.append(
+            {
+                "name": name.strip(),
+                "score": float(score),
+                "weight": float(weight),
+                "rationale": str(item.get("rationale") or ""),
+                "evidence": _string_list(item.get("evidence")),
+            }
+        )
+    return dimensions
+
+
 def _age_days_exact(value: str | None, *, now: datetime) -> float | None:
     """Unrounded age in days, for threshold comparisons that must stay exact."""
     parsed = parse_datetime(value)
@@ -341,18 +388,18 @@ def _fetch_active_jobs(
                j.company AS company,
                j.location AS location,
                j.url AS url,
-               j.source AS source,
                j.description AS description,
+               j.salary AS salary,
                j.posted_at AS posted_at,
                j.first_seen_at AS first_seen_at,
                j.last_seen_at AS last_seen_at,
                j.content_status AS content_status,
-               j.sighting_count AS sighting_count,
                j.seniority AS seniority,
                j.employment_type AS employment_type,
                e.overall_score AS score,
                e.recommendation AS recommendation,
                e.confidence AS confidence,
+               e.dimensions_json AS dimensions_json,
                e.strengths_json AS strengths_json,
                e.gaps_json AS gaps_json,
                e.blockers_json AS blockers_json,
@@ -380,6 +427,124 @@ def _fetch_active_jobs(
         """,
         (limit,),
     ).fetchall()
+
+
+def _last_sweep(conn: sqlite3.Connection) -> tuple[str | None, str | None]:
+    """The newest non-smoke cycle and the start of its first run.
+
+    The sweep writes a dated ``YYYY-MM-DD-sweep`` cycle id, so the cycle is used
+    only to group runs and no cycle is compared across platforms. Synthetic
+    ``smoke*`` cycles are excluded exactly as in :func:`_fetch_keyword_stats`.
+    """
+    rows = conn.execute(
+        """
+        SELECT cycle_id, started_at
+        FROM search_runs
+        WHERE cycle_id IS NOT NULL
+          AND TRIM(cycle_id) <> ''
+          AND LOWER(TRIM(cycle_id)) NOT LIKE 'smoke%'
+        """
+    ).fetchall()
+    runs_by_cycle: dict[str, list[tuple[datetime, str]]] = {}
+    for row in rows:
+        started = parse_datetime(row["started_at"])
+        if started is None:
+            continue
+        cycle = str(row["cycle_id"]).strip()
+        runs_by_cycle.setdefault(cycle, []).append((started, str(row["started_at"])))
+    if not runs_by_cycle:
+        return None, None
+    latest_cycle = max(
+        runs_by_cycle, key=lambda cycle: max(started for started, _ in runs_by_cycle[cycle])
+    )
+    first_started = min(runs_by_cycle[latest_cycle], key=lambda item: item[0])[1]
+    return latest_cycle, first_started
+
+
+def _is_new(first_seen_at: Any, last_sweep_at: str | None) -> bool:
+    """Whether an offer appeared at or after the latest sweep start.
+
+    Both values are parsed, never compared as strings; an unusable timestamp is
+    not evidence of a new offer, so it returns ``False``.
+    """
+    if last_sweep_at is None:
+        return False
+    first_seen = parse_datetime(first_seen_at)
+    sweep_started = parse_datetime(last_sweep_at)
+    if first_seen is None or sweep_started is None:
+        return False
+    return first_seen >= sweep_started
+
+
+def _build_status(
+    conn: sqlite3.Connection, *, last_sweep_cycle: str | None, last_sweep_at: str | None
+) -> dict[str, Any]:
+    """Header status-line counts derived from stored rows only.
+
+    New offers are counted over every active job, not only the ``top`` slice, so
+    the header never reports a total bounded by the embedded offer list.
+    """
+    rows = conn.execute(
+        """
+        SELECT j.first_seen_at AS first_seen_at,
+               e.overall_score AS score
+        FROM jobs j
+        LEFT JOIN latest_evaluations e ON e.job_id = j.id
+        WHERE j.is_active = 1
+        """
+    ).fetchall()
+    new_jobs = 0
+    new_scored = 0
+    for row in rows:
+        if not _is_new(row["first_seen_at"], last_sweep_at):
+            continue
+        new_jobs += 1
+        if row["score"] is not None:
+            new_scored += 1
+
+    sources = conn.execute(
+        """
+        SELECT DISTINCT v.source AS source
+        FROM job_variants v
+        JOIN jobs j ON j.id = v.job_id
+        WHERE j.is_active = 1 AND v.is_active = 1
+        ORDER BY v.source
+        """
+    ).fetchall()
+    pending_details = {
+        str(row["source"]): count_variants_needing_details(conn, source=str(row["source"]))
+        for row in sources
+    }
+
+    failed_searches = 0
+    failed_details = 0
+    sweep_started = parse_datetime(last_sweep_at)
+    if last_sweep_at is not None and sweep_started is not None:
+        failed_rows = conn.execute(
+            """
+            SELECT provider, started_at
+            FROM search_runs
+            WHERE status IN ('failed', 'failed_closed')
+              AND LOWER(TRIM(COALESCE(cycle_id, ''))) NOT LIKE 'smoke%'
+            """
+        ).fetchall()
+        for row in failed_rows:
+            started = parse_datetime(row["started_at"])
+            if started is None or started < sweep_started:
+                continue
+            if str(row["provider"] or "").endswith("-details"):
+                failed_details += 1
+            else:
+                failed_searches += 1
+
+    return {
+        "last_sweep_cycle": last_sweep_cycle,
+        "last_sweep_at": last_sweep_at,
+        "new_jobs": new_jobs,
+        "new_scored": new_scored,
+        "pending_details": pending_details,
+        "failed_runs": {"searches": failed_searches, "details": failed_details},
+    }
 
 
 def _source_key(provider: Any, keyword: Any) -> str:
@@ -464,11 +629,11 @@ def _fetch_imported_feedback(
     to a value. Only the stored ``decision`` is read: the free-text reason stays
     in SQLite and is never serialized into the report.
 
-    ``search_runs.cycle_id`` is deliberately not consulted. It is a nullable,
-    human-set convention and runs from different platforms or cycles are not
-    guaranteed comparable, so no "new in the latest cycle" metric can be derived
-    from it; the only isolation predicate here is the absence of a
-    ``job_feedback`` row.
+    ``search_runs.cycle_id`` is not consulted here: the imported decision is
+    keyed only by job, so the absence of a ``job_feedback`` row is the only
+    isolation predicate. The sweep cycle is used elsewhere to date the latest
+    sweep (see :func:`_last_sweep`); cycle ids from different platforms are not
+    compared.
     """
     if not job_ids:
         return {}
@@ -669,8 +834,6 @@ def _fetch_keyword_stats(
                 "source_key": source_key,
                 "label": _keyword_source_label(keyword, provider),
                 "retired": retirement is not None,
-                "retired_on": retirement.retired_on if retirement else None,
-                "retired_reason": retirement.reason if retirement else None,
                 "sightings": sightings,
                 "unique_jobs": unique_jobs,
                 "duplicate_sightings": duplicate_sightings,
@@ -853,10 +1016,10 @@ def build_payload(
     keywords_by_job = _fetch_job_keywords(conn, job_ids)
     # One batched SELECT for every shown offer instead of one query per offer.
     detail_by_job = latest_detail_fetches_for_jobs(conn, job_ids)
-    # One batched SELECT for the imported human decision of every shown offer.
-    # ``cycle_id`` is intentionally not consulted: it cannot support a
-    # trustworthy "latest cycle" claim (see :func:`_fetch_imported_feedback`).
+    # The imported decision read does not consult ``cycle_id``; the latest sweep
+    # is dated from it separately, so the two concerns stay independent.
     imported_decisions = _fetch_imported_feedback(conn, job_ids)
+    last_sweep_cycle, last_sweep_at = _last_sweep(conn)
 
     offers: list[dict[str, Any]] = []
     for row in rows:
@@ -888,13 +1051,13 @@ def build_payload(
                 "company": _concisify(row["company"]) or "(empresa desconocida)",
                 "location": _concisify(row["location"]),
                 "url": _safe_url(row["url"]),
-                "source": str(row["source"] or ""),
                 "posted_at": posted_at,
                 "first_seen_at": first_seen_at,
                 "last_seen_at": row["last_seen_at"],
+                "is_new": _is_new(first_seen_at, last_sweep_at),
                 "age_days": age_days,
                 "age_source": age_source,
-                "sighting_count": int(row["sighting_count"] or 1),
+                "salary": _salary(row["salary"]),
                 "seniority": str(row["seniority"] or ""),
                 "employment_type": str(row["employment_type"] or ""),
                 "content_status": str(row["content_status"] or "unknown"),
@@ -919,6 +1082,7 @@ def build_payload(
                 "model": str(row["model"]) if row["model"] else "",
                 "evaluated_at": row["evaluated_at"],
                 "rationale": _concisify(row["rationale"]),
+                "dimensions": _dimensions(row["dimensions_json"]),
                 "strengths": _string_list(row["strengths_json"]),
                 "gaps": _string_list(row["gaps_json"]),
                 "blockers": _string_list(row["blockers_json"]),
@@ -949,6 +1113,11 @@ def build_payload(
         keyword_count=len(keyword_stats),
         retired_keyword_count=len(retired_keyword_stats),
     )
+    status = _build_status(
+        conn,
+        last_sweep_cycle=last_sweep_cycle,
+        last_sweep_at=last_sweep_at,
+    )
 
     return {
         "schema": DASHBOARD_SCHEMA,
@@ -958,6 +1127,7 @@ def build_payload(
         "generated_at": utcnow_iso(),
         "limits": {"top": top},
         "summary": summary,
+        "status": status,
         "warnings": _warnings(summary, keyword_count=len(keyword_stats)),
         "offers": offers,
         "keywords": active_keyword_stats,
@@ -1055,11 +1225,9 @@ def _detail_evidence(
     if fetch is None:
         return {
             "state": state,
-            "checked_at": None,
             "age_days": None,
             "window_days": int(window_days),
             "http_status": None,
-            "content_status": None,
             "refuted": False,
             "final_url": None,
         }
@@ -1073,11 +1241,9 @@ def _detail_evidence(
     is_success = state in (DETAIL_STATE_OK, DETAIL_STATE_STALE)
     return {
         "state": state,
-        "checked_at": checked_at,
         "age_days": _age_days(checked_at, now=now),
         "window_days": int(window_days),
         "http_status": fetch.http_status,
-        "content_status": fetch.content_status,
         "refuted": refuted,
         "final_url": _redirect_evidence(fetch, is_success=is_success),
     }

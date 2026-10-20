@@ -62,7 +62,9 @@ Static mockup approved by the owner (synthetic data):
 - **Masthead:** `jobscout`, plus one status line that replaces the six KPI cards:
   - date of the last sweep;
   - offers new since the previous sweep;
-  - offers evaluated out of offers present;
+  - no "evaluated" counter (owner, 2026-10-20). Proposed for DR-2: a signal-colour
+    warning only when new offers are left unscored (scorer broken or the 180 cap hit);
+    the owner decides in DR-2;
   - pending details per provider;
   - failed runs, in the signal colour only when greater than 0.
 
@@ -253,12 +255,18 @@ marketing components are not.
 
 ## Tasks (in order; suite green and one commit per step)
 
-- [ ] DR-1 **Payload.**
+- [x] DR-1 **Payload.**
   - Add `dimensions` (parsed `dimensions_json`), `is_new` (`first_seen_at` within the latest
     sweep cycle), the stated salary (`jobs.salary`), the imported decision per offer, and the
     status-line counts.
   - Drop the unused fields.
   - UI unchanged; only payload tests change.
+  - Decisions (owner, 2026-10-20):
+    - The imported decision already exists as `offer.imported_review`; nothing is added.
+    - "Latest sweep" is the most recent non-null, non-`smoke*` `search_runs.cycle_id`
+      (the sweep writes `YYYY-MM-DD-sweep`); it starts at that cycle's `MIN(started_at)`,
+      and an offer is new when `first_seen_at` is at or after it. No cycle: nothing is new.
+    - `detail.http_status` stays until DR-3, because the old UI still prints it.
 - [ ] DR-2 **Shell and visual system.**
   - Tokens, header with status line, tabs, toolbar.
   - Remove the rail, KPIs, explanation boxes and footer.
@@ -267,6 +275,10 @@ marketing components are not.
 - [ ] DR-3 **Offer row.** Collapsed line, batched rendering, lazy expanded body (justification,
   dimensions or their absence, four lists, salary block with the stated value, footer), and
   the empty/error states. Roadmap item 1 is closed here.
+  - The payload still cuts `rationale` at `MAX_RATIONALE_CHARS` (800). Remove that cut here
+    so the expanded row shows the full justification (owner, 2026-10-20). Not done in DR-1
+    because the old UI would change.
+  - Drop `detail.http_status` from the payload here, with the old detail text that used it.
 - [ ] DR-4 **Palabras clave view.** One sortable table, retired pairs greyed, Top 10 lists
   removed.
 - [ ] DR-5 **Minimal decision + conditional export.** Buttons in the footer line, the export
@@ -293,3 +305,8 @@ marketing components are not.
 
 - 2026-10-20: scope and design agreed with the owner. Card and mockup written. No code
   changed. Next: DR-1 in a new session.
+- 2026-10-20: DR-1 done. Payload adds `offer.is_new`, `offer.salary`, `offer.dimensions` and
+  `payload.status`; drops `source`, `sighting_count`, `detail.checked_at`/`content_status`,
+  `retired_on`/`retired_reason`. UI unchanged. Suite 1130 passed. Live read-only check: last
+  sweep 2026-10-19-sweep, 18 new, 0 of them scored (the sweep log shows `scored 21 job(s),
+  0 succeeded`), pending details linkedin 113 / tecnoempleo 1. Next: DR-2 in a new session.

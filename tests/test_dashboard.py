@@ -55,6 +55,7 @@ from jobscout.db import (
 )
 from jobscout.models import (
     DetailFetchStatus,
+    DimensionScore,
     DuplicateKind,
     Evaluation,
     EvaluationStatus,
@@ -270,13 +271,6 @@ RETIRED_KEYWORD_PAIRS: tuple[tuple[str, str], ...] = (
     ("linkedin", "IAM Engineer"),
 )
 
-#: CP-8 retirements carry the later decision date.
-RETIRED_ON_BY_PAIR: dict[tuple[str, str], str] = {
-    **{pair: "2026-09-29" for pair in RETIRED_KEYWORD_PAIRS},
-    ("tecnoempleo", "Junior Cloud Security Engineer"): "2026-09-30",
-    ("tecnoempleo", "Security Infrastructure Engineer"): "2026-09-30",
-}
-
 _SERIES_JOB_SEQ = itertools.count(1)
 
 
@@ -310,6 +304,172 @@ def db_file(tmp_path: Path) -> Path:
     path = tmp_path / "dash" / "dashboard.sqlite3"
     _seed_dashboard_db(path)
     return path
+
+
+def _seed_dr1_db(path: Path) -> dict[str, int]:
+    """Offers, cycles, variants and failures for the DR-1 payload behaviours."""
+    conn = connect(path)
+    try:
+        init_db(conn)
+
+        def store(serial: str, source: str, title: str, first_seen: str, salary=None) -> int:
+            job, _ = store_posting(
+                conn,
+                _posting(
+                    source=source,
+                    source_job_id=serial,
+                    url=f"https://example.test/jobs/{serial}",
+                    title=title,
+                    salary=salary,
+                ),
+                now=first_seen,
+            )
+            return int(job.id)
+
+        job_a = store(
+            "dr1-a", "linkedin", "Offer A", "2026-10-19T07:05:00Z", salary="€35-45K"
+        )
+        job_b = store("dr1-b", "linkedin", "Offer B", "2026-10-19T07:00:00Z")
+        job_c = store(
+            "dr1-c",
+            "tecnoempleo",
+            "Offer C",
+            "2026-10-18T23:59:00Z",
+            salary="   ",
+        )
+        job_d = store(
+            "dr1-d",
+            "getmanfred",
+            "Offer D",
+            "2026-10-20T10:05:00Z",
+            salary="  €35  -45K ",
+        )
+        job_e = store("dr1-e", "linkedin", "Offer E", "2026-10-19T08:00:00Z")
+
+        variant_state = {
+            (job_a, "linkedin"): ("ok", 500),
+            (job_b, "linkedin"): ("unknown", 500),
+            (job_c, "tecnoempleo"): ("unknown", 0),
+            (job_d, "getmanfred"): ("ok", 500),
+            (job_e, "linkedin"): ("unknown", 500),
+        }
+        for (job_id, source), (content_status, description_chars) in variant_state.items():
+            conn.execute(
+                """
+                UPDATE job_variants
+                SET content_status = ?, description_chars = ?
+                WHERE job_id = ? AND source = ?
+                """,
+                (content_status, description_chars, job_id, source),
+            )
+        conn.execute("UPDATE jobs SET is_active = 0 WHERE id = ?", (job_e,))
+        conn.execute("UPDATE job_variants SET is_active = 0 WHERE job_id = ?", (job_e,))
+
+        insert_evaluation(
+            conn,
+            _score(
+                job_a,
+                90.0,
+                Recommendation.APPLY,
+                dimensions=[
+                    DimensionScore(
+                        name="role_fit",
+                        score=90.0,
+                        weight=0.3,
+                        rationale="r",
+                        evidence=["q1"],
+                    )
+                ],
+                rationale="r",
+            ),
+        )
+        insert_evaluation(conn, _score(job_d, 75.0, Recommendation.CONSIDER))
+
+        def run_at(
+            provider: str,
+            cycle_id: str | None,
+            started_at: str,
+            status: SearchRunStatus = SearchRunStatus.COMPLETED,
+        ) -> None:
+            create_search_run(
+                conn,
+                SearchRun(
+                    provider=provider,
+                    label=f"{provider}:{started_at}",
+                    cycle_id=cycle_id,
+                    status=status,
+                    started_at=started_at,
+                ),
+            )
+
+        run_at("linkedin", "2026-10-16-sweep", "2026-10-16T07:00:00Z")
+        run_at("linkedin", "2026-10-19-sweep", "2026-10-19T07:00:00Z")
+        run_at(
+            "tecnoempleo",
+            "2026-10-19-sweep",
+            "2026-10-19T07:20:00Z",
+            SearchRunStatus.FAILED_CLOSED,
+        )
+        run_at(
+            "getmanfred",
+            "2026-10-19-sweep",
+            "2026-10-19T07:40:00Z",
+            SearchRunStatus.FAILED,
+        )
+        run_at("linkedin", "smoke-1", "2026-10-20T09:00:00Z")
+        run_at("linkedin", None, "2026-10-20T10:00:00Z")
+        run_at(
+            "linkedin-details",
+            None,
+            "2026-10-19T09:00:00Z",
+            SearchRunStatus.FAILED,
+        )
+        run_at(
+            "linkedin-details",
+            None,
+            "2026-10-18T09:00:00Z",
+            SearchRunStatus.FAILED,
+        )
+
+        # One active and one retired keyword series, so the dropped keyword
+        # fields are checked on real rows rather than on empty lists.
+        active_run = _run(conn, "Python Developer", provider="linkedin")
+        _observe(conn, active_run.id, job_a, rank=1)
+        retired_run = _run(conn, "Platform Engineer", provider="tecnoempleo")
+        _observe(conn, retired_run.id, job_c, rank=1)
+
+        conn.commit()
+    finally:
+        conn.close()
+    return {
+        "a": job_a,
+        "b": job_b,
+        "c": job_c,
+        "d": job_d,
+        "e": job_e,
+    }
+
+
+@pytest.fixture
+def dr1_db(tmp_path: Path) -> Path:
+    path = tmp_path / "dash" / "dr1.sqlite3"
+    _seed_dr1_db(path)
+    return path
+
+
+def _seed_dr1_db_ids(db_file: Path) -> dict[str, int]:
+    """Resolve the DR-1 fixture's offer ids by their ``dr1-*`` serials."""
+    conn = connect(db_file)
+    try:
+        rows = conn.execute(
+            "SELECT id, source_job_id FROM jobs WHERE source_job_id LIKE 'dr1-%'"
+        ).fetchall()
+        return {
+            str(row["source_job_id"]).removeprefix("dr1-"): int(row["id"])
+            for row in rows
+        }
+    finally:
+        conn.close()
 
 
 def _seed_many_active_offers(path: Path, count: int, *, inactive: int = 0) -> None:
@@ -961,6 +1121,241 @@ def test_rationale_is_bounded(db_file: Path) -> None:
     rated = next(offer for offer in payload["offers"] if offer["score"] == 60.0)
     assert len(rated["rationale"]) <= MAX_RATIONALE_CHARS
     assert rated["rationale"].endswith("\u2026")
+
+
+# ---------------------------------------------------------------------------
+# DR-1 payload
+# ---------------------------------------------------------------------------
+
+DR1_NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+
+
+def _dr1_payload(db_file: Path) -> dict:
+    conn = open_readonly_database(db_file)
+    try:
+        return build_payload(
+            conn, project_id=project_key(db_file), now=DR1_NOW
+        )
+    finally:
+        conn.close()
+
+
+def test_status_reports_the_latest_non_smoke_sweep(dr1_db: Path) -> None:
+    """Behaviour 1: the newest dated cycle wins; smoke and null cycles are ignored."""
+    status = _dr1_payload(dr1_db)["status"]
+
+    assert status["last_sweep_cycle"] == "2026-10-19-sweep"
+    assert status["last_sweep_at"] == "2026-10-19T07:00:00Z"
+
+
+def test_is_new_uses_the_sweep_start_inclusively(dr1_db: Path) -> None:
+    """Behaviour 2: offers at or after the first run of the sweep are new."""
+    jobs = _seed_dr1_db_ids(dr1_db)
+    offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
+
+    assert offers[jobs["a"]]["is_new"] is True
+    assert offers[jobs["b"]]["is_new"] is True
+    assert offers[jobs["c"]]["is_new"] is False
+    assert offers[jobs["d"]]["is_new"] is True
+
+
+def test_new_jobs_and_new_scored_cover_every_active_offer(dr1_db: Path) -> None:
+    """Behaviour 3: counts use all active offers, not the embedded ``top`` slice."""
+    status = _dr1_payload(dr1_db)["status"]
+
+    assert status["new_jobs"] == 3
+    assert status["new_scored"] == 2
+
+
+def test_failed_runs_split_searches_from_detail_runs(dr1_db: Path) -> None:
+    """Behaviour 4: only failures since the sweep start, split by provider suffix."""
+    status = _dr1_payload(dr1_db)["status"]
+
+    assert status["failed_runs"] == {"searches": 2, "details": 1}
+
+
+def test_pending_details_lists_every_active_variant_source(dr1_db: Path) -> None:
+    """Behaviour 5: one sorted count per source, including zero."""
+    status = _dr1_payload(dr1_db)["status"]
+
+    assert status["pending_details"] == {
+        "getmanfred": 0,
+        "linkedin": 1,
+        "tecnoempleo": 1,
+    }
+
+
+def test_status_without_any_sweep_cycle_reports_nothing_new(db_file: Path) -> None:
+    """Behaviour 6: no dated cycle means no latest sweep and no new offers."""
+    payload = _payload(db_file)
+    status = payload["status"]
+
+    assert status["last_sweep_cycle"] is None
+    assert status["last_sweep_at"] is None
+    assert status["new_jobs"] == 0
+    assert status["new_scored"] == 0
+    assert status["failed_runs"] == {"searches": 0, "details": 0}
+    assert all(offer["is_new"] is False for offer in payload["offers"])
+
+
+def test_unparseable_first_seen_is_not_new_and_does_not_raise(dr1_db: Path) -> None:
+    """Behaviour 7: an unusable timestamp is not evidence of a new offer."""
+    jobs = _seed_dr1_db_ids(dr1_db)
+    conn = connect(dr1_db)
+    try:
+        conn.execute(
+            "UPDATE jobs SET first_seen_at = 'not-a-date' WHERE id = ?", (jobs["a"],)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
+    assert offers[jobs["a"]]["is_new"] is False
+
+
+def test_dimensions_are_parsed_from_the_successful_evaluation(dr1_db: Path) -> None:
+    """Behaviour 8: dimensions carry all five fields with numeric values."""
+    jobs = _seed_dr1_db_ids(dr1_db)
+    offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
+
+    assert offers[jobs["a"]]["dimensions"] == [
+        {
+            "name": "role_fit",
+            "score": 90.0,
+            "weight": 0.3,
+            "rationale": "r",
+            "evidence": ["q1"],
+        }
+    ]
+
+
+def test_broken_empty_and_missing_dimensions_are_empty_lists(dr1_db: Path) -> None:
+    """Behaviour 9: ``[]``, broken JSON and no evaluation all yield ``[]``."""
+    jobs = _seed_dr1_db_ids(dr1_db)
+    conn = connect(dr1_db)
+    try:
+        conn.execute(
+            "UPDATE evaluations SET dimensions_json = '[]' WHERE job_id = ?", (jobs["a"],)
+        )
+        conn.execute(
+            "UPDATE evaluations SET dimensions_json = '{' WHERE job_id = ?", (jobs["d"],)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
+    assert offers[jobs["a"]]["dimensions"] == []
+    assert offers[jobs["d"]]["dimensions"] == []
+    assert offers[jobs["b"]]["dimensions"] == []
+
+
+def test_malformed_dimension_entries_are_dropped_without_inventing_scores(
+    dr1_db: Path,
+) -> None:
+    """Behaviour 10: no name or no numeric score means the entry is dropped."""
+    jobs = _seed_dr1_db_ids(dr1_db)
+    conn = connect(dr1_db)
+    try:
+        conn.execute(
+            "UPDATE evaluations SET dimensions_json = ? WHERE job_id = ?",
+            (
+                json.dumps(
+                    [
+                        {"score": 80},
+                        {"name": "x", "score": "alto"},
+                        "texto",
+                        {"name": "ok", "score": 70},
+                    ]
+                ),
+                jobs["a"],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
+    assert offers[jobs["a"]]["dimensions"] == [
+        {
+            "name": "ok",
+            "score": 70.0,
+            "weight": 1.0,
+            "rationale": "",
+            "evidence": [],
+        }
+    ]
+
+
+def test_dimensions_come_from_the_latest_successful_evaluation(dr1_db: Path) -> None:
+    """Behaviour 11: a newer failed evaluation never hides the successful one."""
+    jobs = _seed_dr1_db_ids(dr1_db)
+    conn = connect(dr1_db)
+    try:
+        insert_evaluation(
+            conn,
+            _score(
+                jobs["a"],
+                0.0,
+                Recommendation.NEED_MORE_INFO,
+                overall_score=None,
+                status=EvaluationStatus.ERROR,
+                dimensions=[DimensionScore(name="error_dim", score=1.0)],
+                rationale="newer error",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
+    assert offers[jobs["a"]]["dimensions"][0]["name"] == "role_fit"
+
+
+def test_salary_is_collapsed_or_none(dr1_db: Path) -> None:
+    """Behaviour 12: the stated salary is trimmed/collapsed, never parsed."""
+    jobs = _seed_dr1_db_ids(dr1_db)
+    offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
+
+    assert offers[jobs["a"]]["salary"] == "€35-45K"
+    assert offers[jobs["b"]]["salary"] is None
+    assert offers[jobs["c"]]["salary"] is None
+    assert offers[jobs["d"]]["salary"] == "€35 -45K"
+
+
+def test_dropped_payload_fields_are_absent(dr1_db: Path) -> None:
+    """Behaviour 13: removed offer, detail and keyword fields no longer ship."""
+    jobs = _seed_dr1_db_ids(dr1_db)
+    payload = _dr1_payload(dr1_db)
+    offer = next(item for item in payload["offers"] if item["id"] == jobs["a"])
+
+    assert "source" not in offer
+    assert "sighting_count" not in offer
+    assert set(offer["detail"]) == {
+        "state",
+        "age_days",
+        "window_days",
+        "http_status",
+        "refuted",
+        "final_url",
+    }
+    keyword_rows = payload["keywords"] + payload["retired_keywords"]
+    assert keyword_rows
+    for item in keyword_rows:
+        assert "retired_on" not in item
+        assert "retired_reason" not in item
+
+
+def test_dr1_payload_is_read_only(dr1_db: Path) -> None:
+    """Behaviour 14: building the new payload leaves the database bytes unchanged."""
+    before_hash = hashlib.sha256(dr1_db.read_bytes()).hexdigest()
+    before_fingerprint = _database_fingerprint(dr1_db)
+
+    _dr1_payload(dr1_db)
+
+    assert hashlib.sha256(dr1_db.read_bytes()).hexdigest() == before_hash
+    assert _database_fingerprint(dr1_db) == before_fingerprint
 
 
 # ---------------------------------------------------------------------------
@@ -1790,11 +2185,9 @@ def test_detail_evidence_for_an_unchecked_offer_is_serializable() -> None:
 
     assert evidence == {
         "state": "unchecked",
-        "checked_at": None,
         "age_days": None,
         "window_days": 21,
         "http_status": None,
-        "content_status": None,
         "refuted": False,
         "final_url": None,
     }
@@ -1839,11 +2232,9 @@ def test_payload_detail_reports_only_the_latest_fetch(db_file: Path) -> None:
     assert detail["window_days"] == DETAIL_EVIDENCE_WINDOW_DAYS == 21
     assert set(detail) == {
         "state",
-        "checked_at",
         "age_days",
         "window_days",
         "http_status",
-        "content_status",
         "refuted",
         "final_url",
     }
@@ -3015,11 +3406,8 @@ def test_dashboard_marks_retired_keyword_series(tmp_path: Path) -> None:
         RETIRED_KEYWORD_PAIRS
     )
     assert all(item["retired"] is True for item in retired)
-    assert all(
-        item["retired_on"] == RETIRED_ON_BY_PAIR[(item["provider"], item["keyword"])]
-        for item in retired
-    )
-    assert all(item["retired_reason"] for item in retired)
+    assert all("retired_on" not in item for item in retired)
+    assert all("retired_reason" not in item for item in retired)
 
     active = payload["keywords"]
     assert [item["keyword"] for item in active] == ["Junior Cloud Engineer"]
