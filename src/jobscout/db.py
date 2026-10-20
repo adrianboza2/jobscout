@@ -2033,6 +2033,24 @@ def evaluations_for_job(conn: sqlite3.Connection, job_id: int) -> list[Evaluatio
     return [_row_to_evaluation(row) for row in rows]
 
 
+def has_successful_evaluation_with_fingerprint(
+    conn: sqlite3.Connection,
+    job_id: int,
+    *,
+    scorer: ScorerName | str,
+    fingerprint: str,
+) -> bool:
+    """Whether a job already has an ``ok`` evaluation with this exact input."""
+    if not fingerprint:
+        return False
+    row = conn.execute(
+        "SELECT 1 FROM evaluations WHERE job_id = ? AND scorer = ? "
+        "AND status = 'ok' AND input_fingerprint = ? LIMIT 1",
+        (int(job_id), str(scorer), str(fingerprint)),
+    ).fetchone()
+    return row is not None
+
+
 def latest_evaluation(
     conn: sqlite3.Connection, job_id: int, *, scorer: ScorerName | str | None = None
 ) -> Evaluation | None:

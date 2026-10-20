@@ -16,9 +16,17 @@ import pytest
 from conftest import FIXTURES, no_network
 
 from jobscout.cli import EXIT_ERROR, EXIT_FAIL_CLOSED, EXIT_OK, main
-from jobscout.config import HARD_MAX_ITEMS, HARD_MAX_PAGES
-from jobscout.db import connect, upsert_feedback
-from jobscout.models import FeedbackDecision, JobFeedback
+from jobscout.config import HARD_MAX_ITEMS, HARD_MAX_PAGES, Settings
+from jobscout.db import all_active_jobs, connect, insert_evaluation, upsert_feedback
+from jobscout.models import (
+    Evaluation,
+    EvaluationStatus,
+    FeedbackDecision,
+    JobFeedback,
+    Recommendation,
+)
+from jobscout.scoring import effective_fingerprint
+from jobscout.scoring.profile import load_profile
 
 FIXTURE = FIXTURES / "linkedin_search_sample.json"
 PROFILE = FIXTURES / "profile_test.yaml"
@@ -276,6 +284,176 @@ def test_score_with_opencode_scorer_missing_cli_fails_cleanly(
     output = capsys.readouterr().out
     assert "OpenCode CLI" in output
     assert "auth login" in output
+
+
+FALLBACK_MODEL = "opencode-go/backup#high"
+
+
+def _fake_opencode_evaluate(primary_error: bool = True):
+    """Build a fake ``evaluate_job`` that fails on the primary model only."""
+    calls: list[tuple[int, str]] = []
+
+    def fake_evaluate_job(conn, job, profile, *, scorer_name, settings, **kwargs):
+        calls.append((int(job.id), f"{settings.opencode_model}#{settings.opencode_variant}"))
+        if primary_error and settings.opencode_model == "opencode-go/deepseek-v4.1-flash":
+            return Evaluation(
+                job_id=int(job.id),
+                scorer=scorer_name,
+                status=EvaluationStatus.ERROR,
+                error="provider.no-route",
+                recommendation=Recommendation.NEED_MORE_INFO,
+                model=settings.opencode_model,
+                input_fingerprint="primary-fingerprint",
+            )
+        return Evaluation(
+            job_id=int(job.id),
+            scorer=scorer_name,
+            status=EvaluationStatus.OK,
+            overall_score=80.0,
+            recommendation=Recommendation.APPLY,
+            confidence=0.8,
+            model=settings.opencode_model,
+            input_fingerprint="fallback-fingerprint",
+        )
+
+    return fake_evaluate_job, calls
+
+
+def test_score_switches_to_fallback_and_keeps_it_for_the_rest_of_the_run(
+    db_path: Path, capsys, monkeypatch
+) -> None:
+    import jobscout.cli as cli
+
+    monkeypatch.setenv("JOBSCOUT_OPENCODE_FALLBACK_MODEL", FALLBACK_MODEL)
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+
+    fake_evaluate_job, calls = _fake_opencode_evaluate()
+    monkeypatch.setattr(cli, "evaluate_job", fake_evaluate_job)
+
+    exit_code = main(
+        [
+            "--db",
+            str(db_path),
+            "--profile",
+            str(PROFILE),
+            "score",
+            "--all",
+            "--scorer",
+            "opencode",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == EXIT_OK
+    assert payload["fallback_model"] == FALLBACK_MODEL
+    assert payload["succeeded"] == 4
+    assert "primary model opencode-go/deepseek-v4.1-flash failed" in captured.err
+    assert f"using fallback {FALLBACK_MODEL} for the rest of this run" in captured.err
+    # The primary is attempted exactly once; every later offer (including the
+    # failed one, re-evaluated) uses the fallback model.
+    primary_calls = [model for _, model in calls if model == "opencode-go/deepseek-v4.1-flash#low"]
+    assert len(primary_calls) == 1
+    assert [model for _, model in calls].count(FALLBACK_MODEL) == 4
+
+
+def test_fallback_skips_offers_already_scored_with_the_fallback_input(
+    db_path: Path, capsys, monkeypatch
+) -> None:
+    import jobscout.cli as cli
+
+    monkeypatch.setenv("JOBSCOUT_OPENCODE_FALLBACK_MODEL", FALLBACK_MODEL)
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+
+    settings = Settings.from_env(
+        env={"JOBSCOUT_OPENCODE_FALLBACK_MODEL": FALLBACK_MODEL}, dotenv_path=None
+    ).with_overrides(db_path=db_path, profile_path=PROFILE)
+    profile = load_profile(PROFILE)
+    fallback_settings = cli._fallback_settings(settings, FALLBACK_MODEL)
+
+    conn = connect(db_path)
+    try:
+        jobs = all_active_jobs(conn)
+        first, already_scored = jobs[0], jobs[1]
+        fingerprint = effective_fingerprint(
+            "opencode", already_scored, profile, fallback_settings
+        )
+        insert_evaluation(
+            conn,
+            Evaluation(
+                job_id=int(already_scored.id),
+                scorer="opencode",
+                status=EvaluationStatus.OK,
+                overall_score=75.0,
+                recommendation=Recommendation.CONSIDER,
+                model=fallback_settings.opencode_model,
+                input_fingerprint=fingerprint,
+            ),
+        )
+    finally:
+        conn.close()
+
+    fake_evaluate_job, calls = _fake_opencode_evaluate()
+    monkeypatch.setattr(cli, "evaluate_job", fake_evaluate_job)
+
+    exit_code = main(
+        [
+            "--db",
+            str(db_path),
+            "--profile",
+            str(PROFILE),
+            "score",
+            "--job-id",
+            str(first.id),
+            "--job-id",
+            str(already_scored.id),
+            "--scorer",
+            "opencode",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert exit_code == EXIT_OK
+    assert "scored 1 job(s), 1 succeeded, 0 failed" in output
+    assert [job_id for job_id, _ in calls] == [int(first.id), int(first.id)]
+    assert all(model == FALLBACK_MODEL for _, model in calls if model != "opencode-go/deepseek-v4.1-flash#low")
+
+
+def test_score_without_a_fallback_keeps_primary_failures(
+    db_path: Path, capsys, monkeypatch
+) -> None:
+    import jobscout.cli as cli
+
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+
+    fake_evaluate_job, calls = _fake_opencode_evaluate()
+    monkeypatch.setattr(cli, "evaluate_job", fake_evaluate_job)
+
+    exit_code = main(
+        [
+            "--db",
+            str(db_path),
+            "--profile",
+            str(PROFILE),
+            "score",
+            "--all",
+            "--scorer",
+            "opencode",
+            "--json",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == EXIT_ERROR
+    assert payload["fallback_model"] is None
+    assert payload["succeeded"] == 0
+    assert all(model == "opencode-go/deepseek-v4.1-flash#low" for _, model in calls)
+    assert "using fallback" not in captured.err
 
 
 def test_score_with_a_missing_profile_reports_an_error(db_path: Path, capsys) -> None:

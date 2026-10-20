@@ -10,12 +10,13 @@ be persisted.
 
 Design rules:
 
-* **Local CLI, no endpoint.** The scorer runs ``opencode run [--pure] --model
-  <model> [--variant <variant>] --format json <prompt>`` through a subprocess
-  argument array. ``--pure`` disables external plugins and is on by default
-  (``JOBSCOUT_OPENCODE_PURE``); ``--variant`` is only added when
-  ``JOBSCOUT_OPENCODE_VARIANT`` is configured (default ``minimal``). There is no
-  ``shell=True`` and no network client in this module.
+* **Local CLI, no endpoint.** The scorer runs ``opencode run [--standalone]
+  --model <model>[#<variant>] --format json <prompt>`` through a subprocess
+  argument array. ``--standalone`` starts a private server instead of the
+  background service and is on by default (``JOBSCOUT_OPENCODE_PURE``); the
+  optional variant is part of the model id (``JOBSCOUT_OPENCODE_VARIANT``,
+  default ``low``). There is no ``shell=True`` and no network client in this
+  module.
 * **Resolved executable.** The CLI is only ever launched through an absolute
   path from :func:`resolve_executable` (an absolute path, or a
   :func:`shutil.which` hit). A relative path is never resolved against the
@@ -41,10 +42,12 @@ Design rules:
   enough, contains no configured secret, and contains no credential-looking
   content.
 * **Secrets never reach the child or the database.** The CLI runs with a copy of
-  the inherited environment that keeps ``PATH``, ``HOME``/``APPDATA``, and
-  ``XDG_*`` (so OpenCode still finds its own config and credentials) but drops
-  any variable carrying a configured secret. Persisted output is additionally
-  checked against the configured secret list and discarded when one is present.
+  the inherited environment that keeps ``PATH`` and ``HOME``/``APPDATA`` (so
+  OpenCode still finds its executable and credentials) but drops any variable
+  carrying a configured secret. With ``opencode_pure`` the child additionally
+  gets a private ``XDG_CONFIG_HOME`` instead of the user's OpenCode config.
+  Persisted output is additionally checked against the configured secret list
+  and discarded when one is present.
 * **Model-derived text is redacted.** The rationale, dimension text, and the
   schema repair/error diagnostics (which quote model-supplied values) are
   redacted against the configured secrets through
@@ -238,24 +241,26 @@ def build_command(
     """Build the ``opencode run`` argument array (never a shell string).
 
     ``command`` overrides the configured executable so the caller can pass a
-    fully resolved absolute path (see :func:`resolve_executable`). ``--pure`` is
-    added by default to disable external plugins, and ``--variant`` is included
-    only when a non-empty variant is configured, so an empty setting reproduces
-    the previous command exactly.
+    fully resolved absolute path (see :func:`resolve_executable`).
+    ``--standalone`` is added by default to run a private server instead of the
+    background service. The variant is part of the model id in OpenCode 2.x, so
+    a non-empty variant is appended as ``<model>#<variant>`` unless the model
+    already carries its own ``#``; an empty setting leaves the model untouched.
     """
     argv = [
         command or settings.opencode_command,
         "run",
     ]
     if settings.opencode_pure:
-        argv.append("--pure")
+        argv.append("--standalone")
+    model = settings.opencode_model
+    variant = (settings.opencode_variant or "").strip()
+    if variant and "#" not in model:
+        model = f"{model}#{variant}"
     argv += [
         "--model",
-        settings.opencode_model,
+        model,
     ]
-    variant = (settings.opencode_variant or "").strip()
-    if variant:
-        argv += ["--variant", variant]
     if settings.opencode_json_events:
         argv += ["--format", "json"]
     argv.append(prompt)
@@ -312,6 +317,37 @@ def bound_output(text: str, *, max_bytes: int) -> tuple[str, bool]:
 # loaded from ``.env`` may not be reflected in ``os.environ``.
 _SECRET_ENV_NAMES = (f"{PREFIX}LLM_API_KEY",)
 
+#: Minimal config written into the private config home. ``share: disabled``
+#: keeps a scoring prompt out of OpenCode's sharing service and ``autoupdate``
+#: is off so an isolated run never replaces the executable mid-batch.
+_ISOLATED_OPENCODE_CONFIG = {
+    "$schema": "https://opencode.ai/config.json",
+    "share": "disabled",
+    "autoupdate": False,
+}
+
+
+def isolated_config_home(settings: Settings) -> Path:
+    """Return (and initialise) the private ``XDG_CONFIG_HOME`` for OpenCode.
+
+    The directory lives next to the database, inside a user-owned data tree,
+    because plugins loaded from a config directory are arbitrary code: a
+    predictable shared location such as ``/tmp`` would let another account plant
+    one. The child process gets this directory as ``XDG_CONFIG_HOME``, so it
+    never reads the user's real OpenCode configuration.
+    """
+    # Resolved here, not in the child: the CLI runs from ``opencode_workdir``
+    # (a temp dir by default), where a relative ``data/...`` would point into
+    # exactly the shared location this function exists to avoid.
+    home = Path(settings.db_path).expanduser().resolve().parent / "opencode-config"
+    config_file = home / "opencode" / "opencode.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    if not config_file.exists():
+        config_file.write_text(
+            json.dumps(_ISOLATED_OPENCODE_CONFIG) + "\n", encoding="utf-8"
+        )
+    return home
+
 
 def scrubbed_subprocess_env(
     settings: Settings,
@@ -322,11 +358,17 @@ def scrubbed_subprocess_env(
 
     OpenCode keeps its authentication in its own local store
     (``opencode auth login``), so it does not need a jobscout API key. This
-    preserves every inherited variable — including ``PATH`` and
-    ``HOME``/``APPDATA``/``XDG_*``, which OpenCode uses to locate its executable,
-    configuration, and credentials — and removes only the variables that carry a
-    configured secret (matched by name or by exact value). Captured output is
-    still scrubbed against the same secrets before it could be persisted.
+    preserves every inherited variable — including ``PATH``,
+    ``HOME``/``APPDATA``, and the data-oriented ``XDG_*`` variables, which
+    OpenCode uses to locate its executable and credentials — and removes only
+    the variables that carry a configured secret (matched by name or by exact
+    value). Captured output is still scrubbed against the same secrets before it
+    could be persisted.
+
+    When ``opencode_pure`` is set, the environment also isolates the child from
+    the user's plugins and project config: ``XDG_CONFIG_HOME`` points at
+    :func:`isolated_config_home` and project config, autoupdate, and Claude Code
+    skills are disabled. Credentials live in the data dir, so they still work.
     """
     source = os.environ if environ is None else environ
     secrets = tuple(secret for secret in settings.llm_secrets if secret)
@@ -338,6 +380,12 @@ def scrubbed_subprocess_env(
         if candidate and any(candidate == secret for secret in secrets):
             continue
         scrubbed[key] = value
+
+    if settings.opencode_pure:
+        scrubbed["XDG_CONFIG_HOME"] = str(isolated_config_home(settings))
+        scrubbed["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
+        scrubbed["OPENCODE_DISABLE_AUTOUPDATE"] = "1"
+        scrubbed["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] = "1"
     return scrubbed
 
 
@@ -497,6 +545,30 @@ def _iter_json_documents(text: str) -> list[Any]:
     return documents
 
 
+def _error_event_detail(text: str) -> str | None:
+    """Return ``"<type>: <message>"`` from the first JSON error event.
+
+    OpenCode emits a stream of JSON events. When the CLI fails after starting,
+    the useful diagnostic is in the first ``{"type": "error", ...}`` event
+    instead of the raw event stream. Returns ``None`` when no such event exists,
+    so the caller can fall back to the previous raw detail.
+    """
+    for document in _iter_json_documents(text):
+        if not isinstance(document, dict) or document.get("type") != "error":
+            continue
+        error = document.get("error")
+        if not isinstance(error, dict):
+            continue
+        parts = [
+            part.strip()
+            for part in (error.get("type"), error.get("message"))
+            if isinstance(part, str) and part.strip()
+        ]
+        if parts:
+            return ": ".join(parts)
+    return None
+
+
 def _collect_text_parts(value: Any, out: list[str]) -> None:
     """Collect assistant text from OpenCode JSON events.
 
@@ -625,8 +697,11 @@ class OpenCodeScorer:
             )
 
         if outcome.returncode != 0:
+            error_event = _error_event_detail(
+                outcome.stdout or ""
+            ) or _error_event_detail(outcome.stderr or "")
             detail = redact_secrets(
-                (outcome.stderr or outcome.stdout or "").strip(),
+                error_event or (outcome.stderr or outcome.stdout or "").strip(),
                 self.settings.llm_secrets,
             )[:MAX_ERROR_CHARS]
             raise OpenCodeExecutionError(
@@ -819,6 +894,7 @@ class OpenCodeScorer:
 __all__ = [
     "CommandOutcome",
     "OPENCODE_OUTPUT_CONTRACT",
+    "isolated_config_home",
     "OpenCodeError",
     "OpenCodeExecutionError",
     "OpenCodeNotConfiguredError",

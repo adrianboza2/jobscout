@@ -31,6 +31,7 @@ import argparse
 import json
 import sqlite3
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -82,6 +83,7 @@ from .db import (
     evaluation_count,
     feedback_count,
     get_job,
+    has_successful_evaluation_with_fingerprint,
     init_db,
     job_detail_fetch_count,
     jobs_needing_evaluation,
@@ -108,7 +110,13 @@ from .notify import (
 from .pipeline import ingest_collector_result, ingest_detail_results, ingest_fixture
 from .preference import PreferenceAssessment, PreferenceOutcome, assess_preference
 from .pruning import apply_offer_plan, build_plan
-from .scoring import SCORERS, evaluate_job, fingerprint_resolver, load_profile
+from .scoring import (
+    SCORERS,
+    effective_fingerprint,
+    evaluate_job,
+    fingerprint_resolver,
+    load_profile,
+)
 from .scoring.profile import ProfileError
 from .timeutil import iso_days_ago
 
@@ -586,7 +594,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--scorer",
         choices=SCORER_CHOICES,
         default=ScorerName.OPENCODE.value,
-        help="scorer backend (default: OpenCode with the configured MiMo model)",
+        help="scorer backend (default: OpenCode with the configured model)",
     )
     score_parser.add_argument("--limit", type=int, default=None)
     score_parser.add_argument(
@@ -1534,6 +1542,18 @@ def cmd_rank(args: argparse.Namespace, settings: Settings) -> int:
     return EXIT_OK
 
 
+def _split_model_variant(model: str) -> tuple[str, str | None]:
+    """Split ``provider/model#variant`` into its model and optional variant."""
+    base, separator, variant = model.partition("#")
+    return base, (variant or None) if separator else None
+
+
+def _fallback_settings(settings: Settings, fallback_model: str) -> Settings:
+    """Return settings that score with the configured fallback model."""
+    model, variant = _split_model_variant(fallback_model)
+    return replace(settings, opencode_model=model, opencode_variant=variant)
+
+
 def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
     try:
         profile = load_profile(settings.profile_path)
@@ -1568,14 +1588,62 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
 
         ok_count = 0
         failed: list[dict[str, Any]] = []
+        fallback_settings: Settings | None = None
+        fallback_model: str | None = None
+        allow_fallback = (
+            args.scorer == ScorerName.OPENCODE.value
+            and bool(settings.opencode_fallback_model)
+        )
         for job in jobs:
+            active_settings = fallback_settings or settings
+            if fallback_settings is not None:
+                # Once on the fallback, an offer already scored with the
+                # fallback input (an earlier run, or earlier in this one) would
+                # just be duplicated. The primary fingerprint is deliberately
+                # not consulted here: that selection already happened above.
+                fingerprint = effective_fingerprint(
+                    args.scorer, job, profile, active_settings
+                )
+                if has_successful_evaluation_with_fingerprint(
+                    conn,
+                    int(job.id),
+                    scorer=args.scorer,
+                    fingerprint=fingerprint,
+                ):
+                    continue
             evaluation = evaluate_job(
                 conn,
                 job,
                 profile,
                 scorer_name=args.scorer,
-                settings=settings,
+                settings=active_settings,
             )
+            if (
+                allow_fallback
+                and fallback_settings is None
+                and str(evaluation.status) == EvaluationStatus.ERROR.value
+            ):
+                fallback_model = str(settings.opencode_fallback_model)
+                fallback_settings = _fallback_settings(settings, fallback_model)
+                message = (
+                    f"primary model {settings.opencode_model} failed: "
+                    f"{evaluation.error}; using fallback {fallback_model} "
+                    "for the rest of this run"
+                )
+                # A warning must not corrupt a --json document, so it goes to
+                # stderr there; in text mode it stays with the run output.
+                _write_line(message, stream=sys.stderr if as_json else sys.stdout)
+
+                # Re-evaluate this same offer with the fallback model. The
+                # switch is sticky for the rest of the run, so the primary is
+                # not retried for every remaining offer.
+                evaluation = evaluate_job(
+                    conn,
+                    job,
+                    profile,
+                    scorer_name=args.scorer,
+                    settings=fallback_settings,
+                )
             # Preference is computed from the same stored text and reported
             # beside the evaluation; it never edits the score or the record.
             preference = assess_preference(job)
@@ -1601,6 +1669,7 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
             "evaluated": len(results),
             "succeeded": ok_count,
             "failed": failed,
+            "fallback_model": fallback_model,
             "evaluations": results,
         },
         as_json=as_json,

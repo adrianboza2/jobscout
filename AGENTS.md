@@ -1,44 +1,102 @@
 # AGENTS.md — jobscout
 
 Private, local-first job-search tool (`collect → enrich → score → dashboard`). No CI, no
-publish pipeline, no service. Everything runs from the repository root.
+publish pipeline. Everything runs from the repository root.
 
-## Environment (Windows)
+## Who decides
 
-- Use the project virtualenv: `.venv\Scripts\python.exe` (created with `python -m venv .venv`
-  and `pip install -e ".[dev]"`). It is gitignored.
-- Without a venv, `PYTHONPATH=src python -m jobscout <cmd>` works: the runtime is stdlib
+The owner leads this project and wants to understand every change and the reason for it. The
+code grew fast with little owner design input, so:
+
+- Propose, explain the why, and let the owner decide anything that changes behaviour, data,
+  providers, models or scope. Give a recommendation, not a menu.
+- Keep steps small enough to review. No sweeping refactors the owner has not asked for.
+
+## Agent workflow (Claude Code)
+
+The orchestrator's context is the scarce resource. Anything that is mechanical, or that only
+adds reading to the orchestrator without adding judgment, goes to DeepSeek and comes back as
+an answer only.
+
+- **Delegate by default** with the `deepseek-delegate` skill:
+  - `--agent explorador` for read-only questions: locate usages, map a module, summarise
+    files, check whether something exists, with `path:line`.
+  - `--agent ejecutor` (with `--skill tdd` for logic) for bounded, verifiable implementation
+    with an exact success command.
+  - In this repo always pass `--allow-unignored-secrets`: the committed template
+    `.env.example` trips the script's secret check. It holds no secrets; the real `.env` stays
+    gitignored and the delegate cannot read it. Owner-approved on 2026-10-20.
+- **Keep for the orchestrator:** design decisions, briefs, reviewing every delegated diff,
+  running the test gate, and talking to the owner. Trivial one-liners are cheaper to do than to
+  brief. When something is not delegated, say so and why.
+- **Orca orchestration** (`orca-ide skills get orchestration`) is for supervising several full
+  agents in parallel worktrees. It is not the default here: for this repo's sequential,
+  single-owner work, DeepSeek delegation is cheaper. Use it only when the owner asks for
+  supervised parallel workers.
+- `.claude/settings.json` injects this rule on every prompt so it is not forgotten.
+
+## Environment
+
+Main machine: Linux (`/home/adrian/jobscout`).
+
+- Project virtualenv: `.venv/bin/python` (created with `python3 -m venv .venv` and
+  `pip install -e ".[dev]"`). It is gitignored.
+- Without a venv, `PYTHONPATH=src python3 -m jobscout <cmd>` works: the runtime is stdlib
   (`sqlite3`, `urllib.request`, `argparse`) plus `PyYAML`.
 - Keep dependencies minimal on purpose. Do not add HTTP clients, test frameworks, linters,
   formatters, CI config, or task runners. No mutation-testing, no coverage gates.
 
 ## Commands
 
-    .venv\Scripts\python.exe -m pytest -q          # offline suite, ~15-20 s, expect ~1100 passed
-    .venv\Scripts\python.exe -m jobscout --help
-    .venv\Scripts\python.exe -m jobscout keyword-plan          # offline, no network
-    .venv\Scripts\python.exe -m jobscout rank --top 10         # reads data/jobscout.sqlite3
+    .venv/bin/python -m pytest -q                 # offline suite, ~70 s here, expect ~1100 passed
+    .venv/bin/python -m jobscout --help
+    .venv/bin/python -m jobscout keyword-plan      # offline, no network
+    .venv/bin/python -m jobscout rank --top 10     # reads data/jobscout.sqlite3
 
 The full offline suite is the acceptance gate for any change.
 
-## Windows: Codex sandbox vs pytest (read this before reporting failures)
+## Outside this repository (part of the system, not versioned here)
 
-Inside the Codex Windows sandbox, pytest errors out in fixture setup:
+- `~/.hermes/scripts/jobscout_sweep.py` — Hermes' scheduler runs the full cycle every three
+  days at 07:00: searches → details → `score --all` (capped at 180 offers) → dashboard →
+  notify → DB backup. It writes `reports/sweep-YYYY-MM-DD.log`; read that log first when
+  something "stopped working".
+- `~/.config/systemd/user/jobscout-dashboard.service` — serves `reports/` over Tailscale on
+  port 8080.
+- OpenCode (`~/.local/bin/opencode`) is updated outside this repo. A CLI update broke scoring
+  on 2026-10-18 (removed `--pure`/`--variant`); after any OpenCode update, check the next
+  sweep log for `scored N job(s), 0 succeeded`.
 
-    PermissionError: [WinError 5] Acceso denegado:
-    'C:\Users\adria\AppData\Local\Temp\pytest-of-adria'
+## Scoring with OpenCode 2.x
 
-Cause: pytest creates its base temp directory with mode `0o700`, which becomes an
-owner-only Windows ACL; the sandbox runs as a separate identity
-(`CodexSandboxOnline`/`CodexSandboxUsers`), so it cannot reopen or scan it. Fixing the ACL
-does not stick — pytest recreates it — and moving it into the repo with `--basetemp` only
-moves the problem and leaves directories the real user cannot read afterwards.
+- Invocation: `opencode run --standalone --model <provider/model#variant> --format json
+  <prompt>`. There is no `--pure` or `--variant` flag any more.
+- `JOBSCOUT_OPENCODE_PURE=true` (default) now means isolation by environment: a private
+  config dir next to the database (`data/opencode-config`) plus
+  `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_DISABLE_AUTOUPDATE` and
+  `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS`, so user plugins never run inside the scorer.
+- Variants depend on the model (`deepseek-v4.1-flash`: `low`/`high`/`max`, no `minimal`).
+  Probe a new model once by hand before switching; a missing variant fails with
+  `Variant unavailable`.
+- `JOBSCOUT_OPENCODE_FALLBACK_MODEL` (optional): after the first provider `error` in a
+  `score` run, the rest of that run uses the fallback. Free models can run out; this keeps the
+  sweep producing scores. Changing model re-scores offers gradually because the model is part
+  of each evaluation's input fingerprint.
 
-- Measured: same command, same commit — sandboxed run `592 passed, 408 errors`; with host
-  access (`--sandbox danger-full-access`) `1000 passed in 17.97s`.
-- Therefore: when tests must actually run, use Codex with host access, or ask the user to run
-  them. Never treat that PermissionError as a defect of this repository and never "fix" tests
-  or code because of it.
+## Planning files
+
+- `NEXT_STEPS.md` — session log and backlog, newest first.
+- `odd/tasks/<topic>.md` — open work orders; `odd/tasks/done/` — closed ones, kept for
+  history.
+
+## Windows / Codex notes (second machine)
+
+On Windows use `.venv\Scripts\python.exe`. Inside the Codex Windows sandbox, pytest fails in
+fixture setup with `PermissionError: [WinError 5] Acceso denegado: ...\pytest-of-adria`:
+pytest's `0o700` temp dir becomes an owner-only ACL the sandbox identity cannot reopen.
+Measured on the same commit: `592 passed, 408 errors` sandboxed versus `1000 passed` with
+host access. Run tests with host access (`.codex/config.toml`) or ask the user to run them;
+never "fix" code or tests because of that error.
 
 ## Project contract (do not break)
 
@@ -83,4 +141,6 @@ do not push them. Do not push at all unless the user asks.
   collector, do not make it configurable "for safety", and do not treat its absence as a bug to
   fix: an audit finding is not a reason to change it. LinkedIn requests stay bounded by the same
   pacing and item caps as every other provider.
-- Tecnoempleo and GetManfred keep their current robots handling. Do not touch it.
+- Tecnoempleo and GetManfred keep their current robots handling. Do not touch it. (Known fact,
+  not a bug to fix without the owner: the GetManfred sitemap inventory relies on a past reading
+  of its `robots.txt`; only the detail adapter re-reads it at run time.)

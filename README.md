@@ -134,9 +134,11 @@ Notas del ciclo:
   `input_fingerprint` del perfil, así que un cambio de política es distinguible
   sin reescribir el historial. Para el puntuador de OpenCode, el `prompt_version`
   además lleva la variante de razonamiento efectiva como sufijo
-  `<version>+<variant>` (por defecto `+minimal`), así que una corrida `minimal` y
-  una `max` se distinguen después. Un `JOBSCOUT_OPENCODE_VARIANT=` explícitamente
-  vacío conserva el string histórico sin sufijo.
+  `<version>+<variant>` (por defecto `+low`), así que una corrida `low` y una
+  `max` se distinguen después. Un `JOBSCOUT_OPENCODE_VARIANT=` explícitamente
+  vacío conserva el string histórico sin sufijo. El modelo forma parte de la
+  huella de entrada, así que cambiarlo re-puntúa las ofertas poco a poco (con
+  `--rescore`).
 - La reevaluación **todavía no mira si la entrada cambió**: `score --all` omite
   cualquier oferta que ya tenga una evaluación exitosa de ese puntuador, aunque
   el perfil o la descripción hayan cambiado. Usa `--rescore` para forzar una
@@ -709,8 +711,20 @@ python -m jobscout score --all --scorer opencode --profile profile.yaml
 Si no pasás `--scorer`, se usa OpenCode con deepseek-v4.1-flash. Para una evaluación offline
 explícita, usá `--scorer heuristic`.
 
-Ejecuta `opencode run --pure --model <modelo> [--variant minimal] --format json
-<prompt>` como arreglo de argumentos, nunca a través de un shell. La ruta al
+Ejecuta `opencode run --standalone --model <modelo>#<variante> --format json
+<prompt>` como arreglo de argumentos, nunca a través de un shell. OpenCode 2.x
+eliminó `--pure` y `--variant`, así que el aislamiento vive en `--standalone` y la
+variante en el propio id del modelo. Con `JOBSCOUT_OPENCODE_PURE=true` (por
+defecto) además se usa un `XDG_CONFIG_HOME` privado en
+`<carpeta de la BD>/opencode-config` y se desactivan la configuración del
+proyecto, la autoupdate y las skills de Claude Code; el aislamiento es por
+entorno porque los plugins de OpenCode son código arbitrario.
+
+La variante se configura con `JOBSCOUT_OPENCODE_VARIANT` (por defecto `low`).
+`JOBSCOUT_OPENCODE_FALLBACK_MODEL` es opcional y admite `#variante`: tras el
+primer `status=error` de una ejecución de `score`, el resto usa el respaldo y el
+JSON de `score` lo registra como `fallback_model`. Como el modelo forma parte de
+la huella de entrada, cambiarlo re-puntúa las ofertas poco a poco. La ruta al
 ejecutable se resuelve solo por ruta absoluta o búsqueda en `PATH`. La salida del
 proceso hijo se acota **mientras corre**: si supera
 `JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES` o vence el timeout, el proceso se termina.
@@ -844,14 +858,15 @@ Estas garantías las aplica el código, no solo la documentación:
 
 ### Riesgo residual: permisos de herramientas de OpenCode (H2)
 
-`opencode run` (v1.14.30) **no expone una bandera confiable para denegar
+`opencode run` (OpenCode 2.x) **no expone una bandera confiable para denegar
 herramientas ni para aislar la ejecución**. La única opción relacionada es
 `--dangerously-skip-permissions`, que *amplía* el acceso y jobscout nunca la
 pasa. La política de herramientas vive en la configuración local de OpenCode, que
 jobscout no controla ni verifica.
 
-Lo que sí hace hoy: ejecuta con `--pure` (sin plugins externos) por defecto, corre
-desde un directorio neutral (el temporal del sistema, para no cargar las
+Lo que sí hace hoy: ejecuta con `--standalone` y un `XDG_CONFIG_HOME` privado
+(aislamiento por entorno, no `--pure`, que OpenCode 2.x eliminó) por defecto,
+corre desde un directorio neutral (el temporal del sistema, para no cargar las
 instrucciones de este repositorio) y neutraliza la falsificación de delimitadores
 en el prompt.
 

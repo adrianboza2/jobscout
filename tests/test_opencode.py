@@ -80,8 +80,8 @@ def test_default_model_is_included_opencode_go() -> None:
     assert defaults.opencode_model == "opencode-go/deepseek-v4.1-flash"
     assert defaults.opencode_command == "opencode"
     assert defaults.opencode_timeout_seconds == 180.0
-    assert DEFAULT_OPENCODE_VARIANT == "minimal"
-    assert defaults.opencode_variant == "minimal"
+    assert DEFAULT_OPENCODE_VARIANT == "low"
+    assert defaults.opencode_variant == "low"
 
 
 def test_variant_is_configurable_through_env() -> None:
@@ -118,12 +118,23 @@ def test_opencode_settings_are_configurable_through_env() -> None:
     assert settings.opencode_json_events is False
 
 
+def test_fallback_model_is_optional_and_read_from_env() -> None:
+    defaults = Settings.from_env(env={}, dotenv_path=None)
+    assert defaults.opencode_fallback_model is None
+
+    settings = Settings.from_env(
+        env={"JOBSCOUT_OPENCODE_FALLBACK_MODEL": "opencode-go/backup#high"},
+        dotenv_path=None,
+    )
+    assert settings.opencode_fallback_model == "opencode-go/backup#high"
+
+
 def test_build_command_uses_array_model_and_json_format(opencode_settings) -> None:
     argv = build_command(opencode_settings, "PROMPT")
     assert isinstance(argv, list)
     assert argv[0] == "opencode"
     assert argv[1] == "run"
-    assert argv[argv.index("--model") + 1] == "opencode-go/deepseek-v4.1-flash"
+    assert argv[argv.index("--model") + 1] == "opencode-go/deepseek-v4.1-flash#low"
     assert argv[argv.index("--format") + 1] == "json"
     assert argv[-1] == "PROMPT"
 
@@ -133,27 +144,41 @@ def test_build_command_omits_format_when_json_events_disabled(opencode_settings)
     assert "--format" not in build_command(plain, "PROMPT")
 
 
-def test_build_command_includes_configured_variant(opencode_settings) -> None:
+def test_build_command_appends_configured_variant_to_the_model(opencode_settings) -> None:
     argv = build_command(opencode_settings, "PROMPT")
-    assert argv[argv.index("--variant") + 1] == "minimal"
-    assert argv.index("--variant") > argv.index("--model")
+    assert argv[argv.index("--model") + 1] == "opencode-go/deepseek-v4.1-flash#low"
     assert argv[-1] == "PROMPT"
 
 
-def test_build_command_custom_variant_is_passed_verbatim(opencode_settings) -> None:
+def test_build_command_custom_variant_is_appended_verbatim(opencode_settings) -> None:
     settings = opencode_settings.with_overrides(opencode_variant="high")
     argv = build_command(settings, "PROMPT")
-    assert argv[argv.index("--variant") + 1] == "high"
+    assert argv[argv.index("--model") + 1] == "opencode-go/deepseek-v4.1-flash#high"
+
+
+def test_build_command_keeps_a_model_that_already_carries_a_variant(
+    opencode_settings,
+) -> None:
+    settings = opencode_settings.with_overrides(
+        opencode_model="opencode-go/deepseek-v4.1-flash#max",
+        opencode_variant="low",
+    )
+    argv = build_command(settings, "PROMPT")
+    assert argv[argv.index("--model") + 1] == "opencode-go/deepseek-v4.1-flash#max"
 
 
 def test_build_command_omits_variant_when_empty_or_none(opencode_settings) -> None:
     for empty in ("", "   "):
         argv = build_command(opencode_settings.with_overrides(opencode_variant=empty), "PROMPT")
-        assert "--variant" not in argv
+        assert argv[argv.index("--model") + 1] == "opencode-go/deepseek-v4.1-flash"
     # An explicitly empty env var resolves to ``None`` (see the config test).
     disabled = Settings.from_env(env={"JOBSCOUT_OPENCODE_VARIANT": ""}, dotenv_path=None)
     assert disabled.opencode_variant is None
-    assert "--variant" not in build_command(disabled, "PROMPT")
+    assert (
+        build_command(disabled, "PROMPT")[1:]
+        == ["run", "--standalone", "--model", "opencode-go/deepseek-v4.1-flash",
+            "--format", "json", "PROMPT"]
+    )
 
 
 def test_build_command_variant_disabled_keeps_existing_flags(opencode_settings) -> None:
@@ -179,9 +204,12 @@ def test_command_never_carries_an_api_key(opencode_settings, strong_posting, pro
     assert "Bearer" not in joined
 
 
-def test_scrubbed_subprocess_env_drops_secret_but_keeps_opencode_config() -> None:
+def test_scrubbed_subprocess_env_drops_secret_but_keeps_opencode_config(
+    tmp_path,
+) -> None:
     settings = Settings.from_env(env={}, dotenv_path=None).with_overrides(
-        llm_api_key=CONFIGURED_SECRET
+        db_path=tmp_path / "jobscout.sqlite3",
+        llm_api_key=CONFIGURED_SECRET,
     )
     environ = {
         "PATH": "/usr/bin",
@@ -202,6 +230,43 @@ def test_scrubbed_subprocess_env_drops_secret_but_keeps_opencode_config() -> Non
     assert env["UNRELATED"] == "keep"
     assert "JOBSCOUT_LLM_API_KEY" not in env
     assert CONFIGURED_SECRET not in env.values()
+
+
+def test_isolated_env_uses_a_private_config_home_and_disables_project_config(
+    settings,
+) -> None:
+    env = scrubbed_subprocess_env(settings)
+
+    config_home = Path(settings.db_path).parent / "opencode-config"
+    assert env["XDG_CONFIG_HOME"] == str(config_home)
+    assert env["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
+    assert env["OPENCODE_DISABLE_AUTOUPDATE"] == "1"
+    assert env["OPENCODE_DISABLE_CLAUDE_CODE_SKILLS"] == "1"
+    config_file = config_home / "opencode" / "opencode.json"
+    written = json.loads(config_file.read_text(encoding="utf-8"))
+    assert written["share"] == "disabled"
+    assert written["autoupdate"] is False
+
+
+def test_isolated_config_home_is_absolute_for_a_relative_db_path(
+    settings, tmp_path, monkeypatch
+) -> None:
+    # The child runs from a temp workdir, so a relative path would land there.
+    monkeypatch.chdir(tmp_path)
+    relative = settings.with_overrides(db_path=Path("data") / "jobscout.sqlite3")
+
+    env = scrubbed_subprocess_env(relative, environ={"PATH": "/usr/bin"})
+
+    assert env["XDG_CONFIG_HOME"] == str(tmp_path / "data" / "opencode-config")
+
+
+def test_isolation_is_skipped_when_pure_is_disabled(settings) -> None:
+    plain = settings.with_overrides(opencode_pure=False)
+
+    env = scrubbed_subprocess_env(plain, environ={"PATH": "/usr/bin"})
+
+    assert env == {"PATH": "/usr/bin"}
+    assert not (Path(settings.db_path).parent / "opencode-config").exists()
 
 
 def test_command_execution_scrubs_secret_env_without_touching_argv(
@@ -340,17 +405,17 @@ def test_v5_prompt_keeps_security_framing_and_output_contract(strong_posting, pr
 def test_evaluation_records_the_v5_prompt_version(
     opencode_settings, strong_posting, profile
 ) -> None:
-    # The effective default variant is ``minimal``, so the recorded provenance
+    # The effective default variant is ``low``, so the recorded provenance
     # carries it as a suffix.
     scorer, _ = make_scorer(opencode_settings, [command_outcome(0, VALID_JSON)])
     evaluation = scorer.score(strong_posting, profile)
-    assert evaluation.prompt_version == f"{OPENCODE_PROMPT_VERSION}+minimal"
+    assert evaluation.prompt_version == f"{OPENCODE_PROMPT_VERSION}+low"
 
 
 def test_effective_prompt_version_mirrors_the_variant_setting(opencode_settings) -> None:
     assert (
         effective_prompt_version(opencode_settings)
-        == f"{OPENCODE_PROMPT_VERSION}+minimal"
+        == f"{OPENCODE_PROMPT_VERSION}+low"
     )
     assert (
         effective_prompt_version(opencode_settings.with_overrides(opencode_variant="max"))
@@ -368,19 +433,19 @@ def test_effective_prompt_version_mirrors_the_variant_setting(opencode_settings)
 def test_two_variants_produce_distinguishable_prompt_versions(
     opencode_settings, strong_posting, profile
 ) -> None:
-    minimal_scorer, _ = make_scorer(
-        opencode_settings.with_overrides(opencode_variant="minimal"),
+    low_scorer, _ = make_scorer(
+        opencode_settings.with_overrides(opencode_variant="low"),
         [command_outcome(0, VALID_JSON)],
     )
     max_scorer, _ = make_scorer(
         opencode_settings.with_overrides(opencode_variant="max"),
         [command_outcome(0, VALID_JSON)],
     )
-    minimal_eval = minimal_scorer.score(strong_posting, profile)
+    low_eval = low_scorer.score(strong_posting, profile)
     max_eval = max_scorer.score(strong_posting, profile)
-    assert minimal_eval.prompt_version == f"{OPENCODE_PROMPT_VERSION}+minimal"
+    assert low_eval.prompt_version == f"{OPENCODE_PROMPT_VERSION}+low"
     assert max_eval.prompt_version == f"{OPENCODE_PROMPT_VERSION}+max"
-    assert minimal_eval.prompt_version != max_eval.prompt_version
+    assert low_eval.prompt_version != max_eval.prompt_version
 
 
 @pytest.mark.parametrize("variant", ["", None])
@@ -591,6 +656,52 @@ def test_non_zero_exit_is_reported_and_stderr_is_redacted(
     assert "exited with code 3" in error
     assert "sk-abcdef0123456789" not in error
     assert "***REDACTED***" in error
+
+
+def test_non_zero_exit_reports_the_first_error_event(
+    opencode_settings, strong_posting, profile
+) -> None:
+    raw = event_stream(
+        step_event("step_start"),
+        json.dumps(
+            {
+                "type": "error",
+                "timestamp": 1,
+                "sessionID": "s",
+                "error": {
+                    "type": "provider.auth",
+                    "message": (
+                        "This API key has expired. Create a new API key in "
+                        "OpenCode Console ..."
+                    ),
+                },
+            }
+        ),
+    )
+    scorer, _ = make_scorer(opencode_settings, [command_outcome(1, raw)])
+    evaluation = scorer.score(strong_posting, profile)
+
+    assert evaluation.status == EvaluationStatus.ERROR.value
+    error = evaluation.error or ""
+    assert error == (
+        "OpenCode CLI exited with code 1: provider.auth: This API key has "
+        "expired. Create a new API key in OpenCode Console ..."
+    )
+    assert "step_start" not in error
+
+
+def test_non_zero_exit_without_an_error_event_keeps_the_raw_detail(
+    opencode_settings, strong_posting, profile
+) -> None:
+    scorer, _ = make_scorer(
+        opencode_settings, [command_outcome(3, "some stdout noise", "")]
+    )
+    evaluation = scorer.score(strong_posting, profile)
+
+    assert evaluation.status == EvaluationStatus.ERROR.value
+    assert evaluation.error == (
+        "OpenCode CLI exited with code 3: some stdout noise"
+    )
 
 
 def test_configured_secret_in_stderr_is_redacted(
@@ -858,7 +969,9 @@ def test_default_runner_passes_scrubbed_env_to_subprocess(
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_executable_accepts_absolute_path_and_path_lookup(tmp_path) -> None:
+def test_resolve_executable_accepts_absolute_path_and_path_lookup(
+    tmp_path, monkeypatch
+) -> None:
     real = tmp_path / "jobscout-fake-opencode"
     real.write_text("", encoding="utf-8")
 
@@ -866,10 +979,21 @@ def test_resolve_executable_accepts_absolute_path_and_path_lookup(tmp_path) -> N
     assert resolve_executable(str(real)) == str(real)
     # An absolute path to a missing file is rejected.
     assert resolve_executable(str(tmp_path / "missing")) is None
-    # The installed interpreter is resolvable by bare name through PATH.
-    resolved_python = resolve_executable("python")
-    assert resolved_python is not None
-    assert Path(resolved_python).is_absolute()
+
+    # A bare name is resolvable through PATH. Use a fake executable instead of
+    # an interpreter because Linux often ships only ``python3``.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_name = "jobscout-on-path-opencode"
+    if sys.platform == "win32":
+        fake_name += ".exe"
+    on_path = bin_dir / fake_name
+    on_path.write_text("", encoding="utf-8")
+    on_path.chmod(0o755)
+    monkeypatch.setenv("PATH", str(bin_dir))
+    resolved = resolve_executable(fake_name)
+    assert resolved == str(on_path)
+    assert Path(resolved).is_absolute()
 
 
 def test_resolve_executable_rejects_cwd_relative_planted_binary(
@@ -980,23 +1104,34 @@ def test_overflow_is_reported_as_an_execution_error(
 
 
 # ---------------------------------------------------------------------------
-# Restrictive invocation (--pure) and forbidden flags
+# Restrictive invocation (--standalone) and forbidden flags
 # ---------------------------------------------------------------------------
 
 
-def test_pure_flag_is_enabled_by_default(opencode_settings) -> None:
+def test_standalone_is_enabled_by_default(opencode_settings) -> None:
     assert opencode_settings.opencode_pure is True
     argv = build_command(opencode_settings, "PROMPT")
     assert argv[1] == "run"
-    assert "--pure" in argv
+    assert argv[2] == "--standalone"
 
 
-def test_pure_flag_can_be_disabled_through_config_and_env() -> None:
+def test_isolation_can_be_disabled_through_config_and_env() -> None:
     settings = Settings.from_env(
         env={"JOBSCOUT_OPENCODE_PURE": "false"}, dotenv_path=None
     )
     assert settings.opencode_pure is False
-    assert "--pure" not in build_command(settings, "PROMPT")
+    assert "--standalone" not in build_command(settings, "PROMPT")
+
+
+def test_removed_opencode_flags_are_never_passed(opencode_settings) -> None:
+    for settings in (
+        opencode_settings,
+        opencode_settings.with_overrides(opencode_variant="high"),
+        opencode_settings.with_overrides(opencode_pure=False, opencode_variant="max"),
+    ):
+        argv = build_command(settings, "PROMPT")
+        assert "--pure" not in argv
+        assert "--variant" not in argv
 
 
 def test_dangerously_skip_permissions_is_never_passed(opencode_settings) -> None:

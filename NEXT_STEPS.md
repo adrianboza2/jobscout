@@ -3,6 +3,31 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-20 — OpenCode 2.x migration: scoring restored, docs aligned
+
+The 2026-10-19 sweep scored 0 of 21 offers. Cause: OpenCode 2.0.32 (installed
+2026-10-18) removed `--pure` and `--variant`, and the configured
+`opencode/muse-spark-1.3-contributor-free` model no longer exists.
+
+Fix: the scorer now calls `opencode run [--standalone] --model <model>#<variant>
+--format json`, with `low` as the default variant and
+`JOBSCOUT_OPENCODE_PURE=true` meaning environment isolation (`--standalone`, a
+private `XDG_CONFIG_HOME` under the database folder, project config/autoupdate/
+Claude Code skills disabled) instead of `--pure`. A non-zero exit now reports the
+first JSON `error` event as `<type>: <message>` instead of the raw event stream.
+`JOBSCOUT_OPENCODE_FALLBACK_MODEL` (optional, accepts `#variant`) switches the
+rest of a `score` run after the first `status=error`, and `score --json` reports
+it as `fallback_model`. The READMEs are updated.
+
+- **Owner decision:** primary `opencode/deepseek-v4.1-flash-free`, fallback
+  `opencode-go/deepseek-v4.1-flash#low`.
+- **Owner pending:** renew the OpenCode Console API key (expired 2026-10-20);
+  then confirm the free model accepts the `low` variant.
+- **Structure:** the empty `openspec/` directory is removed; closed task cards
+  now live under `odd/tasks/done/`.
+- **Confirmed:** the salary estimator described below is NOT implemented; it
+  remains planned (see the 2026-10-18 session).
+
 ## Next session (2026-10-18) — roadmap: expandable rows, salary estimator, gates, divergence review
 
 Decisions recorded after reviewing `MadsLorentzen/ai-job-search` against this

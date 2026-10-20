@@ -136,9 +136,10 @@ Cycle notes:
   profile `input_fingerprint`, so a policy change is distinguishable without
   rewriting history. For the OpenCode scorer the `prompt_version` also carries
   the effective reasoning variant as a `<version>+<variant>` suffix (default
-  `+minimal`), so a `minimal` pass and a `max` pass are distinguishable after
+  `+low`), so a `low` pass and a `max` pass are distinguishable after
   the fact. An explicitly empty `JOBSCOUT_OPENCODE_VARIANT=` keeps the bare
-  historical string.
+  historical string. The model is part of the input fingerprint, so changing it
+  re-scores offers gradually (with `--rescore`).
 - Re-evaluation is **not input-aware yet**: `score --all` skips any offer that
   already has a successful evaluation from that scorer, even when the profile or
   the description changed. Use `--rescore` to force a fresh pass over every
@@ -699,9 +700,21 @@ python -m jobscout score --all --scorer opencode --profile profile.yaml
 When `--scorer` is omitted, OpenCode with deepseek-v4.1-flash is used. For an explicit offline
 evaluation, use `--scorer heuristic`.
 
-It runs `opencode run --pure --model <model> [--variant minimal] --format json
-<prompt>` as a subprocess argument array — never through a shell. The executable
-is resolved only through an absolute path or a `PATH` lookup. Child output is
+It runs `opencode run --standalone --model <model>#<variant> --format json
+<prompt>` as a subprocess argument array — never through a shell. OpenCode 2.x
+removed `--pure` and `--variant`, so isolation lives in `--standalone` and the
+variant in the model id itself. With `JOBSCOUT_OPENCODE_PURE=true` (the default)
+it also uses a private `XDG_CONFIG_HOME` at
+`<database folder>/opencode-config` and disables project config, autoupdate, and
+Claude Code skills; isolation is done through the environment because OpenCode
+plugins are arbitrary code.
+
+The variant is set with `JOBSCOUT_OPENCODE_VARIANT` (default `low`).
+`JOBSCOUT_OPENCODE_FALLBACK_MODEL` is optional and accepts `#variant`: after the
+first `status=error` in a `score` run, the rest of that run uses the fallback and
+the `score` JSON reports it as `fallback_model`. Because the model is part of the
+input fingerprint, changing it re-scores offers gradually. The executable is
+resolved only through an absolute path or a `PATH` lookup. Child output is
 bounded **while the process runs**: crossing
 `JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES` or the timeout kills the child. It reuses
 the same hardened prompt as the HTTP scorer, so the posting is treated as
@@ -828,15 +841,16 @@ These guarantees are enforced by the code, not just documented:
 
 ### Residual risk: OpenCode tool permissions (H2)
 
-`opencode run` (v1.14.30) **exposes no reliable flag to deny tools or sandbox
-execution**. The only related switch is `--dangerously-skip-permissions`, which
-*widens* access and is never passed by jobscout. Tool policy lives in your local
-OpenCode configuration, which jobscout does not control or verify.
+`opencode run` (OpenCode 2.x) **exposes no reliable flag to deny tools or
+sandbox execution**. The only related switch is `--dangerously-skip-permissions`,
+which *widens* access and is never passed by jobscout. Tool policy lives in your
+local OpenCode configuration, which jobscout does not control or verify.
 
-What jobscout does today: it runs with `--pure` (no external plugins) by default,
-runs from a neutral working directory (the system temp directory, so this
-repository's agent instructions are not loaded), and neutralizes
-prompt-delimiter forgery.
+What jobscout does today: it runs with `--standalone` and a private
+`XDG_CONFIG_HOME` (environment isolation, not `--pure`, which OpenCode 2.x
+removed) by default, runs from a neutral working directory (the system temp
+directory, so this repository's agent instructions are not loaded), and
+neutralizes prompt-delimiter forgery.
 
 What remains: a prompt-injected or misbehaving model could still attempt tool
 calls permitted by your local OpenCode configuration. **This is an accepted

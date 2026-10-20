@@ -71,20 +71,26 @@ DEFAULT_LLM_MODEL = "deepseek-v4.1-flash"
 # ``opencode/`` prefix would be pay-per-use.
 DEFAULT_OPENCODE_MODEL = "opencode-go/deepseek-v4.1-flash"
 DEFAULT_OPENCODE_COMMAND = "opencode"
-# Low-reasoning variant passed to ``opencode run --variant``. A smaller reasoning
-# budget makes the CLI more likely to close the JSON object instead of stopping
-# mid-object. Set JOBSCOUT_OPENCODE_VARIANT to empty to omit the flag entirely.
-DEFAULT_OPENCODE_VARIANT = "minimal"
+# Low-reasoning variant appended to the model as ``<model>#<variant>``. A
+# smaller reasoning budget makes the CLI more likely to close the JSON object
+# instead of stopping mid-object; ``low`` is the smallest variant OpenCode 2.x
+# still offers for the default model (``minimal`` was removed). Set
+# JOBSCOUT_OPENCODE_VARIANT to empty to omit the variant entirely.
+DEFAULT_OPENCODE_VARIANT = "low"
+#: Optional model (possibly ``<model>#<variant>``) used when the primary model
+#: fails with a technical error during a ``score`` run.
+DEFAULT_OPENCODE_FALLBACK_MODEL: str | None = None
 # Run from a neutral directory by default so the CLI does not pick up this
 # repository's AGENTS.md/opencode.json instructions and derail the strict
 # JSON scoring prompt. Override with JOBSCOUT_OPENCODE_WORKDIR.
 DEFAULT_OPENCODE_WORKDIR = tempfile.gettempdir()
 DEFAULT_OPENCODE_TIMEOUT_SECONDS = 180.0
 DEFAULT_OPENCODE_MAX_OUTPUT_BYTES = 1_048_576
-# Run the CLI with ``--pure`` (no external plugins) by default. Plugins are
-# arbitrary code loaded from the local OpenCode config, so disabling them is the
-# most restrictive invocation available without editing global config. See the
-# README for the residual tool-permission risk this does not remove.
+# Isolate the CLI from the user's plugins and project config by default. Plugins
+# are arbitrary code loaded from the local OpenCode config, so an isolated
+# ``--standalone`` invocation with a private config home is the most restrictive
+# option available without editing global config. See the README for the residual
+# tool-permission risk this does not remove.
 DEFAULT_OPENCODE_PURE = True
 
 # Absolute ceilings for LinkedIn collection volume. These are true hard upper
@@ -340,8 +346,8 @@ def _env_opt_str_allow_empty_none(
 
     Unlike :func:`_env_opt_str`, an explicitly empty value disables the option
     instead of falling back to the default. This lets an operator write
-    ``JOBSCOUT_OPENCODE_VARIANT=`` to omit ``--variant`` while leaving the
-    variable unset keeps the conservative default.
+    ``JOBSCOUT_OPENCODE_VARIANT=`` to omit the variant from the model id while
+    leaving the variable unset keeps the conservative default.
     """
     key = PREFIX + name
     if key not in env:
@@ -495,8 +501,11 @@ class Settings:
     opencode_workdir: str | None = DEFAULT_OPENCODE_WORKDIR
     opencode_max_output_bytes: int = DEFAULT_OPENCODE_MAX_OUTPUT_BYTES
     opencode_json_events: bool = True
-    #: Pass ``--pure`` so the CLI loads no external plugins.
+    #: Run the CLI in isolation (``--standalone`` plus a private config home)
+    #: so it loads no user plugins or project config.
     opencode_pure: bool = DEFAULT_OPENCODE_PURE
+    #: Optional model used when the primary model fails with a technical error.
+    opencode_fallback_model: str | None = DEFAULT_OPENCODE_FALLBACK_MODEL
 
     extra: dict[str, str] = field(default_factory=dict)
 
@@ -721,4 +730,7 @@ class Settings:
             ),
             opencode_json_events=_env_bool(merged, "OPENCODE_JSON_EVENTS", True),
             opencode_pure=_env_bool(merged, "OPENCODE_PURE", DEFAULT_OPENCODE_PURE),
+            opencode_fallback_model=_env_opt_str(
+                merged, "OPENCODE_FALLBACK_MODEL", DEFAULT_OPENCODE_FALLBACK_MODEL
+            ),
         )
