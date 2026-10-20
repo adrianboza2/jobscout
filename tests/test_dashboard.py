@@ -1387,7 +1387,11 @@ def test_report_exposes_filters_search_feedback_and_summary(db_file: Path) -> No
     assert 'data-value="apply" aria-pressed="false">Aplicar</button>' in html_text
     assert 'data-value="consider" aria-pressed="false">Considerar</button>' in html_text
     assert 'data-value="skip" aria-pressed="false">Descartar</button>' in html_text
-    assert 'id="filter-imported-review" class="btn btn-ghost filter-toggle"' in html_text
+    # The imported-decision toggle is a one-button segmented control, like "Solo nuevas".
+    assert (
+        '<div class="seg">\n        <button type="button" id="filter-imported-review" '
+        'aria-pressed="false"' in html_text
+    )
     # The KPI summary is gone; the status line replaces it.
     assert 'id="summary"' not in html_text
     assert 'id="summary-note"' not in html_text
@@ -2143,6 +2147,34 @@ def test_export_button_is_visible_and_disabled_until_reviewed(db_file: Path) -> 
     assert "source: \"jobscout-dashboard\"" in html_text
 
 
+def test_export_appears_only_with_local_decisions(db_file: Path) -> None:
+    """The header export is hidden until this browser holds a decision, and names N."""
+    html_text = generate_and_read(db_file)
+
+    assert re.search(r'<button type="button" id="export-feedback" class="export"\s+title="[^"]*"\s+hidden>', html_text)
+    assert 'Exportar <span id="feedback-count" aria-live="polite">0 decisiones</span></button>' in html_text
+    assert 'document.getElementById("export-feedback").hidden = count === 0;' in html_text
+    assert 'count + (count === 1 ? " decisión" : " decisiones");' in html_text
+    # The old count text and disabled state are gone.
+    assert "revisadas\";" not in html_text
+    assert ".export:disabled" not in _embedded_style(html_text)
+
+
+def test_decision_reason_is_capped_at_500(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    assert "var MAX_REASON_CHARS = 500;" in html_text
+    assert "reason.maxLength = MAX_REASON_CHARS;" in html_text
+    assert '"Motivo opcional, máx. " + MAX_REASON_CHARS' in html_text
+
+
+def test_saved_confirmation_fades_before_removal(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    assert ".decision-saved.fading { opacity:0; }" in _embedded_style(html_text)
+    assert 'window.setTimeout(function () { marker.classList.add("fading"); }, 2450);' in html_text
+
+
 def test_dashboard_feedback_is_binary_and_keeps_consider_legacy(db_file: Path) -> None:
     """The active human decision is Aplicar/Descartar; consider is legacy only."""
     html_text = generate_and_read(db_file)
@@ -2581,7 +2613,7 @@ def test_reviewed_view_keeps_consider_legacy_and_binary_buttons(db_file: Path) -
     assert 'var FEEDBACK_LABELS = { apply: "Aplicar", reject: "Descartar" };' in html_text
     assert 'var LEGACY_FEEDBACK_LABELS = { consider: "Considerar (histórico)" };' in html_text
     # The imported-decision view adds a filter control, not a decision choice.
-    assert 'id="filter-imported-review" class="btn btn-ghost filter-toggle"' in html_text
+    assert '<button type="button" id="filter-imported-review" aria-pressed="false"' in html_text
     assert 'var FEEDBACK_DECISIONS = ["apply", "consider", "reject"];' not in html_text
 
 
@@ -2595,7 +2627,8 @@ def test_unreviewed_view_adds_no_media_query_and_keeps_one_reduced_motion_guard(
     assert re.findall(r"@media\s*\(([^)]*)\)", css) == ["prefers-reduced-motion:reduce"]
     assert "* { transition:none !important; animation:none !important; }" in css
 
-    toggle_rules = [rule for rule in css.split("}") if ".filter-toggle" in rule]
+    # The imported-decision toggle is styled by the segmented-control rules.
+    toggle_rules = [rule for rule in css.split("}") if ".seg" in rule]
     assert toggle_rules, "the imported-decision toggle must be styled"
     for rule in toggle_rules:
         assert "--signal" not in rule, rule

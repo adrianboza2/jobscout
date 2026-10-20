@@ -1288,10 +1288,9 @@ __STYLE__
     <button type="button" role="tab" id="tab-keywords" aria-selected="false"
       aria-controls="panel-keywords" data-view="keywords">Palabras clave <span class="tab-count" id="tab-keywords-count">0</span></button>
     <span class="tab-spacer"></span>
-    <span id="feedback-count" aria-live="polite">0 revisadas</span>
     <button type="button" id="export-feedback" class="export"
-      title="Descarga un archivo JSON con sus decisiones guardadas en este navegador"
-      disabled>Exportar feedback local (JSON)</button>
+      title="Exportar feedback local (JSON): solo aparece si hay decisiones en este navegador"
+      hidden>Exportar <span id="feedback-count" aria-live="polite">0 decisiones</span></button>
   </nav>
   </div>
 </header>
@@ -1332,11 +1331,10 @@ __STYLE__
         <option value="reviewed">revisadas</option>
         <option value="unreviewed">sin revisar</option>
       </select>
-      <button type="button" id="filter-imported-review" class="btn btn-ghost filter-toggle"
-        aria-pressed="false"
-        title="Muestra solo las ofertas sin una decisión humana importada (job_feedback en SQLite)">
-        Solo sin decisión importada
-      </button>
+      <div class="seg">
+        <button type="button" id="filter-imported-review" aria-pressed="false"
+          title="Muestra solo las ofertas sin una decisión humana importada (job_feedback en SQLite)">Solo sin decisión importada</button>
+      </div>
     </div>
     <ul class="list" id="offers"></ul>
     <button type="button" id="show-more" class="mini" hidden>Mostrar 50 más</button>
@@ -1460,14 +1458,11 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 .tab-count { margin-left:var(--sp-4); font-family:var(--mono); font-size:var(--fs-12);
   color:var(--ink-3); }
 .tab-spacer { flex:1; }
-#feedback-count { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3);
-  padding:0 var(--sp-8) var(--sp-4); }
 .export { cursor:pointer; background:var(--paper); color:var(--ink);
   border:1px solid var(--ink); font-family:var(--mono); font-size:var(--fs-12);
   padding:var(--sp-4) var(--sp-8); margin:0 0 var(--sp-4) var(--sp-8); }
 .export:hover:not(:disabled), .export:focus-visible:not(:disabled) {
   background:var(--ink); color:var(--paper); }
-.export:disabled { opacity:.45; cursor:not-allowed; }
 
 .content { display:flex; flex-direction:column; gap:var(--sp-24); min-width:0; }
 .content > * { min-width:0; }
@@ -1494,26 +1489,6 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
   font-family:var(--sans); font-size:var(--fs-12); padding:0;
   text-decoration:underline; text-underline-offset:2px; }
 #reset-filters:hover, #reset-filters:focus-visible { color:var(--ink); }
-
-.btn { font-family:inherit; font-size:var(--fs-13); font-weight:600;
-  padding:var(--sp-4) var(--sp-8); cursor:pointer; color:var(--ink);
-  background:var(--paper); border:1px solid var(--rule); border-radius:2px; }
-.btn:hover:not(:disabled), .btn:focus-visible:not(:disabled) {
-  background:var(--sheet); border-color:var(--ink); }
-.btn:active:not(:disabled) { background:var(--rule-2); }
-.btn:disabled { opacity:.45; cursor:not-allowed; }
-.btn-primary { background:var(--ink); border-color:var(--ink); color:var(--paper); }
-.btn-primary:hover:not(:disabled), .btn-primary:focus-visible:not(:disabled) {
-  background:var(--ink-2); border-color:var(--ink-2); }
-.btn-ghost { background:transparent; border-color:var(--rule); }
-.btn-ghost:hover:not(:disabled), .btn-ghost:focus-visible:not(:disabled) {
-  background:var(--sheet); border-color:var(--ink); }
-/* The imported-decision toggle states its state in aria-pressed and reuses the
-   ink fill, never a hue. It adds no media query and no transition. */
-.filter-toggle { white-space:nowrap; }
-.filter-toggle[aria-pressed="true"],
-.filter-toggle[aria-pressed="true"]:hover {
-  background:var(--ink); border-color:var(--ink); color:var(--paper); }
 
 .section-label { font-size:var(--fs-11); font-weight:600; text-transform:uppercase;
   letter-spacing:.06em; color:var(--ink-3); }
@@ -1588,7 +1563,7 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
   border-top:1px solid var(--rule); padding-top:var(--sp-12); }
 .foot a { color:var(--ink); margin-left:auto; }
 .feedback { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-8); }
-.feedback-controls { display:inline-flex; gap:var(--sp-4); }
+.feedback-controls { display:inline-flex; gap:var(--sp-16); }
 .mini { cursor:pointer; background:transparent; border:1px solid var(--rule); padding:var(--sp-4) var(--sp-8);
   font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-2); }
 .mini:hover, .mini:focus-visible { border-color:var(--ink); color:var(--ink); }
@@ -1596,6 +1571,7 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 .foot textarea { flex-basis:100%; font-family:var(--sans); font-size:var(--fs-13); background:var(--paper);
   color:var(--ink); border:1px solid var(--rule); padding:var(--sp-8); min-height:56px; }
 .decision-saved { color:var(--ink-2); margin-left:var(--sp-8); transition:opacity .15s; }
+.decision-saved.fading { opacity:0; }
 .decision-state { display:flex; flex-wrap:wrap; align-items:baseline;
   gap:var(--sp-4) var(--sp-8); font-size:var(--fs-13); color:var(--ink-2); }
 /* A legacy ``consider`` decision is marked as historical with weight, not hue. */
@@ -1651,6 +1627,8 @@ _SCRIPT = r"""
   // active human decision is binary; ``consider`` is a legacy value that may
   // still be present in localStorage from before this workflow.
   var FEEDBACK_DECISIONS = ["apply", "reject"];
+  // The reason is the page's only free-text input, so it is the only one capped.
+  var MAX_REASON_CHARS = 500;
   var RECOMMENDATION_LABELS = {
     apply: "Aplicar", consider: "Considerar", skip: "Descartar",
     need_more_info: "Requiere más información",
@@ -1780,8 +1758,10 @@ _SCRIPT = r"""
 
   function refreshFeedbackCount() {
     var count = feedbackCount();
-    document.getElementById("feedback-count").textContent = count + " revisadas";
-    document.getElementById("export-feedback").disabled = count === 0;
+    document.getElementById("feedback-count").textContent =
+      count + (count === 1 ? " decisión" : " decisiones");
+    // Export appears only when this browser holds a decision to hand over.
+    document.getElementById("export-feedback").hidden = count === 0;
   }
 
   // The effective model-axis value for one offer. A stored successful
@@ -1941,7 +1921,9 @@ _SCRIPT = r"""
     });
     box.appendChild(controls);
     var reason = el("textarea");
-    reason.placeholder = "Motivo opcional (se guarda en este navegador)";
+    reason.placeholder = "Motivo opcional, máx. " + MAX_REASON_CHARS +
+      " caracteres (se guarda en este navegador)";
+    reason.maxLength = MAX_REASON_CHARS;
     reason.setAttribute("aria-label", "Motivo opcional de la decisión");
     reason.value = entry.reason || "";
     reason.hidden = !entry.decision;
@@ -1979,6 +1961,8 @@ _SCRIPT = r"""
     marker.setAttribute("role", "status");
     state.appendChild(marker);
     if (savedTimer) { window.clearTimeout(savedTimer); }
+    // Fade just before removal; the 150 ms opacity transition ends as it goes.
+    window.setTimeout(function () { marker.classList.add("fading"); }, 2450);
     savedTimer = window.setTimeout(function () { marker.remove(); }, 2600);
   }
 

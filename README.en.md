@@ -180,9 +180,10 @@ external asset, needs no server, and makes no network request. All visible text
 is neutral/professional Spanish; internal schema keys and CLI command names stay
 English so the report never drifts from the database. The sticky header
 summarises the last sweep (date, new offers, pending details and failures;
-unscored new offers and failures show in red) and offers two tabs, **Ofertas** and **Palabras clave**, with the decision counter and
-export control on the right. The offers view uses a single horizontal toolbar,
-including a **Solo nuevas** toggle (offers first seen in the latest sweep); there
+unscored new offers and failures show in red) and offers two tabs, **Ofertas** and **Palabras clave**, with **Exportar N
+decisiones** on the right, shown only while this browser holds a decision. The offers view uses a single horizontal toolbar,
+including **Solo nuevas** (offers first seen in the latest sweep) and **Solo sin
+decisión importada**, both segmented controls; there
 is no side rail and no KPI cards.
 
 Each offer is **a one-line row**: score with a bar coloured by band (≥ 70 / ≥ 50),
@@ -194,8 +195,8 @@ detail is built only when a row is opened: the model's full rationale (no longer
 truncated), the stated salary, the per-dimension breakdown (or `sin desglose en
 esta evaluación`), Puntos fuertes / Carencias / Bloqueos / Incógnitas when the
 evaluation has them, and a footer with model, confidence, date, the imported
-decision, the **✓ aplicar** / **✕ descartar** buttons (the reason field opens after
-choosing) and **Ver la oferta ↗**. Report warnings are quiet lines at the end, next
+decision, the **✓ aplicar** / **✕ descartar** buttons (the reason field, up to 500
+characters, opens after choosing) and **Ver la oferta ↗**. Report warnings are quiet lines at the end, next
 to the metadata.
 
 ```bash
@@ -232,13 +233,17 @@ These are two different signals, and the report keeps them apart:
 | Produced by | `score` (heuristic, LLM, or OpenCode) | you, clicking in the report |
 | Stored in | SQLite `evaluations` table, with full provenance | this browser's `localStorage`, keyed by project + job id; then SQLite `job_feedback` |
 | Read by `jobscout` | yes | only by `import-feedback`, which copies an export into `job_feedback` |
-| Portable | yes, it is in the database | with **Exportar feedback local (JSON)** plus `import-feedback` |
+| Portable | yes, it is in the database | with **Exportar N decisiones** plus `import-feedback` |
 
 Each job has **two** local feedback buttons (**Aplicar / Descartar**, stored as
-`apply` / `reject`) and an optional reason box. The active decision is binary:
+`apply` / `reject`) and an optional reason box of up to 500 characters (the field
+accepts nothing more at the cap). The active decision is binary:
 *Aplicar* or *Descartar*. The buttons themselves are **browser-local**: they do
-not apply, do not touch LinkedIn, and write nothing to SQLite. **Exportar feedback
-local (JSON)** downloads `jobscout-feedback.json` (`jobscout.feedback.v1` schema).
+not apply, do not touch LinkedIn, and write nothing to SQLite. **Exportar N
+decisiones** downloads `jobscout-feedback.json` (`jobscout.feedback.v1` schema). N
+counts the decisions stored in this browser (a legacy `consider` included), not the
+imported ones; exporting or importing does not clear the browser, so the button
+stays visible after an import.
 
 Historical compatibility: `consider` decisions (the old *Revisar* label) are not
 deleted or silently converted. An offer with a stored `consider` shows it as a

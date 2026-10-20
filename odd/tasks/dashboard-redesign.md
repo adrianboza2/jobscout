@@ -322,8 +322,21 @@ marketing components are not.
     - Retired pairs render in the table; the tab count is all rows (active + retired).
     - Initial order: *Score medio* descending. Headers literal from the mockup, with a
       `title` on Vistas, ≥ 70 and Aplicadas instead of the methodology prose.
-- [ ] DR-5 **Minimal decision + conditional export.** Buttons in the footer line, the export
+- [x] DR-5 **Minimal decision + conditional export.** Buttons in the footer line, the export
   count in the header, and the reason length cap. Export tests untouched.
+  - Decisions (owner, 2026-10-20):
+    - The header export is `Exportar N decisiones`, `hidden` while N = 0. The old label
+      "Exportar feedback local (JSON)" moves to its `title`, so
+      `test_export_button_is_visible_and_disabled_until_reviewed` stays untouched; its name
+      no longer describes the behaviour (left for whenever the export tests are touched).
+    - N = entries in this browser's `localStorage` with a decision (a legacy `consider`
+      included, as it is exported), never the imported ones. Exporting or importing does
+      not clear `localStorage`, so the button stays visible after an import; clearing it
+      would be a separate decision.
+    - Reason cap: 500 characters via `maxlength`; the browser stops typing and truncates
+      pastes. A longer reason already stored is shown and exported whole until edited.
+    - "Solo sin decisión importada" is a one-button `.seg`, like "Solo nuevas"; the dead
+      `.btn*`/`.filter-toggle` CSS is gone.
 - [ ] DR-6 **Speed pass.** Measure weight and time to first screen against the baseline and
   record both here.
 - [ ] Later, owned by their own cards:
@@ -380,3 +393,18 @@ marketing components are not.
   brand spelling in JS. Suite 1141 passed. Page weight 2.16 MB. Not checked in a browser
   (none here; JS syntax checked with node); the owner reviewed `reports/dr4-palabras.html`.
   Next: DR-5.
+- 2026-10-20: DR-5 done. Export button as above; imported-decision toggle on `.seg`; reason
+  capped at 500; "Guardado en este navegador" now fades (its 150 ms transition was declared
+  but never triggered); the two footer buttons sit 16 px apart as in the mockup (18 px
+  there), not 4 px. Rewritten tests: `test_report_exposes_filters_search_feedback_and_summary`,
+  `test_reviewed_view_keeps_consider_legacy_and_binary_buttons`,
+  `test_unreviewed_view_adds_no_media_query_and_keeps_one_reduced_motion_guard` (now reads
+  the `.seg` rules). New: `test_export_appears_only_with_local_decisions`,
+  `test_decision_reason_is_capped_at_500`, `test_saved_confirmation_fades_before_removal`.
+  Suite 1144 passed. Page weight 2.16 MB. Compared with the mockup rule by rule (no browser
+  here; JS syntax checked with node). Unlike the mockup: paddings on the 4 px scale
+  (`.export` 6/10 → 4/8, `.seg button` 6/10 → 4/8, `.mini` 3/8 → 4/8, `.foot` gap 18 → 16);
+  added focus-visible states; `.mini` pressed state, the saved marker, the imported
+  decision, the legacy text and the reason textarea are additions with no mockup
+  counterpart; the export `title` is longer. The owner reviewed `reports/dr5-exportar.html`.
+  Next: DR-6.

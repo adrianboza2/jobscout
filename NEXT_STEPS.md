@@ -3,6 +3,24 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-20 (h) — dashboard redesign DR-5: decision + conditional export
+
+Done (`odd/tasks/dashboard-redesign.md`, DR-5): the header shows `Exportar N
+decisiones` only while this browser holds a decision (N counts local entries,
+legacy included, never imported ones); "Solo sin decisión importada" is a
+segmented control; the decision reason is capped at 500 characters; the saved
+confirmation fades out. Export tests untouched (the old label lives on in the
+button's `title`).
+
+- **Lesson:** the card counted two look-pinning tests for the toggle; a grep
+  over all of `tests/` found a third (the CSS hue/media guard read
+  `.filter-toggle` rules).
+- **Lesson:** a pinned timer line can be kept by adding a second timer rather
+  than rewriting it (the fade runs at 2450 ms, the removal stays at 2600 ms).
+- **Known:** exporting/importing never clears `localStorage`, so the export
+  button stays visible after an import. Clearing it is an open owner decision.
+- **Next:** DR-6 (speed pass).
+
 ## Session 2026-10-20 (g) — dashboard redesign DR-4: Palabras clave view
 
 Done (`odd/tasks/dashboard-redesign.md`, DR-4): the keyword tab is the mockup's

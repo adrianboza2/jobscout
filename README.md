@@ -182,9 +182,11 @@ esquema y los comandos de CLI permanecen en inglés para no divergir de la base
 de datos. La cabecera fija resume el último barrido (fecha, ofertas nuevas,
 detalles pendientes y fallos; las nuevas sin evaluar y los fallos salen en rojo)
 y ofrece dos pestañas, **Ofertas** y **Palabras
-clave**, con el contador de decisiones y la exportación a la derecha. La vista de
+clave**, y a la derecha **Exportar N decisiones**, que solo aparece cuando este
+navegador guarda alguna decisión. La vista de
 ofertas usa una única barra de herramientas horizontal, con el filtro **Solo
-nuevas** (ofertas vistas por primera vez en el último barrido); ya no hay rail
+nuevas** (ofertas vistas por primera vez en el último barrido) y **Solo sin
+decisión importada**, ambos como control segmentado; ya no hay rail
 lateral ni tarjetas KPI.
 
 Cada oferta es **una fila de una línea**: puntaje con barra coloreada por banda
@@ -197,7 +199,8 @@ justificación completa del modelo (ya no se recorta), salario indicado, desglos
 por dimensiones (o `sin desglose en esta evaluación`), Puntos fuertes / Carencias
 / Bloqueos / Incógnitas cuando la evaluación las trae, y un pie con modelo,
 confianza, fecha, la decisión importada, los botones **✓ aplicar** / **✕
-descartar** (el motivo se abre al elegir) y **Ver la oferta ↗**. Los avisos del
+descartar** (el motivo, de hasta 500 caracteres, se abre al elegir) y **Ver la
+oferta ↗**. Los avisos del
 informe son líneas discretas al final, junto a los metadatos.
 
 ```bash
@@ -235,13 +238,17 @@ Son dos señales distintas y el informe las mantiene separadas:
 | Lo produce | `score` (heurística, LLM u OpenCode) | tú, haciendo clic en el informe |
 | Se guarda en | tabla `evaluations` de SQLite, con procedencia completa | `localStorage` del navegador, indexado por proyecto + id de oferta; luego, la tabla `job_feedback` de SQLite |
 | ¿`jobscout` lo lee? | sí | solo con `import-feedback`, que copia una exportación a `job_feedback` |
-| ¿Es portable? | sí, está en la base | con **Exportar feedback local (JSON)** más `import-feedback` |
+| ¿Es portable? | sí, está en la base | con **Exportar N decisiones** más `import-feedback` |
 
 Cada oferta tiene **dos** botones de feedback local (**Aplicar / Descartar**,
-almacenados como `apply` / `reject`) y un motivo opcional. La decisión activa es
+almacenados como `apply` / `reject`) y un motivo opcional de hasta 500
+caracteres (al llegar al tope el campo no admite más). La decisión activa es
 binaria: *Aplicar* o *Descartar*. Los botones son **solo del navegador**: no
-postulan, no tocan LinkedIn y no escriben en SQLite. **Exportar feedback local
-(JSON)** descarga `jobscout-feedback.json` con el esquema `jobscout.feedback.v1`.
+postulan, no tocan LinkedIn y no escriben en SQLite. **Exportar N decisiones**
+descarga `jobscout-feedback.json` con el esquema `jobscout.feedback.v1`. N cuenta
+las decisiones guardadas en este navegador (incluido un `consider` histórico), no
+las importadas; exportar o importar no vacía el navegador, así que el botón sigue
+visible después de importar.
 
 Compatibilidad con el histórico: las decisiones `consider` (histórico *Revisar*
 del tablero anterior) no se borran ni se convierten solas. Una oferta con
