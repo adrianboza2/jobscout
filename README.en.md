@@ -181,10 +181,12 @@ is neutral/professional Spanish; internal schema keys and CLI command names stay
 English so the report never drifts from the database. The sticky header
 summarises the last sweep (date, new offers, pending details and failures;
 unscored new offers and failures show in red) and offers two tabs, **Ofertas** and **Palabras clave**, with **Exportar N
-decisiones** on the right, shown only while this browser holds a decision. The offers view uses a single horizontal toolbar,
-including **Solo nuevas** (offers first seen in the latest sweep) and **Solo sin
-decisión importada**, both segmented controls; there
-is no side rail and no KPI cards.
+decisiones** on the right, shown only while this browser holds a decision. The offers view uses a single horizontal toolbar
+with text search, the model recommendation, **Solo nuevas** (offers first seen
+in the latest sweep) and a minimum-score select (`Score ≥ 0`, `≥ 50`, `≥ 70`);
+there is no side rail and no KPI cards. The typefaces (Charis SIL, Inter and DM Mono,
+OFL-licensed, in `src/jobscout/fonts/`) are embedded as `data:` URIs too, so the file looks the same from `file://` without installed fonts or
+any network request.
 
 Each offer is **a one-line row**: score with a bar coloured by band (≥ 70 / ≥ 50),
 title, company and location, chips (recommendation, `nueva`, the preference's
@@ -274,30 +276,23 @@ python -m jobscout import-feedback jobscout-feedback.json
 
 There is still no automatic scheduling: importing is a command you run yourself.
 
-### Offers without an imported decision
+### Imported decisions
 
-The toolbar includes **Solo sin decisión importada** ("only without an imported
-decision"), which narrows the shown offers to those with **no `job_feedback`
-row**. That is the real review backlog that exists in SQLite, read with a single
-read-only `SELECT` over the `mode=ro` connection. It invents no figure: it never
-shows a "pending" counter the database cannot support.
+Human decisions imported with `import-feedback` appear in the footer of each
+opened offer, but the dashboard no longer offers a filter that isolates offers
+without a decision, so the toolbar fits on one line. The review backlog is queried in SQLite, not invented as an HTML counter.
 
-- It is a **separate axis** from *Estado de revisión* (`revisadas` / `sin
-  revisar`): that filter reads your marks in `localStorage`, while this one reads
-  the imported human decision in SQLite. The header counter only reflects browser
-  decisions and is never merged with the imported feedback.
-- There is no explanatory note: the toggle's title says it reads `job_feedback`
-  in SQLite. With no imported decisions, the filter does not present every active
-  offer as a measured backlog.
+- The imported decision is read with a single read-only `SELECT` over the
+  `mode=ro` connection and is a separate axis from the local `localStorage`
+  marks. The header counter only reflects browser decisions and is never merged
+  with the imported feedback.
 - An imported decision's free-text reason **never** enters the HTML.
-- The control is hue-free and exposes its state through `aria-pressed`, so it
-  never relies on colour; it adds no animation and no new `@media` query.
+- With no imported decisions, the footer simply omits that line.
 
 **Explicit limitation:** `search_runs.cycle_id` is nullable and free-form (a
 human convention), and runs from different platforms or cycles are not guaranteed
 to be comparable. Today there is therefore **no** "new in the latest cycle" view:
-it cannot be computed trustworthily and is not approximated. The only isolation
-predicate is the absence of a `job_feedback` row.
+it cannot be computed trustworthily and is not approximated.
 
 ### No title-based seniority filter
 

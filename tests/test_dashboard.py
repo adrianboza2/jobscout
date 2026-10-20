@@ -1379,14 +1379,17 @@ def test_report_exposes_filters_search_feedback_and_summary(db_file: Path) -> No
         "filter-new",
         "filter-min-score",
         "filter-keyword",
-        "filter-review",
         "filter-sort",
-        "reset-filters",
         "result-count",
         "export-feedback",
         "feedback-count",
     ):
         assert f'id="{element_id}"' in html_text, element_id
+
+    # Removed toolbar controls must stay gone: they were not in the mockup and
+    # their filters could hide offers without any visible control.
+    for removed_id in ("filter-review", "filter-imported-review", "reset-filters"):
+        assert f'id="{removed_id}"' not in html_text, removed_id
 
     # The toolbar keeps the existing ids; the recommendation axis is a segmented
     # button group, so the option values become data attributes on the buttons.
@@ -1394,10 +1397,13 @@ def test_report_exposes_filters_search_feedback_and_summary(db_file: Path) -> No
     assert 'data-value="apply" aria-pressed="false">Aplicar</button>' in html_text
     assert 'data-value="consider" aria-pressed="false">Considerar</button>' in html_text
     assert 'data-value="skip" aria-pressed="false">Descartar</button>' in html_text
-    # The imported-decision toggle is a one-button segmented control, like "Solo nuevas".
-    assert (
-        '<div class="seg">\n        <button type="button" id="filter-imported-review" '
-        'aria-pressed="false"' in html_text
+    # The minimum score is the mockup's select, with the same three thresholds.
+    assert re.search(
+        r'<select id="filter-min-score"[^>]*>\s*'
+        r'<option value="0">Score ≥ 0</option>\s*'
+        r'<option value="50">≥ 50</option>\s*'
+        r'<option value="70">≥ 70</option>',
+        html_text,
     )
     # The KPI summary is gone; the status line replaces it.
     assert 'id="summary"' not in html_text
@@ -1409,7 +1415,6 @@ def test_report_exposes_filters_search_feedback_and_summary(db_file: Path) -> No
     assert 'var FEEDBACK_DECISIONS = ["apply", "reject"];' in html_text
     assert "localStorage" in html_text
     assert "escribe en la base de datos" in html_text
-    assert "SQLite" in html_text
 
     payload = _extract_payload(html_text)
     assert payload["summary"]["recommendations"]["apply"] == 1
@@ -1532,18 +1537,23 @@ def test_report_uses_the_desktop_technical_panel_design_tokens(db_file: Path) ->
         "--sheet:#fbfaf6",
         "--ink:#17160f",
         "--ink-2:#55524a",
-        "--ink-3:#69655d",
+        "--ink-3:#7a766c",
         "--rule:#d8d3c6",
         "--rule-2:#e8e4d9",
         "--signal:#bd3319",
         "--signal-wash:#f6e3dc",
         "--mid:#74651d",
         "--mid-wash:#f0ead2",
-        "--low:#69655d",
+        "--low:#7a766c",
+        "--money:#2f6b3a",
+        "--money-wash:#e3ede2",
     ):
         assert token in css, token
     for family in ("--serif:", "--sans:", "--mono:"):
         assert family in css, family
+    assert '--serif:"Charis SIL","Iowan Old Style","Charter","Georgia",serif;' in css
+    assert '--sans:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;' in css
+    assert '--mono:"DM Mono",ui-monospace,"SF Mono","Cascadia Mono",monospace;' in css
 
     # The old rail/KPI token set must not come back.
     for retired in (
@@ -1556,11 +1566,14 @@ def test_report_uses_the_desktop_technical_panel_design_tokens(db_file: Path) ->
     ):
         assert retired not in html_text, retired
 
-    # System font stack only: no webfont, no remote asset URL.
+    # Embedded fonts only: every face is a packaged data: URI, so the report has
+    # no webfont host and no remote asset URL.
     assert "Geist" not in html_text
-    assert "Inter" not in html_text
-    assert "@font-face" not in css
+    assert "@font-face" in css
     assert not re.search(r'url\(\s*["\']?https?://', html_text)
+    # A data: URI is allowed only for the embedded woff2 faces.
+    for match in re.findall(r"url\(\s*([^)]*)\)", css):
+        assert match.startswith("data:font/woff2;base64,"), match
 
     # Closed type scale: 11/12/13/14/15/16/22/26, and no rule hard-codes a size.
     scale = re.findall(r"--fs-[a-z0-9]+:(\d+)px", css)
@@ -1571,13 +1584,14 @@ def test_report_uses_the_desktop_technical_panel_design_tokens(db_file: Path) ->
     for declared in re.findall(r"font:\s*([^;]+);", css):
         assert declared.strip() == "inherit", declared
 
-    # Closed 4px spacing scale: no raw px value in padding, margin or gap.
+    # Spacing tokens keep the mockup's exact pixel values available without
+    # hard-coding them in a rule.
     spacing = re.findall(r"--sp-[a-z0-9]+:(\d+)px", css)
-    assert spacing == ["4", "8", "12", "16", "24", "32", "48"]
+    assert spacing == [
+        "2", "4", "5", "6", "7", "8", "9", "10", "12", "14", "16", "18",
+        "24", "32", "36", "48", "90",
+    ]
     for declared in re.findall(r"(?:padding|margin|gap)[^:;{]*:\s*([^;{}]+);", css):
-        if "88px" in declared:
-            assert declared == "var(--sp-4) var(--sp-8) var(--sp-24) 88px", declared
-            continue
         assert "px" not in declared, declared
 
     # Corners are square or at most 2px, and elevation is a hairline only.
@@ -1599,6 +1613,24 @@ def test_report_uses_the_desktop_technical_panel_design_tokens(db_file: Path) ->
         'id="keyword-table"',
     ):
         assert hook in html_text, hook
+
+
+def test_report_embeds_the_three_font_families_as_data_uris(db_file: Path) -> None:
+    """The report ships its typefaces inline, so it renders offline from file://."""
+    html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
+
+    faces = re.findall(r"@font-face \{(.*?)\}", css, re.DOTALL)
+    assert len(faces) == 5
+    assert sum('font-family:"Charis SIL";' in face for face in faces) == 2
+    assert sum('font-family:"Inter";' in face for face in faces) == 1
+    assert sum('font-family:"DM Mono";' in face for face in faces) == 2
+    assert any("font-weight:100 900;" in face for face in faces)
+    assert any("font-weight:500 900;" in face for face in faces)
+    for face in faces:
+        assert 'src:url(data:font/woff2;base64,' in face
+        assert 'format("woff2");' in face
+        assert "font-display:swap;" in face
 
 
 def test_report_declares_no_narrow_screen_breakpoints(db_file: Path) -> None:
@@ -1712,8 +1744,8 @@ def test_sticky_shell_reaches_the_controls_without_covering_content(db_file: Pat
     """The masthead stays reachable while the offer list scrolls.
 
     It is the only sticky element and keeps the paper background, so rows never
-    show through. The back-to-top control lives in that header; there is no
-    floating button.
+    show through. The back-to-top control floats in the bottom-right corner,
+    outside the masthead.
     """
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
@@ -1721,11 +1753,13 @@ def test_sticky_shell_reaches_the_controls_without_covering_content(db_file: Pat
     assert "header.masthead { position:sticky; top:0; z-index:20;" in css
     assert "background:var(--paper);" in css
     assert "--topbar-h" not in css
-    assert 'id="back-to-top" aria-label="Volver arriba" hidden' in html_text
+    assert 'id="back-to-top" aria-label="Volver arriba"' in html_text
+    header = html_text.split('<header class="masthead">')[1].split("</header>")[0]
+    assert "back-to-top" not in header
     assert "function bindBackToTop()" in html_text
     assert "window.scrollY <= window.innerHeight" in html_text
     assert "window.scrollTo(0, 0)" in html_text
-    assert "position:fixed" not in css.split(".toast")[0]
+    assert ".to-top { position:fixed; right:var(--sp-24); bottom:var(--sp-24);" in css
 
 
 def test_each_offer_is_an_independent_block_separated_by_gap_and_outline(
@@ -1776,7 +1810,7 @@ def test_regions_are_bounded_and_offer_bands_are_separated_by_rules(
     # The keyword table keeps the mockup's header rule and row hairline.
     assert "th { font-family:var(--mono); font-size:var(--fs-11); font-weight:600;" in css
     assert "border-bottom:1px solid var(--ink)" in css
-    assert "td { padding:var(--sp-8); border-bottom:1px solid var(--rule);" in css
+    assert "td { padding:var(--sp-10) var(--sp-8); border-bottom:1px solid var(--rule);" in css
 
 
 def test_offer_row_keeps_a_title_score_action_hierarchy(db_file: Path) -> None:
@@ -1793,7 +1827,7 @@ def test_offer_row_keeps_a_title_score_action_hierarchy(db_file: Path) -> None:
     assert "--fs-26:26px" in css
     assert ".score { font-family:var(--mono); font-size:var(--fs-26); font-weight:600; line-height:1;" in css
     assert ".t { font-family:var(--sans); font-size:var(--fs-15); font-weight:600; line-height:1.3; }" in css
-    assert ".c { color:var(--ink-2); font-size:var(--fs-13); margin-top:var(--sp-4); }" in css
+    assert ".c { color:var(--ink-2); font-size:var(--fs-13); margin-top:var(--sp-2); }" in css
     # Company and location appear once, in the subtitle.
     assert "var subtitle = offer.company;" in html_text
     assert 'if (offer.location) { subtitle += " \\u00b7 " + offer.location; }' in html_text
@@ -1923,11 +1957,18 @@ def test_dimension_weight_is_rendered_as_a_share_of_the_weight_sum(db_file: Path
 
 def test_salary_provenance_is_labelled_indicado_or_sin_dato(db_file: Path) -> None:
     html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
 
     assert 'salaryNode.appendChild(el("em", null, "indicado"));' in html_text
     assert 'salaryNode.appendChild(el("em", null, "sin dato"));' in html_text
     assert 'salaryBox.appendChild(el("dt", null, "indicado"));' in html_text
-    assert 'salaryBox.appendChild(el("dd", null, offer.salary));' in html_text
+    assert 'salaryBox.appendChild(el("dd", "sal-stated", offer.salary));' in html_text
+    # A stated salary is money-green and bold in both the row and the body; the
+    # estimate style exists for a future source but carries no data today.
+    assert "--money:#2f6b3a;" in css
+    assert "--money-wash:#e3ede2;" in css
+    assert ".sal.est { color:var(--ink-3); font-weight:400; }" in css
+    assert ".salbox dd.sal-stated { color:var(--money); font-weight:600; }" in css
 
 
 def test_missing_dimensions_state_that_no_breakdown_exists(db_file: Path) -> None:
@@ -1939,12 +1980,10 @@ def test_missing_dimensions_state_that_no_breakdown_exists(db_file: Path) -> Non
     assert ".body.nodims { grid-template-columns:1fr; }" in css
 
 
-def test_status_line_is_pushed_apart_from_the_back_to_top_control(db_file: Path) -> None:
+def test_status_line_sits_at_the_right_of_the_masthead(db_file: Path) -> None:
     css = _embedded_style(generate_and_read(db_file))
 
     assert ".mast .status-line { margin-left:auto; }" in css
-    assert ".to-top { cursor:pointer;" in css
-    assert ".to-top { margin-left:auto;" not in css
 
 
 def test_preference_outcomes_surface_as_flag_and_veto_chips(db_file: Path) -> None:
@@ -2004,24 +2043,55 @@ def test_only_new_toggle_is_a_one_button_segmented_control(db_file: Path) -> Non
 
 
 def test_filter_rail_reports_what_is_narrowing_the_list(db_file: Path) -> None:
-    """The toolbar reports the result count, and "limpiar" only appears when needed."""
+    """The toolbar reports the result count; the only reset is the empty state's."""
     html_text = generate_and_read(db_file)
 
     assert 'id="result-count"' in html_text
-    assert 'id="reset-filters" hidden' in html_text
-    assert "function activeFilterCount()" in html_text
+    assert 'id="reset-filters"' not in html_text
     assert "function applyFilters()" in html_text
-    assert "reset.hidden = (count === 0 && filters.sort === \"score\");" in html_text
     assert '" ofertas"' in html_text
     assert '" de "' in html_text
     # Every narrowing control goes through the one path, so the list and the
     # result count can never disagree; ordering is not counted as a filter.
-    assert html_text.count("applyFilters();") >= 7
-    counted = re.search(r"function activeFilterCount\(\) \{(.*?)\n  \}", html_text, re.DOTALL)
-    assert counted is not None
-    assert "filters.sort" not in counted.group(1)
-    assert "filters.review" in counted.group(1)
-    assert "filters.isNew" in counted.group(1)
+    assert html_text.count("applyFilters();") >= 6
+    assert "filters.sort" not in re.search(
+        r"function resetFilters\(\) \{(.*?)\n  \}", html_text, re.DOTALL
+    ).group(1)
+
+
+def test_min_score_is_a_select_with_the_mockup_thresholds(db_file: Path) -> None:
+    html_text = generate_and_read(db_file)
+
+    assert re.search(
+        r'<select id="filter-min-score" aria-label="Puntaje mínimo">\s*'
+        r'<option value="0">Score ≥ 0</option>\s*'
+        r'<option value="50">≥ 50</option>\s*'
+        r'<option value="70">≥ 70</option>\s*</select>',
+        html_text,
+    )
+    # The zero option clears the threshold instead of filtering everything out.
+    assert "filters.minScore = parsed > 0 ? parsed : null;" in html_text
+    assert 'document.getElementById("filter-min-score").value = "0";' in html_text
+
+
+def test_removed_toolbar_controls_are_absent_from_markup_css_and_script(
+    db_file: Path,
+) -> None:
+    html_text = generate_and_read(db_file)
+
+    for removed in (
+        'id="filter-review"',
+        'id="filter-imported-review"',
+        'id="reset-filters"',
+        "filters.review",
+        "filters.importedReview",
+        "activeFilterCount",
+        "Estado de revisión",
+    ):
+        assert removed not in html_text, removed
+    # The empty-state reset and its handler stay.
+    assert 'id="empty-reset" class="mini">limpiar</button>' in html_text
+    assert 'document.getElementById("empty-reset").addEventListener("click", resetFilters);' in html_text
 
 
 def test_status_line_is_built_from_payload_status_with_conditional_signal(
@@ -2610,24 +2680,24 @@ def test_reviewed_view_keeps_consider_legacy_and_binary_buttons(db_file: Path) -
     assert 'var FEEDBACK_DECISIONS = ["apply", "reject"];' in html_text
     assert 'var FEEDBACK_LABELS = { apply: "Aplicar", reject: "Descartar" };' in html_text
     assert 'var LEGACY_FEEDBACK_LABELS = { consider: "Considerar (histórico)" };' in html_text
-    # The imported-decision view adds a filter control, not a decision choice.
-    assert '<button type="button" id="filter-imported-review" aria-pressed="false"' in html_text
+    # Imported decisions are displayed in the footer, not offered as a filter.
+    assert 'id="filter-imported-review"' not in html_text
     assert 'var FEEDBACK_DECISIONS = ["apply", "consider", "reject"];' not in html_text
 
 
-def test_unreviewed_view_adds_no_media_query_and_keeps_one_reduced_motion_guard(
+def test_toolbar_controls_add_no_media_query_and_keep_one_reduced_motion_guard(
     db_file: Path,
 ) -> None:
-    """The new control adds no media query and stays hue-free."""
+    """The toolbar wraps instead of adding a breakpoint, and stays hue-free."""
     css = _embedded_style(generate_and_read(db_file))
 
     assert css.count("@media") == 1
     assert re.findall(r"@media\s*\(([^)]*)\)", css) == ["prefers-reduced-motion:reduce"]
     assert "* { transition:none !important; animation:none !important; }" in css
 
-    # The imported-decision toggle is styled by the segmented-control rules.
+    # The segmented controls are styled without a second accent or ember.
     toggle_rules = [rule for rule in css.split("}") if ".seg" in rule]
-    assert toggle_rules, "the imported-decision toggle must be styled"
+    assert toggle_rules
     for rule in toggle_rules:
         assert "--signal" not in rule, rule
         assert "--ember" not in rule, rule
@@ -2670,16 +2740,15 @@ def test_imported_review_read_leaves_the_database_unchanged(db_file: Path) -> No
 
     assert _database_fingerprint(db_file) == before
     assert db_file.read_bytes() == before_bytes
-    assert "job_feedback" in html_text
+    assert '"imported_review":{"reviewed":true' in html_text
 
 
-def test_unreviewed_view_renders_when_localstorage_is_unavailable(db_file: Path) -> None:
-    """The imported axis is payload/SQLite data, so it survives a blocked localStorage.
+def test_imported_decision_survives_a_blocked_localstorage(db_file: Path) -> None:
+    """The imported decision is payload data, so it survives a blocked localStorage.
 
     Some browsers restrict ``localStorage`` on ``file://`` pages. The report still
-    renders and filters in that case: the imported-decision control reads
-    ``offer.imported_review`` from the embedded payload, and the browser-local
-    ``reviewed``/``unreviewed`` filter stays a separate, guarded path.
+    renders in that case: the footer reads ``offer.imported_review`` from the
+    embedded payload, and browser storage is only needed for local marks.
     """
     html_text = generate_and_read(db_file)
 
@@ -2687,7 +2756,6 @@ def test_unreviewed_view_renders_when_localstorage_is_unavailable(db_file: Path)
     # Browser storage is still read defensively and is never required to render.
     assert "window.localStorage.getItem(STORAGE_KEY)" in html_text
     assert "catch (err) {" in html_text
-    assert "filters.review" in html_text  # the browser-local axis stays separate
 
 
 # ---------------------------------------------------------------------------

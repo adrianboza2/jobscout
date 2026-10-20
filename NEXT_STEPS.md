@@ -3,6 +3,27 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-21 (c) — dashboard DR-7: closer to the mockup
+
+- **Why:** the owner still found the mockup prettier than DR-6. Cause: the
+  tokenised CSS had rounded the mockup's spacing down, `--ink-3` had been
+  darkened, and the toolbar overflowed (no wrap, three extra controls, and a
+  `filter-keyword` select as wide as GetManfred's 309-character filter list).
+- **Owner decisions:** spacing back to the mockup values; `--ink-3`/`--low`
+  `#7a766c` (between mockup `#8a867b` and DR-6 `#69655d`); the
+  `revisadas/sin revisar` select, the `Solo sin decisión importada` toggle and
+  the toolbar `limpiar` are removed (`limpiar` stays in the empty state);
+  `Score ≥` is a 0/50/70 select; embedded OFL fonts Charis SIL (serif),
+  Inter (sans) and DM Mono (figures, picked from a five-way specimen over
+  JetBrains Mono); stated salary in a new `--money` green, with a CSS-only
+  `.sal.est` reserved for the estimator; back-to-top floats bottom-right.
+- **Keywords:** GetManfred's comma-separated keyword shows as the first two
+  terms plus `+N`, full list in the tooltip, in the table and the filter.
+- **Verified:** full suite, plus headless Chromium screenshots (scratchpad
+  Playwright, not a project dependency). Report grows to ~940 KB.
+- **Open:** the page is still not usable at phone width (row grid squeezes);
+  the salary estimator (roadmap item 3) is still not implemented.
+
 ## Session 2026-10-21 (b) — scoring diagnosis, DP card audit
 
 - **Scoring diagnosis:** the 2026-10-19 sweep failed 21/21 because OpenCode

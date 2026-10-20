@@ -184,10 +184,12 @@ detalles pendientes y fallos; las nuevas sin evaluar y los fallos salen en rojo)
 y ofrece dos pestañas, **Ofertas** y **Palabras
 clave**, y a la derecha **Exportar N decisiones**, que solo aparece cuando este
 navegador guarda alguna decisión. La vista de
-ofertas usa una única barra de herramientas horizontal, con el filtro **Solo
-nuevas** (ofertas vistas por primera vez en el último barrido) y **Solo sin
-decisión importada**, ambos como control segmentado; ya no hay rail
-lateral ni tarjetas KPI.
+ofertas usa una única barra de herramientas horizontal, con búsqueda por texto,
+la recomendación del modelo, **Solo nuevas** (ofertas vistas por primera vez en
+el último barrido) y un selector de score mínimo (`Score ≥ 0`, `≥ 50`, `≥ 70`);
+ya no hay rail lateral ni tarjetas KPI. Las tipografías (Charis SIL, Inter y DM Mono,
+licencia OFL, en `src/jobscout/fonts/`) también van embebidas como `data:` URIs, así que el archivo se ve igual desde `file://` sin instalar
+fuentes ni pedir nada a la red.
 
 Cada oferta es **una fila de una línea**: puntaje con barra coloreada por banda
 (≥ 70 / ≥ 50), título, empresa y ubicación, etiquetas (recomendación, `nueva`,
@@ -280,30 +282,25 @@ python -m jobscout import-feedback jobscout-feedback.json
 
 Todavía no hay programación automática: importar es un comando que ejecutas tú.
 
-### Ofertas sin decisión importada
+### Decisiones importadas
 
-La barra de herramientas incluye **Solo sin decisión importada**, que reduce las
-ofertas mostradas a las que **no tienen ninguna fila en `job_feedback`**. Ese es
-el backlog real de revisión que existe en SQLite; se lee con un único `SELECT` de
-solo lectura sobre la conexión `mode=ro`. No inventa ninguna cifra: no muestra un
-contador de "pendientes" que la base no pueda respaldar.
+Las decisiones humanas importadas con `import-feedback` se muestran en el pie
+de cada oferta abierta, pero el tablero ya no ofrece un filtro para aislar las
+ofertas sin decisión, para que la barra de herramientas quepa en una línea. El
+backlog de revisión se consulta en SQLite, no como un
+contador inventado por el HTML.
 
-- Es un eje **distinto** de *Estado de revisión* (`revisadas` / `sin revisar`):
-  ese filtro lee tus marcas guardadas en `localStorage`, mientras que este lee la
-  decisión humana importada en SQLite. La cabecera solo cuenta las decisiones
-  guardadas en el navegador y nunca las mezcla con el feedback importado.
-- No hay nota explicativa: el título del botón indica que lee `job_feedback` en
-  SQLite. Sin decisiones importadas, el filtro no presenta las ofertas activas
-  como un backlog medido.
+- La decisión importada se lee con un único `SELECT` de solo lectura sobre la
+  conexión `mode=ro` y es un eje distinto de las marcas locales de
+  `localStorage`. La cabecera solo cuenta estas últimas y nunca las mezcla con
+  el feedback importado.
 - La razón de texto libre de una decisión importada **nunca** entra al HTML.
-- El botón es neutro (sin color) y su estado se expone con `aria-pressed`, así que
-  no depende del color; no agrega ninguna animación ni consulta `@media` nueva.
+- Si no hay decisiones importadas, el pie simplemente no muestra esa línea.
 
 **Limitación explícita:** `search_runs.cycle_id` es opcional y de formato libre
 (una convención humana), y las corridas de distintas plataformas o ciclos no son
 comparables de forma garantizada. Por eso hoy **no** existe una vista de "nuevas
-en el último ciclo": no se puede calcular de forma confiable y no se aproxima. La
-única condición de aislamiento es la ausencia de una fila en `job_feedback`.
+en el último ciclo": no se puede calcular de forma confiable y no se aproxima.
 
 ### Sin filtro de seniority por título
 

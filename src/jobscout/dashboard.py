@@ -33,6 +33,7 @@ round-trippable against the database.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import html
 import json
@@ -41,6 +42,7 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -1028,9 +1030,9 @@ def build_payload(
                     "reason": preference.reason,
                     "evidence": preference.evidence,
                 },
-                # Durable imported human decision: the absence of a row is the
-                # only source of the unreviewed view, kept separate from the
-                # browser-local ``reviewed``/``unreviewed`` filter.
+                # Durable imported human decision: the absence of a row is how
+                # "not imported" stays distinct from a stored value. It is
+                # displayed in the expanded row, never used as a filter.
                 "imported_review": _imported_review(imported_decisions, job_id),
                 "detail": _detail_evidence(
                     detail_by_job.get(job_id),
@@ -1213,6 +1215,42 @@ def embed_json(payload: Any) -> str:
 _TEMPLATE_TOKEN = re.compile(r"__([A-Z][A-Z0-9_]*)__")
 
 
+#: The embedded families, their files, and the weight range each file covers.
+#: Charis and DM Mono ship static faces, Inter a variable font. DM Mono stops at
+#: 500, so that face also answers the 600 the figures ask for instead of a faux bold.
+_FONT_FACES: tuple[tuple[str, str, str], ...] = (
+    ("Charis SIL", "charis-sil-latin-400.woff2", "400"),
+    ("Charis SIL", "charis-sil-latin-700.woff2", "700"),
+    ("Inter", "inter-latin-wght.woff2", "100 900"),
+    ("DM Mono", "dm-mono-latin-400.woff2", "400"),
+    ("DM Mono", "dm-mono-latin-500.woff2", "500 900"),
+)
+
+
+@lru_cache(maxsize=1)
+def _font_faces_css() -> str:
+    """Build the ``@font-face`` block from the packaged woff2 files.
+
+    Embedding the bytes as ``data:`` URIs keeps the report a single file that
+    renders identically from ``file://`` with no network and no installed font.
+    The files are read once per process; the result is cached.
+    """
+    font_dir = Path(__file__).parent / "fonts"
+    rules: list[str] = []
+    for family, filename, weight in _FONT_FACES:
+        encoded = base64.b64encode((font_dir / filename).read_bytes()).decode("ascii")
+        rules.append(
+            "@font-face {\n"
+            f'  font-family:"{family}";\n'
+            "  font-style:normal;\n"
+            f"  font-weight:{weight};\n"
+            f'  src:url(data:font/woff2;base64,{encoded}) format("woff2");\n'
+            "  font-display:swap;\n"
+            "}"
+        )
+    return "\n".join(rules)
+
+
 def _render_template(template: str, values: dict[str, str]) -> str:
     """Substitute every ``__TOKEN__`` in a single left-to-right pass.
 
@@ -1241,6 +1279,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 <meta name="robots" content="noindex, nofollow">
 <title>__TITLE__</title>
 <style>
+__FONT_FACES__
 __STYLE__
 </style>
 </head>
@@ -1252,7 +1291,6 @@ __STYLE__
   <div class="mast">
     <h1>jobscout</h1>
     <p class="status-line" id="status-line" aria-label="Estado del último barrido"></p>
-    <button type="button" class="to-top" id="back-to-top" aria-label="Volver arriba" hidden>↑</button>
   </div>
   <nav class="tabs" role="tablist" aria-label="Vistas del informe">
     <button type="button" role="tab" id="tab-offers" aria-selected="true"
@@ -1287,8 +1325,11 @@ __STYLE__
         <button type="button" id="filter-new" aria-pressed="false"
           title="Muestra solo las ofertas nuevas del último barrido">Solo nuevas</button>
       </div>
-      <input type="number" id="filter-min-score" min="0" max="100" step="1"
-        inputmode="numeric" placeholder="Score ≥ 0" aria-label="Puntaje mínimo">
+      <select id="filter-min-score" aria-label="Puntaje mínimo">
+        <option value="0">Score ≥ 0</option>
+        <option value="50">≥ 50</option>
+        <option value="70">≥ 70</option>
+      </select>
       <select id="filter-keyword" aria-label="Palabra clave de origen">
         <option value="">Todas las keywords</option>
       </select>
@@ -1297,16 +1338,6 @@ __STYLE__
         <option value="fresh">Orden: más recientes</option>
       </select>
       <span id="result-count" aria-live="polite">0 ofertas</span>
-      <button type="button" id="reset-filters" hidden>limpiar</button>
-      <select id="filter-review" aria-label="Estado de revisión">
-        <option value="">todas</option>
-        <option value="reviewed">revisadas</option>
-        <option value="unreviewed">sin revisar</option>
-      </select>
-      <div class="seg">
-        <button type="button" id="filter-imported-review" aria-pressed="false"
-          title="Muestra solo las ofertas sin una decisión humana importada (job_feedback en SQLite)">Solo sin decisión importada</button>
-      </div>
     </div>
     <ul class="list" id="offers"></ul>
     <button type="button" id="show-more" class="mini" hidden>Mostrar 50 más</button>
@@ -1330,6 +1361,8 @@ __STYLE__
 
 </div>
 
+<button type="button" class="to-top" id="back-to-top" aria-label="Volver arriba"
+  title="Volver arriba" hidden>↑</button>
 <script type="application/json" id="jobscout-data">__DATA__</script>
 <script>
 __SCRIPT__
@@ -1348,17 +1381,19 @@ _STYLE = """
   --sheet:#fbfaf6;
   --ink:#17160f;
   --ink-2:#55524a;
-  --ink-3:#69655d;
+  --ink-3:#7a766c;
   --rule:#d8d3c6;
   --rule-2:#e8e4d9;
   --signal:#bd3319;
   --signal-wash:#f6e3dc;
   --mid:#74651d;
   --mid-wash:#f0ead2;
-  --low:#69655d;
-  --serif:"Iowan Old Style","Charter","Georgia",serif;
-  --sans:system-ui,-apple-system,"Segoe UI",sans-serif;
-  --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Mono",monospace;
+  --low:#7a766c;
+  --money:#2f6b3a;
+  --money-wash:#e3ede2;
+  --serif:"Charis SIL","Iowan Old Style","Charter","Georgia",serif;
+  --sans:"Inter",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"DM Mono",ui-monospace,"SF Mono","Cascadia Mono",monospace;
   --fs-11:11px;
   --fs-12:12px;
   --fs-13:13px;
@@ -1367,13 +1402,23 @@ _STYLE = """
   --fs-16:16px;
   --fs-22:22px;
   --fs-26:26px;
+  --sp-2:2px;
   --sp-4:4px;
+  --sp-5:5px;
+  --sp-6:6px;
+  --sp-7:7px;
   --sp-8:8px;
+  --sp-9:9px;
+  --sp-10:10px;
   --sp-12:12px;
+  --sp-14:14px;
   --sp-16:16px;
+  --sp-18:18px;
   --sp-24:24px;
   --sp-32:32px;
+  --sp-36:36px;
   --sp-48:48px;
+  --sp-90:90px;
 }
 * { box-sizing:border-box; }
 html { -webkit-text-size-adjust:100%; }
@@ -1381,7 +1426,7 @@ body { margin:0; background:var(--paper); color:var(--ink);
   font-family:var(--sans); font-size:var(--fs-14); line-height:1.5;
   -webkit-font-smoothing:antialiased; }
 h1, h2, h3, h4 { margin:0; color:var(--ink); font-weight:600; }
-h1 { font-family:var(--serif); font-size:var(--fs-22); line-height:1; letter-spacing:-.01em; }
+h1 { font-family:var(--serif); font-size:var(--fs-22); font-weight:700; line-height:1; letter-spacing:-.01em; }
 h2 { font-size:var(--fs-16); line-height:1.25; letter-spacing:-.01em; }
 h3 { font-size:var(--fs-14); line-height:1.35; }
 h4 { font-family:var(--mono); font-size:var(--fs-11); line-height:1.3;
@@ -1410,21 +1455,23 @@ a:hover, a:focus-visible { text-decoration-color:var(--ink); }
 header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
   border-bottom:1px solid var(--ink); }
 .mast { display:flex; align-items:baseline; gap:var(--sp-24);
-  padding:var(--sp-16) 0 var(--sp-8); }
+  padding:var(--sp-18) 0 var(--sp-10); }
 .mast h1 { font-size:var(--fs-22); }
 .mast .status-line { margin-left:auto; }
 .status-line { margin:0; display:flex; flex-wrap:wrap; gap:var(--sp-16);
   font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-2); }
 .status-line .bad { color:var(--signal); }
 .status-line .calm { color:var(--ink-3); }
-.to-top { cursor:pointer; background:var(--paper); color:var(--ink);
-  border:1px solid var(--rule); font-family:var(--mono); font-size:var(--fs-12);
-  padding:var(--sp-4) var(--sp-8); }
-.to-top:hover, .to-top:focus-visible { border-color:var(--ink); background:var(--sheet); }
+/* Floating in the corner keeps the masthead for status and tabs only; it shows up
+   after one screen of scrolling, which is when the way back starts to cost. */
+.to-top { position:fixed; right:var(--sp-24); bottom:var(--sp-24); z-index:30;
+  width:40px; height:40px; cursor:pointer; background:var(--paper); color:var(--ink);
+  border:1px solid var(--ink); font-family:var(--sans); font-size:var(--fs-16); line-height:1; }
+.to-top:hover, .to-top:focus-visible { background:var(--ink); color:var(--paper); }
 .tabs { display:flex; align-items:flex-end; }
 .tabs [role="tab"] { cursor:pointer; background:none; color:var(--ink-2);
   border:0; border-bottom:2px solid transparent; font-family:var(--sans);
-  font-size:var(--fs-13); padding:var(--sp-8) var(--sp-12); }
+  font-size:var(--fs-13); font-weight:500; padding:var(--sp-8) var(--sp-14) var(--sp-9); }
 .tabs [role="tab"]:hover, .tabs [role="tab"]:focus-visible { color:var(--ink); }
 .tabs [role="tab"][aria-selected="true"] { color:var(--ink); border-bottom-color:var(--ink); }
 .tab-count { margin-left:var(--sp-4); font-family:var(--mono); font-size:var(--fs-12);
@@ -1432,35 +1479,34 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 .tab-spacer { flex:1; }
 .export { cursor:pointer; background:var(--paper); color:var(--ink);
   border:1px solid var(--ink); font-family:var(--mono); font-size:var(--fs-12);
-  padding:var(--sp-4) var(--sp-8); margin:0 0 var(--sp-4) var(--sp-8); }
+  padding:var(--sp-6) var(--sp-10); margin:0 0 var(--sp-6); }
 .export:hover:not(:disabled), .export:focus-visible:not(:disabled) {
   background:var(--ink); color:var(--paper); }
 
 .content { display:flex; flex-direction:column; gap:var(--sp-24); min-width:0; }
 .content > * { min-width:0; }
 
-.toolbar { display:flex; flex-wrap:nowrap; align-items:center; gap:var(--sp-8);
-  padding:var(--sp-12) 0; border-bottom:1px solid var(--rule); }
-.toolbar input[type="search"] { flex:1 1 240px; min-width:0; font-family:var(--sans);
-  font-size:var(--fs-13); padding:var(--sp-4) var(--sp-8); color:var(--ink);
-  background:var(--sheet); border:1px solid var(--rule); }
-.toolbar input[type="number"], .toolbar select { font-family:var(--sans);
-  font-size:var(--fs-12); padding:var(--sp-4) var(--sp-8); color:var(--ink);
-  background:var(--sheet); border:1px solid var(--rule); }
-#filter-min-score { width:72px; }
+.toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:var(--sp-10);
+  padding:var(--sp-14) 0; border-bottom:1px solid var(--rule); }
+/* The search field keeps a usable width and lets the other controls wrap, so the
+   toolbar never overflows a narrow window. */
+.toolbar input[type="search"] { flex:1 1 220px; min-width:180px; max-width:360px;
+  font-family:var(--sans); font-size:var(--fs-13); padding:var(--sp-7) var(--sp-10);
+  color:var(--ink); background:var(--sheet); border:1px solid var(--rule); }
+.toolbar select { font-family:var(--sans); font-size:var(--fs-12);
+  padding:var(--sp-6) var(--sp-8); color:var(--ink); background:var(--sheet);
+  border:1px solid var(--rule); white-space:nowrap; }
+/* A select grows to its longest option; capping it keeps the toolbar on one line. */
+#filter-keyword { max-width:200px; text-overflow:ellipsis; }
 .seg { display:flex; border:1px solid var(--rule); }
 .seg button { cursor:pointer; background:var(--sheet); color:var(--ink-2);
   border:0; border-right:1px solid var(--rule); font-family:var(--sans);
-  font-size:var(--fs-12); padding:var(--sp-4) var(--sp-8); }
+  font-size:var(--fs-12); padding:var(--sp-6) var(--sp-10); white-space:nowrap; }
 .seg button:last-child { border-right:0; }
 .seg button:hover, .seg button:focus-visible { color:var(--ink); }
 .seg button[aria-pressed="true"] { background:var(--ink); color:var(--paper); }
 #result-count { margin-left:auto; font-family:var(--mono); font-size:var(--fs-12);
   color:var(--ink-3); white-space:nowrap; }
-#reset-filters { cursor:pointer; background:none; color:var(--ink-2); border:0;
-  font-family:var(--sans); font-size:var(--fs-12); padding:0;
-  text-decoration:underline; text-underline-offset:2px; }
-#reset-filters:hover, #reset-filters:focus-visible { color:var(--ink); }
 
 .section-label { font-size:var(--fs-11); font-weight:600; text-transform:uppercase;
   letter-spacing:.06em; color:var(--ink-3); }
@@ -1477,52 +1523,59 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 .list { margin:0; padding:0; list-style:none; }
 .row { border-bottom:1px solid var(--rule); }
 .row > summary { list-style:none; cursor:pointer; display:grid;
-  grid-template-columns:64px 1fr 190px 120px 80px 28px; gap:var(--sp-16);
-  align-items:center; padding:var(--sp-12) var(--sp-8); }
+  grid-template-columns:64px 1fr 190px 120px 80px 28px; gap:var(--sp-18);
+  align-items:center; padding:var(--sp-14) var(--sp-8); }
 .row > summary::-webkit-details-marker { display:none; }
 .row > summary:hover, .row > summary:focus-visible { background:var(--sheet); }
 .row > summary:focus-visible { outline:2px solid var(--ink); outline-offset:-2px; }
 .score { font-family:var(--mono); font-size:var(--fs-26); font-weight:600; line-height:1;
   font-variant-numeric:tabular-nums; letter-spacing:-.03em; }
-.score small { display:block; height:3px; margin-top:var(--sp-8); background:var(--rule-2); }
+.score small { display:block; height:3px; margin-top:var(--sp-6); background:var(--rule-2); }
 .score small i { display:block; height:100%; background:currentColor; }
 .score.score-state { font-size:var(--fs-11); font-weight:400; letter-spacing:0; color:var(--ink-3); }
 .s-hi { color:var(--signal); } .s-mid { color:var(--mid); } .s-lo { color:var(--low); }
 .t { font-family:var(--sans); font-size:var(--fs-15); font-weight:600; line-height:1.3; }
-.c { color:var(--ink-2); font-size:var(--fs-13); margin-top:var(--sp-4); }
-.chips { display:flex; gap:var(--sp-8); flex-wrap:wrap; }
-.chip { font-family:var(--mono); font-size:var(--fs-11); line-height:1; padding:var(--sp-4) var(--sp-8);
+.c { color:var(--ink-2); font-size:var(--fs-13); margin-top:var(--sp-2); }
+.chips { display:flex; gap:var(--sp-6); flex-wrap:wrap; }
+.chip { font-family:var(--mono); font-size:var(--fs-11); line-height:1; padding:var(--sp-4) var(--sp-6);
   border:1px solid var(--rule); color:var(--ink-2); text-transform:uppercase; letter-spacing:.04em; }
 .chip.new { border-color:var(--signal); color:var(--signal); }
 .chip.veto { border-color:var(--signal); color:var(--signal); }
 .chip.rec-apply { background:var(--signal-wash); border-color:transparent; color:var(--signal); }
 .chip.rec-consider { background:var(--mid-wash); border-color:transparent; color:var(--mid); }
 .chip.flag { border-color:var(--mid); color:var(--mid); }
-.sal { font-family:var(--mono); font-size:var(--fs-13); font-variant-numeric:tabular-nums; text-align:right; }
-.sal em { display:block; font-family:var(--mono); font-size:var(--fs-11); font-style:normal; color:var(--ink-3); }
-.sal.unk { color:var(--ink-3); }
+.sal { font-family:var(--mono); font-size:var(--fs-13); font-variant-numeric:tabular-nums;
+  font-weight:600; color:var(--money); text-align:right; }
+.sal em { display:block; font-family:var(--mono); font-size:var(--fs-11); font-style:normal;
+  font-weight:400; color:var(--ink-3); }
+.sal.unk { color:var(--ink-3); font-weight:400; }
+/* Reserved for a future estimated-salary source: the figure stays neutral and is
+   marked with "≈" plus the "estimado" label, never mixed with a stated salary. */
+.sal.est { color:var(--ink-3); font-weight:400; }
+.sal.est::before { content:"\\2248 "; }
 .salbox { display:grid; grid-template-columns:auto 1fr; gap:var(--sp-4) var(--sp-16); font-size:var(--fs-13); margin:0; }
 .salbox dt { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); }
 .salbox dd { margin:0; }
+.salbox dd.sal-stated { color:var(--money); font-weight:600; }
 .age { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); text-align:right; font-variant-numeric:tabular-nums; }
 .chev { color:var(--ink-3); transition:transform .15s; }
 .row[open] .chev { transform:rotate(90deg); }
 .row[open] > summary { background:var(--sheet); }
-.body { background:var(--sheet); padding:var(--sp-4) var(--sp-8) var(--sp-24) 88px;
-  display:grid; grid-template-columns:1.1fr 1fr; gap:var(--sp-32); }
+.body { background:var(--sheet); padding:var(--sp-4) var(--sp-8) var(--sp-24) var(--sp-90);
+  display:grid; grid-template-columns:1.1fr 1fr; gap:var(--sp-36); }
 .body.nodims { grid-template-columns:1fr; }
 .body h3 { font-family:var(--mono); font-size:var(--fs-11); font-weight:600; line-height:1;
-  text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); margin:var(--sp-16) 0 var(--sp-8); }
+  text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); margin:var(--sp-18) 0 var(--sp-10); }
 .why { font-family:var(--serif); font-size:var(--fs-16); line-height:1.55; margin:0; max-width:62ch; }
 .nodims-note { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); margin-top:var(--sp-8); }
 .dims { display:grid; gap:var(--sp-12); }
-.dim { display:grid; grid-template-columns:110px 1fr 34px; gap:var(--sp-8); align-items:start; }
+.dim { display:grid; grid-template-columns:110px 1fr 34px; gap:var(--sp-10); align-items:start; }
 .dim .k { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-2); }
 .dim .k em { display:block; font-style:normal; color:var(--ink-3); font-size:var(--fs-11); }
-.bar { height:6px; background:var(--rule-2); margin-top:var(--sp-4); }
+.bar { height:6px; background:var(--rule-2); margin-top:var(--sp-5); }
 .bar i { display:block; height:100%; background:var(--ink); }
 .dim .v { font-family:var(--mono); font-size:var(--fs-12); text-align:right; font-variant-numeric:tabular-nums; }
-.dim p { grid-column:2/4; margin:var(--sp-4) 0 0; font-size:var(--fs-13); color:var(--ink-2); }
+.dim p { grid-column:2/4; margin:var(--sp-2) 0 0; font-size:var(--fs-13); color:var(--ink-2); }
 .dim q { display:block; font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); quotes:none;
   border-left:2px solid var(--rule); padding-left:var(--sp-8); margin-top:var(--sp-4); }
 .lists { grid-column:1/-1; display:grid; grid-template-columns:repeat(4,1fr); gap:var(--sp-24);
@@ -1556,9 +1609,11 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 table { width:100%; border-collapse:collapse; margin-top:var(--sp-8); }
 th { font-family:var(--mono); font-size:var(--fs-11); font-weight:600;
   text-transform:uppercase; letter-spacing:.06em; color:var(--ink-3); text-align:left;
-  padding:var(--sp-8); border-bottom:1px solid var(--ink); cursor:pointer; }
-td { padding:var(--sp-8); border-bottom:1px solid var(--rule); font-variant-numeric:tabular-nums; }
-td.num, th.num { text-align:right; font-family:var(--mono); }
+  padding:var(--sp-10) var(--sp-8); border-bottom:1px solid var(--ink); cursor:pointer; }
+td { padding:var(--sp-10) var(--sp-8); border-bottom:1px solid var(--rule); font-variant-numeric:tabular-nums; }
+td.num, th.num { text-align:right; font-family:var(--mono); width:1%; white-space:nowrap;
+  padding-left:var(--sp-24); }
+th { white-space:nowrap; }
 tr.retired td { color:var(--ink-3); }
 tr.retired td:first-child::after { content:" · retirada"; font-family:var(--mono);
   font-size:var(--fs-11); }
@@ -1574,7 +1629,7 @@ th[aria-sort="descending"] .sort-btn::after { content:" \\2193"; }
 
 .empty { padding:var(--sp-24) 0; font-family:var(--mono); font-size:var(--fs-12);
   color:var(--ink-3); }
-.toast { position:fixed; bottom:var(--sp-24); right:var(--sp-24); z-index:50;
+.toast { position:fixed; bottom:calc(var(--sp-24) + 40px + var(--sp-12)); right:var(--sp-24); z-index:50;
   max-width:min(420px, calc(100vw - var(--sp-48))); background:var(--ink);
   color:var(--paper); border:1px solid var(--ink); border-radius:2px;
   padding:var(--sp-8) var(--sp-12); font-size:var(--fs-13); }
@@ -1630,7 +1685,7 @@ _SCRIPT = r"""
   var STORAGE_KEY = payload.feedback_schema + ":" + payload.project_id;
 
   var feedback = loadFeedback();
-  var filters = { text: "", recommendation: "", isNew: false, minScore: null, keyword: "", review: "", importedReview: false, sort: "score" };
+  var filters = { text: "", recommendation: "", isNew: false, minScore: null, keyword: "", sort: "score" };
 
   function labelFrom(map, value, fallback) {
     return Object.prototype.hasOwnProperty.call(map, value) ? map[value] : fallback;
@@ -1762,15 +1817,6 @@ _SCRIPT = r"""
       // every cycle of one platform's keyword matches.
       if (offer.keyword_keys.indexOf(filters.keyword) === -1) { return false; }
     }
-    var reviewed = Boolean(feedback[offer.id] && feedback[offer.id].decision);
-    if (filters.review === "reviewed" && !reviewed) { return false; }
-    if (filters.review === "unreviewed" && reviewed) { return false; }
-    // A different axis from the browser-local marks above: the imported decision
-    // is read from SQLite (offer.imported_review). The toggle only isolates the
-    // offers with no stored decision; it never counts them.
-    if (filters.importedReview && offer.imported_review && offer.imported_review.reviewed) {
-      return false;
-    }
     if (filters.text) {
       var needle = filters.text.toLowerCase();
       var pref = offer.preference || {};
@@ -1881,9 +1927,8 @@ _SCRIPT = r"""
         entry.updated_at = new Date().toISOString();
         feedback[offer.id] = entry;
         var stored = saveFeedback();
-        // Confirm after the re-render so the marker lands on the row that survived
-        // the reviewed/unreviewed filter, not on a node about to be replaced.
-        syncFeedback(offer.id, { rerender: true });
+        // Confirm after the marker lands on the row that is still rendered.
+        syncFeedback(offer.id);
         if (stored) { confirmSaved(offer.id); }
       });
       controls.appendChild(button);
@@ -1935,15 +1980,8 @@ _SCRIPT = r"""
     savedTimer = window.setTimeout(function () { marker.remove(); }, 2600);
   }
 
-  function syncFeedback(jobId, options) {
+  function syncFeedback(jobId) {
     refreshFeedbackCount();
-    // A decision can move a row in or out of the reviewed/unreviewed filter, so
-    // re-filter when one is active. Reason typing must not re-render: it would
-    // steal focus from the textarea.
-    if (options && options.rerender && filters.review) {
-      renderOffers();
-      return;
-    }
     var entry = feedback[jobId] || {};
     var row = document.querySelector('.row[data-job-id="' + jobId + '"]');
     if (!row) { return; }
@@ -2131,7 +2169,7 @@ _SCRIPT = r"""
       left.appendChild(el("h3", null, "Salario · bruto anual"));
       var salaryBox = el("dl", "salbox");
       salaryBox.appendChild(el("dt", null, "indicado"));
-      salaryBox.appendChild(el("dd", null, offer.salary));
+      salaryBox.appendChild(el("dd", "sal-stated", offer.salary));
       left.appendChild(salaryBox);
     }
     if (!dims.length) {
@@ -2237,28 +2275,9 @@ _SCRIPT = r"""
     if (offersTab) { offersTab.textContent = String(payload.offers.length); }
   }
 
-  // Only the inputs that narrow the list; ordering is already reported by the
-  // order control itself.
-  function activeFilterCount() {
-    var count = 0;
-    if (filters.text) { count += 1; }
-    if (filters.recommendation) { count += 1; }
-    if (filters.isNew) { count += 1; }
-    if (filters.minScore !== null) { count += 1; }
-    if (filters.keyword) { count += 1; }
-    if (filters.review) { count += 1; }
-    if (filters.importedReview) { count += 1; }
-    return count;
-  }
-
-  // The toolbar mirrors every control's state, and "limpiar" only appears when a
-  // filter or a non-default sort would actually change something.
+  // The toolbar mirrors every control's state, so a filter is never active
+  // without the control showing it.
   function refreshFilterState() {
-    var count = activeFilterCount();
-    var reset = document.getElementById("reset-filters");
-    reset.hidden = (count === 0 && filters.sort === "score");
-    document.getElementById("filter-imported-review").setAttribute(
-      "aria-pressed", filters.importedReview ? "true" : "false");
     document.getElementById("filter-new").setAttribute(
       "aria-pressed", filters.isNew ? "true" : "false");
     var buttons = document.getElementById("filter-recommendation").querySelectorAll("button");
@@ -2275,6 +2294,20 @@ _SCRIPT = r"""
     refreshFilterState();
   }
 
+  // GetManfred stores its whole filter list as one comma-separated "keyword", up to
+  // ~300 characters, which would blow up the table column and the filter select.
+  // Show the first two terms plus a count; the full list stays in the tooltip.
+  var providerLabels = {
+    linkedin: "LinkedIn", tecnoempleo: "Tecnoempleo", getmanfred: "GetManfred"
+  };
+
+  function shortKeyword(keyword) {
+    var parts = String(keyword).split(",").map(function (part) { return part.trim(); })
+      .filter(function (part) { return part; });
+    if (parts.length <= 2) { return parts.join(", "); }
+    return parts.slice(0, 2).join(", ") + " +" + (parts.length - 2);
+  }
+
   function renderKeywordTable() {
     var rows = payload.keywords.concat(payload.retired_keywords || []);
     document.getElementById("tab-keywords-count").textContent = String(rows.length);
@@ -2285,15 +2318,14 @@ _SCRIPT = r"""
       empty.hidden = false;
       return;
     }
-    var providerLabels = {
-      linkedin: "LinkedIn", tecnoempleo: "Tecnoempleo", getmanfred: "GetManfred"
-    };
     var body = table.querySelector("tbody");
     body.textContent = "";
     rows.forEach(function (item) {
       var row = el("tr");
       if (item.retired) { row.className = "retired"; }
-      row.appendChild(el("td", null, item.keyword));
+      var keywordCell = el("td", "kw", shortKeyword(item.keyword));
+      keywordCell.title = item.keyword;
+      row.appendChild(keywordCell);
       row.appendChild(el("td", null, providerLabels[item.provider] || item.provider));
       row.appendChild(el("td", "num", String(item.seen_jobs)));
       row.appendChild(el("td", "num", String(item.unique_jobs)));
@@ -2311,7 +2343,9 @@ _SCRIPT = r"""
     payload.keywords.forEach(function (item) {
       // The option text keeps the platform visible; its value is the
       // provider|keyword series key used by the filter predicate.
-      var option = el("option", null, item.label || item.keyword);
+      var provider = providerLabels[item.provider] || item.provider;
+      var option = el("option", null, shortKeyword(item.keyword) + " \u00b7 " + provider);
+      option.title = item.keyword;
       option.value = item.source_key || item.keyword;
       select.appendChild(option);
     });
@@ -2339,11 +2373,10 @@ _SCRIPT = r"""
   }
 
   function resetFilters() {
-    filters = { text: "", recommendation: "", isNew: false, minScore: null, keyword: "", review: "", importedReview: false, sort: "score" };
+    filters = { text: "", recommendation: "", isNew: false, minScore: null, keyword: "", sort: "score" };
     document.getElementById("filter-text").value = "";
-    document.getElementById("filter-min-score").value = "";
+    document.getElementById("filter-min-score").value = "0";
     document.getElementById("filter-keyword").value = "";
-    document.getElementById("filter-review").value = "";
     document.getElementById("filter-sort").value = "score";
     applyFilters();
     document.getElementById("filter-text").focus();
@@ -2364,29 +2397,20 @@ _SCRIPT = r"""
       filters.isNew = !filters.isNew;
       applyFilters();
     });
-    document.getElementById("filter-min-score").addEventListener("input", function (event) {
-      var raw = event.target.value.trim();
-      var parsed = parseFloat(raw);
-      filters.minScore = raw === "" || isNaN(parsed) ? null : parsed;
+    document.getElementById("filter-min-score").addEventListener("change", function (event) {
+      var parsed = parseInt(event.target.value, 10);
+      // The zero option means "no threshold", so it must not narrow the list.
+      filters.minScore = parsed > 0 ? parsed : null;
       applyFilters();
     });
     document.getElementById("filter-keyword").addEventListener("change", function (event) {
       filters.keyword = event.target.value;
       applyFilters();
     });
-    document.getElementById("filter-review").addEventListener("change", function (event) {
-      filters.review = event.target.value;
-      applyFilters();
-    });
-    document.getElementById("filter-imported-review").addEventListener("click", function () {
-      filters.importedReview = !filters.importedReview;
-      applyFilters();
-    });
     document.getElementById("filter-sort").addEventListener("change", function (event) {
       filters.sort = event.target.value;
       applyFilters();
     });
-    document.getElementById("reset-filters").addEventListener("click", resetFilters);
     document.getElementById("empty-reset").addEventListener("click", resetFilters);
     document.getElementById("show-more").addEventListener("click", renderBatch);
     document.getElementById("export-feedback").addEventListener("click", exportFeedback);
@@ -2534,6 +2558,7 @@ def render_dashboard_html(payload: dict[str, Any]) -> str:
         _HTML_TEMPLATE,
         {
             "TITLE": title,
+            "FONT_FACES": _font_faces_css(),
             "STYLE": _STYLE,
             "META": meta,
             "WARNINGS": warnings_html,
