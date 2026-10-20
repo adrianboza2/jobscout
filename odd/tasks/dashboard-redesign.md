@@ -311,8 +311,17 @@ marketing components are not.
       preference line (today only 5 of 700 offers have lists).
     - The masthead moves out of the column so its rule spans the window, and "Solo nuevas"
       becomes a one-button segmented control, both as in the mockup.
-- [ ] DR-4 **Palabras clave view.** One sortable table, retired pairs greyed, Top 10 lists
+- [x] DR-4 **Palabras clave view.** One sortable table, retired pairs greyed, Top 10 lists
   removed.
+  - Decisions (owner, 2026-10-20):
+    - `retired_on`/`retired_reason` stay out of the payload; the row only says `retirada`.
+    - *Aplicadas* = imported `apply` decisions (`human_apply`), not the model's.
+    - *Vistas* = distinct postings ever surfaced, inactive included (new `seen_jobs`);
+      *Activas* = `unique_jobs`; *≥ 70* = new `high_score_jobs` (the `s-hi` bar).
+    - `top_quality`/`top_yield`/`top_human` and `_top_keywords` removed.
+    - Retired pairs render in the table; the tab count is all rows (active + retired).
+    - Initial order: *Score medio* descending. Headers literal from the mockup, with a
+      `title` on Vistas, ≥ 70 and Aplicadas instead of the methodology prose.
 - [ ] DR-5 **Minimal decision + conditional export.** Buttons in the footer line, the export
   count in the header, and the reason length cap. Export tests untouched.
 - [ ] DR-6 **Speed pass.** Measure weight and time to first screen against the baseline and
@@ -362,3 +371,12 @@ marketing components are not.
   investigation. Still unlike the mockup: the imported-decision toggle keeps the old
   button look (pinned by two tests; DR-5), and the export shows "0 revisadas" plus a
   disabled button instead of "Exportar N decisiones" (DR-5). Next: DR-4.
+- 2026-10-20: DR-4 done. The keyword tab is the mockup's table (CSS ported rule by rule on
+  tokens; `th`/`td` padding 10 → 8 px; `font:` shorthand split into longhands as the token
+  test requires). Heading, prose, methodology, caption, wrapper and the three Top 10 lists
+  are gone; retired pairs show greyed with `· retirada`. Payload: `+seen_jobs`,
+  `+high_score_jobs`, `-top_*`. Unlike the mockup: the header holds a sort button (keyboard)
+  and the sorted column shows ↑/↓; three header tooltips; provider names mapped to their
+  brand spelling in JS. Suite 1141 passed. Page weight 2.16 MB. Not checked in a browser
+  (none here; JS syntax checked with node); the owner reviewed `reports/dr4-palabras.html`.
+  Next: DR-5.

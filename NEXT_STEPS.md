@@ -3,6 +3,22 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-20 (g) — dashboard redesign DR-4: Palabras clave view
+
+Done (`odd/tasks/dashboard-redesign.md`, DR-4): the keyword tab is the mockup's
+sortable table (Keyword, Proveedor, Vistas, Activas, Score medio, ≥ 70,
+Aplicadas), opened on Score medio descending, with retired pairs greyed in place.
+The three Top 10 lists, the methodology text and `top_*` in the payload are
+gone; the payload gains `seen_jobs` and `high_score_jobs`.
+
+- **Lesson:** the token test forbids the `font:` shorthand, so mockup rules
+  must be split into longhands when ported. A test outside the agreed list
+  (`test_legacy_consider_is_displayed_as_historical_and_replaceable`) pinned
+  text that only the removed Top 10 list rendered; only the full suite caught it.
+- **Lesson:** deleting a test can drop a guarantee another part of it carried
+  (`avg_score is None` for an unscored series); keep that half under a new name.
+- **Next:** DR-5 (minimal decision + conditional export).
+
 ## Session 2026-10-20 (f) — dashboard redesign DR-3: offer row
 
 Done (`odd/tasks/dashboard-redesign.md`, DR-3): offers are one-line `<details>`

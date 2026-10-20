@@ -1425,7 +1425,6 @@ def test_visible_ui_text_is_neutral_spanish(db_file: Path) -> None:
         "Solo nuevas",
         "limpiar",
         "Mostrar 50 más",
-        "Desempeño por palabra clave",
         "Puntos fuertes",
         "Carencias",
         "Bloqueos",
@@ -1457,6 +1456,9 @@ def test_visible_ui_text_is_neutral_spanish(db_file: Path) -> None:
         "Mi decisión (feedback)",
         "Brechas",
         "Sin puntaje",
+        "Top 10 por calidad del puntaje",
+        "Metodología de las métricas",
+        "Desempeño por palabra clave",
     ):
         assert retired not in html_text, retired
 
@@ -1481,12 +1483,10 @@ def test_dashboard_exposes_accessible_tabs_and_status_structure(db_file: Path) -
     assert 'id="summary"' not in html_text
     assert 'id="kpi-reviewed-value"' not in html_text
     assert 'role="search"' in html_text
-    assert 'aria-labelledby="analytics-title"' in html_text
+    assert 'id="keyword-table"' in html_text
     assert 'class="skip-link"' in html_text
     # Feedback buttons expose a pressed state so colour is not the only signal.
     assert 'setAttribute("aria-pressed"' in html_text
-    # Observed rank is framed as provenance, not as quality.
-    assert "La posición observada es procedencia" in html_text
 
 
 # ---------------------------------------------------------------------------
@@ -1585,8 +1585,7 @@ def test_report_uses_the_desktop_technical_panel_design_tokens(db_file: Path) ->
         'class="content"',
         'id="panel-offers"',
         'id="panel-keywords"',
-        'class="two-col"',
-        'class="method"',
+        'id="keyword-table"',
     ):
         assert hook in html_text, hook
 
@@ -1603,9 +1602,6 @@ def test_report_declares_no_narrow_screen_breakpoints(db_file: Path) -> None:
     assert css.count("@media") == 1
     for forbidden in ("max-width", "min-width"):
         assert f"@media ({forbidden}" not in css, forbidden
-
-    # The desktop shell keeps the keyword Top lists in three fixed columns.
-    assert "grid-template-columns:repeat(3, minmax(0, 1fr))" in css
 
 
 def test_accent_is_scoped_to_the_model_axis_only(db_file: Path) -> None:
@@ -1673,9 +1669,8 @@ def test_explainability_is_a_native_progressive_disclosure(db_file: Path) -> Non
 
     css = _embedded_style(html_text)
     assert ".row[open] .chev" in css
-    assert ".method > summary" in css
-    # Methodology text is expandable at the section level as well.
-    assert "Metodología de las métricas" in html_text
+    # The section-level methodology disclosure went with the old keyword panel.
+    assert "Metodología de las métricas" not in html_text
 
 
 def test_report_orders_its_regions_for_a_desktop_scan(db_file: Path) -> None:
@@ -1759,7 +1754,7 @@ def test_regions_are_bounded_and_offer_bands_are_separated_by_rules(
     # Region boundaries are hairlines, never shadows.
     assert "gap:var(--sp-12); padding-bottom:var(--sp-8); border-bottom:1px solid var(--ink); }" in css
     assert "box-shadow" not in css
-    for region in ('id="panel-offers"', 'id="offers"', 'id="analitica"'):
+    for region in ('id="panel-offers"', 'id="offers"', 'id="keyword-table"'):
         assert region in html_text, region
 
     # Inside one row: summary | lists | foot.
@@ -1767,10 +1762,10 @@ def test_regions_are_bounded_and_offer_bands_are_separated_by_rules(
     assert re.search(r"\.lists \{[^}]*border-top:1px solid var\(--rule\);", css)
     assert re.search(r"\.foot \{[^}]*border-top:1px solid var\(--rule\);", css)
 
-    # The analytics panel is a paper surface with hairlines, not a second sheet.
-    assert re.search(r"\.block \{[^}]*background:var\(--paper\);", css)
-    assert re.search(r"\.table-wrap \{[^}]*background:var\(--paper\);", css)
-    assert re.search(r"\.two-col > section \{[^}]*background:var\(--paper\);", css)
+    # The keyword table keeps the mockup's header rule and row hairline.
+    assert "th { font-family:var(--mono); font-size:var(--fs-11); font-weight:600;" in css
+    assert "border-bottom:1px solid var(--ink)" in css
+    assert "td { padding:var(--sp-8); border-bottom:1px solid var(--rule);" in css
 
 
 def test_offer_row_keeps_a_title_score_action_hierarchy(db_file: Path) -> None:
@@ -1811,7 +1806,6 @@ def test_disclosure_summaries_draw_a_chevron_and_show_their_state(db_file: Path)
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
 
-    assert ".method > summary::before" in css
     assert ".chev { color:var(--ink-3); transition:transform .15s; }" in css
     assert ".row[open] .chev { transform:rotate(90deg); }" in css
     assert ".row > summary::-webkit-details-marker { display:none; }" in css
@@ -1819,7 +1813,6 @@ def test_disclosure_summaries_draw_a_chevron_and_show_their_state(db_file: Path)
     assert ".row > summary { list-style:none; cursor:pointer; display:grid;" in css
     assert ".row > summary:hover, .row > summary:focus-visible { background:var(--sheet); }" in css
     assert ".row > summary:focus-visible { outline:2px solid var(--ink); outline-offset:-2px; }" in css
-    assert ".method > summary:hover, .method > summary:focus-visible { background:var(--sheet); }" in css
     # The state is a glyph plus a rotation, never a font-dependent +/- swap.
     assert 'content:"+"' not in css and 'content:"−"' not in css
 
@@ -2099,14 +2092,12 @@ def test_keyword_table_headers_sort_the_rendered_rows(db_file: Path) -> None:
     assert 'header.setAttribute("aria-sort", descending ? "descending" : "ascending");' in html_text
     assert 'return (a === null) ? 1 : -1;' in html_text
     assert '"sin dato" && !isNaN(parsed)' in html_text
-    assert "Haga clic en un encabezado para ordenar las filas." in html_text
-    assert ".sort-btn::after { content:\"\\2191\";" in css
-    assert 'th[aria-sort="ascending"] .sort-btn::after { content:"\\2191"; color:var(--ink); }' in css
-    assert 'th[aria-sort="descending"] .sort-btn::after { content:"\\2193"; color:var(--ink); }' in css
-    # The documented header labels are still the same row of strings.
-    headers = re.search(r'\["Palabra clave".*?\]', html_text, re.DOTALL)
-    assert headers is not None
-    assert re.findall(r'"([^"]+)"', headers.group(0))[0] == "Palabra clave"
+    # The average-score column opens in descending order, declared in the markup.
+    assert '<th class="num" data-initial-sort="descending">Score medio</th>' in html_text
+    assert 'th[aria-sort="ascending"] .sort-btn::after { content:" \\2191"; }' in css
+    assert 'th[aria-sort="descending"] .sort-btn::after { content:" \\2193"; }' in css
+    # The first header is the keyword label and the sort target.
+    assert "<th>Keyword</th>" in html_text
 
 
 def test_feedback_region_accessible_name_identifies_the_offer(db_file: Path) -> None:
@@ -2184,9 +2175,10 @@ def test_legacy_consider_is_displayed_as_historical_and_replaceable(db_file: Pat
     assert "function feedbackLabel(decision)" in html_text
     # Replacing is the ordinary active-button assignment; there is no third button.
     assert 'var FEEDBACK_DECISIONS = ["apply", "reject"];' in html_text
-    # The human-approval ranking names the historical count as legacy, so the
-    # analytics never present ``consider`` as a current human option.
-    assert "considerar (legacy)" in html_text
+    # The keyword table counts only imported "apply" decisions, so the analytics
+    # never present ``consider`` as a current human option.
+    assert "String(item.human_apply)" in html_text
+    assert "item.human_consider" not in html_text
     # The legacy state is marked by shape, never by the model accent or the ember.
     css = _embedded_style(html_text)
     legacy_rules = [rule for rule in css.split("}") if ".decision-state.legacy" in rule]
@@ -2678,6 +2670,10 @@ def test_keyword_aggregation_counts_and_quality(db_file: Path) -> None:
 
     keyword_a = stats["senior backend engineer"]
     assert keyword_a["sightings"] == 3
+    # job1 and job2 were surfaced by this search at least once.
+    assert keyword_a["seen_jobs"] == 2
+    # Only job1 (80) reaches the 70 bar; job2 scored 40.
+    assert keyword_a["high_score_jobs"] == 1
     assert keyword_a["unique_jobs"] == 2
     assert keyword_a["duplicate_sightings"] == 1
     assert keyword_a["duplicate_rate"] == 0.3333
@@ -2695,6 +2691,10 @@ def test_keyword_aggregation_counts_and_quality(db_file: Path) -> None:
 
     keyword_b = stats["data platform"]
     assert keyword_b["sightings"] == 2
+    # job2 and job3, both surfaced by this search.
+    assert keyword_b["seen_jobs"] == 2
+    # job2 scored 40 and job3 has no score, so none reaches 70.
+    assert keyword_b["high_score_jobs"] == 0
     assert keyword_b["unique_jobs"] == 2
     assert keyword_b["duplicate_sightings"] == 0
     assert keyword_b["duplicate_rate"] == 0.0
@@ -2712,18 +2712,8 @@ def test_keyword_aggregation_counts_and_quality(db_file: Path) -> None:
     assert keyword_a["unknown_age_jobs"] == 0
     assert keyword_a["fresh_share"] == 1.0
 
-    # Quality ranks by average score; a duplicate sighting must not double-count.
-    assert [item["keyword"] for item in payload["top_quality"]] == [
-        "senior backend engineer",
-        "data platform",
-    ]
-    # Yield ranks by positive recommendations.
-    assert [item["keyword"] for item in payload["top_yield"]] == [
-        "senior backend engineer",
-        "data platform",
-    ]
-    # A keyword with no imported human decision cannot rank in human approval.
-    assert payload["top_human"] == []
+    # The three top lists are gone; the table is the only keyword surface.
+    assert "top_quality" not in payload
 
 
 def _record_feedback(
@@ -2773,10 +2763,6 @@ def test_keyword_human_metrics_use_the_imported_feedback(db_file: Path) -> None:
     assert keyword_b["human_apply_rate"] == 0.0
     assert keyword_b["human_positive_yield"] == 0.0
 
-    assert [item["keyword"] for item in payload["top_human"]] == [
-        "senior backend engineer",
-        "data platform",
-    ]
     assert payload["summary"]["human_reviewed_jobs"] == 2
     # With feedback imported, the missing-feedback warning must not appear.
     assert not any("no hay feedback humano importado" in item for item in payload["warnings"])
@@ -2843,42 +2829,29 @@ def test_keyword_freshness_is_unknown_without_usable_dates(tmp_path: Path) -> No
 
 
 def test_keyword_table_renders_the_documented_columns(db_file: Path) -> None:
-    """The rendered header row is the surface the README documents.
-
-    ``unscored_jobs`` and ``inactive_jobs`` stay in the payload but have no column
-    of their own (the table shows the inactive *rate*), so the documentation must
-    not promise those columns.
-    """
+    """The rendered header row is the surface the README documents."""
     html_text = generate_and_read(db_file)
+    css = _embedded_style(html_text)
 
-    headers = re.search(r'\["Palabra clave".*?\]', html_text, re.DOTALL)
-    assert headers is not None, "the keyword table must render its header row"
-    assert re.findall(r'"([^"]+)"', headers.group(0)) == [
-        "Palabra clave",
-        "Apariciones",
-        "Ofertas únicas",
-        "Tasa duplicados",
-        "Puntaje promedio",
-        "Top 5",
-        "Top 10",
-        "Con puntaje",
-        "Aplicar",
-        "Considerar",
-        "Revisadas",
-        "Tasa aplicar (humano)",
-        "Frescura",
-        "No activas",
+    header_row = re.search(r"<thead>.*?</thead>", html_text, re.DOTALL)
+    assert header_row is not None, "the keyword table must render its header row"
+    assert re.findall(r"<th[^>]*>([^<]+)</th>", header_row.group(0)) == [
+        "Keyword",
+        "Proveedor",
+        "Vistas",
+        "Activas",
+        "Score medio",
+        "≥ 70",
+        "Aplicadas",
     ]
-    # Metrics the data cannot support read "sin dato", never a fabricated zero.
-    assert 'function pct(value)' in html_text
-    assert '? "sin dato" : Math.round(value * 100) + "%"' in html_text
-    assert 'function score(value)' in html_text
-    assert 'id="top-human"' in html_text
+    # A retired row is marked in place instead of disappearing.
+    assert 'tr.retired td:first-child::after { content:" · retirada";' in css
+    assert 'id="top-human"' not in html_text
 
     payload = _extract_payload(html_text)
-    assert "unscored_jobs" in payload["keywords"][0]
-    assert "inactive_jobs" in payload["keywords"][0]
-    assert "human_apply_rate" in payload["keywords"][0]
+    assert "seen_jobs" in payload["keywords"][0]
+    assert "high_score_jobs" in payload["keywords"][0]
+    assert "human_apply" in payload["keywords"][0]
 
 
 def test_inactive_jobs_are_excluded_from_keyword_analytics(db_file: Path) -> None:
@@ -3016,9 +2989,6 @@ def test_keyword_analytics_are_empty_without_provenance(tmp_path: Path) -> None:
     payload = _payload(path)
 
     assert payload["keywords"] == []
-    assert payload["top_quality"] == []
-    assert payload["top_yield"] == []
-    assert payload["top_human"] == []
     assert any("procedencia de palabras clave" in warning for warning in payload["warnings"])
 
 
@@ -3056,7 +3026,8 @@ def test_empty_database_warns_clearly(tmp_path: Path) -> None:
     assert "jobscout-data" in html_text
 
 
-def test_top_quality_ignores_keywords_without_scores(tmp_path: Path) -> None:
+def test_keyword_without_scores_has_no_average(tmp_path: Path) -> None:
+    """A series with no scored job reports no average, so the table says "sin dato"."""
     path = tmp_path / "mixed.sqlite3"
     conn = connect(path)
     try:
@@ -3075,19 +3046,15 @@ def test_top_quality_ignores_keywords_without_scores(tmp_path: Path) -> None:
         run_unscored = _run(conn, "unscored keyword")
         _observe(conn, run_scored.id, scored.id, rank=1)
         _observe(conn, run_unscored.id, unscored.id, rank=1)
-        # A scored job with no positive recommendation must not appear in yield.
         insert_evaluation(conn, _score(scored.id, 55.0, Recommendation.SKIP))
     finally:
         conn.close()
 
-    payload = _payload(path)
-
-    assert [item["keyword"] for item in payload["top_quality"]] == ["scored keyword"]
-    assert payload["top_yield"] == []
-    assert payload["top_human"] == []
-    stats = {item["keyword"]: item for item in payload["keywords"]}
+    stats = {item["keyword"]: item for item in _payload(path)["keywords"]}
+    assert stats["scored keyword"]["avg_score"] == 55.0
+    assert stats["scored keyword"]["high_score_jobs"] == 0
     assert stats["unscored keyword"]["avg_score"] is None
-    assert stats["unscored keyword"]["top5_avg_score"] is None
+    assert stats["unscored keyword"]["high_score_jobs"] == 0
     assert stats["unscored keyword"]["scored_jobs"] == 0
 
 
@@ -3471,13 +3438,12 @@ def test_dashboard_marks_retired_keyword_series(tmp_path: Path) -> None:
     assert payload["summary"]["retired_keywords"] == len(RETIRED_KEYWORD_PAIRS)
 
 
-def test_dashboard_keyword_table_and_top_lists_omit_retired_series(tmp_path: Path) -> None:
-    """A retired series never renders in the table or the three ranking lists."""
+def test_dashboard_keyword_table_greys_retired_series(tmp_path: Path) -> None:
+    """A retired series stays in the table, marked instead of ranked."""
     path = tmp_path / "dash" / "omit.sqlite3"
     conn = connect(path)
     try:
         init_db(conn)
-        # This retired series would top quality and yield if it were not filtered.
         _seed_keyword_series(
             conn,
             provider="linkedin",
@@ -3500,21 +3466,18 @@ def test_dashboard_keyword_table_and_top_lists_omit_retired_series(tmp_path: Pat
     assert "Identity and Access Management Engineer" not in [
         item["keyword"] for item in payload["keywords"]
     ]
-    assert [item["keyword"] for item in payload["top_quality"]] == ["Senior Backend Engineer"]
-    assert "Identity and Access Management Engineer" not in [
-        item["keyword"] for item in payload["top_yield"]
-    ]
-    assert payload["top_human"] == []
     # The retired row is preserved and marked in its own collection.
     assert [item["keyword"] for item in payload["retired_keywords"]] == [
         "Identity and Access Management Engineer"
     ]
-    # The renderer still owns the existing empty state for an empty active table.
-    assert "Todavía no hay procedencia de palabras clave registrada." in html_text
+    # The renderer concatenates both collections and greys the retired rows.
+    assert "payload.keywords.concat(payload.retired_keywords || [])" in html_text
+    assert 'row.className = "retired";' in html_text
+    assert "tr.retired td { color:var(--ink-3); }" in _embedded_style(html_text)
 
 
-def test_dashboard_all_retired_keyword_series_shows_empty_state(tmp_path: Path) -> None:
-    """If every series is retired, the table falls back to its empty state."""
+def test_dashboard_all_retired_keyword_series_still_fill_the_table(tmp_path: Path) -> None:
+    """If every series is retired, they still fill the table instead of an empty state."""
     path = tmp_path / "dash" / "all-retired.sqlite3"
     conn = connect(path)
     try:
@@ -3528,11 +3491,11 @@ def test_dashboard_all_retired_keyword_series_shows_empty_state(tmp_path: Path) 
     payload = _extract_payload(html_text)
 
     assert payload["keywords"] == []
-    assert payload["top_quality"] == []
-    assert payload["top_yield"] == []
-    assert payload["top_human"] == []
     assert len(payload["retired_keywords"]) == len(RETIRED_KEYWORD_PAIRS)
-    assert "Todavía no hay procedencia de palabras clave registrada." in html_text
+    assert (
+        '<p class="note" id="keyword-empty" hidden>'
+        "Todavía no hay procedencia de palabras clave registrada.</p>"
+    ) in html_text
 
 
 def test_dashboard_retired_flag_is_provider_scoped_and_normalized(tmp_path: Path) -> None:

@@ -797,11 +797,11 @@ that test and can no longer be planned or run, not even in `--dry-run`:
   `Azure Security Engineer` remains in the LinkedIn catalog.
 - Search history and dashboard analytics are preserved: no row is deleted, and
   retired pairs are only omitted as `prune` candidates.
-- In the dashboard, retired series are excluded from the keyword table and the
-  three ranking lists by default, but stay embedded and flagged as `retired`
-  (with date and reason) in the history. `summary.keywords` still counts every
-  analyzed series, retired ones included, and the summary note reports how many
-  are retired. Per-offer provenance is unchanged.
+- In the dashboard, retired series stay in the keyword table, greyed and marked
+  `· retirada`, and in the payload as `retired_keywords` (without date or reason,
+  which live in `keyword-plan`). The Ofertas origin filter offers active series
+  only. `summary.keywords` still counts every analyzed series, retired ones
+  included. Per-offer provenance is unchanged.
 
 Per-keyword provenance (which search surfaced each job, and at what position) is
 stored in SQLite, and the dashboard aggregates it:
@@ -811,34 +811,30 @@ stored in SQLite, and the dashboard aggregates it:
 2. Enrich with `fetch-details` and score with `score --all --rescore`.
 3. Export your feedback from the dashboard and import it with `import-feedback`.
    Until feedback is imported, the human-decision columns read *sin dato*.
-4. Generate the dashboard and open the **keyword performance** section: one row
-   per keyword with *Apariciones*, *Ofertas únicas*, *Tasa duplicados*, *Puntaje
-   promedio*, *Top 5*, *Top 10*, *Con puntaje*, *Aplicar*, *Considerar*,
-   *Revisadas*, *Tasa aplicar (humano)*, *Frescura*, and *No activas*. Retired
-   series are not shown; if every series is retired, the table falls back to its
-   empty state instead of rendering broken.
-5. Prioritize the keywords with the best average score, more model
-   apply/consider, and the best human approval rate; drop the ones that only add
-   duplicate sightings or no longer surface active postings.
+4. Generate the dashboard and open the **Palabras clave** tab: one sortable table
+   with a row per keyword/provider pair and the columns *Keyword*, *Proveedor*,
+   *Vistas*, *Activas*, *Score medio*, *≥ 70*, and *Aplicadas*. It opens sorted by
+   *Score medio*, descending; clicking a header re-sorts. Retired series show
+   greyed with `· retirada`. With no series at all it shows "Todavía no hay
+   procedencia de palabras clave registrada.".
+5. Prioritize the keywords with the best mean score, more offers at 70 or above,
+   and more apply decisions; drop the ones that barely surface active postings.
 6. Adjust the keywords and repeat. **Every run is manual**: there is no automatic
    scheduling. Local notifications are opt-in and manual (`jobscout notify`).
 
 How to read the metrics:
 
-- *Puntaje promedio*, *Top 5*, and *Top 10* only average active jobs with a
-  successful evaluation and read *sin dato* when there are none. *Top 5*/*Top 10*
-  answer "how good are my best offers for this search?", not "how good is the
-  average?".
-- *Tasa duplicados* is duplicate sightings over total sightings: a keyword that
-  only repeats what others already surfaced adds little.
-- *Tasa aplicar (humano)* uses only the imported decisions
-  (`apply`/`reject`, plus the legacy `consider` that is still counted), never the
-  model recommendation. It reads *sin dato* until there are decisions for that
-  keyword, and `0 %` only when there were real decisions and none was apply.
-- *Frescura* is the share of postings 21 days old or less among those with a known
-  date. jobscout has **no** verified "expired on LinkedIn" signal, so it does not
-  invent one: *No activas* is the share of postings jobscout itself deactivated,
-  and it is the only claim made about dropped postings.
+- *Vistas* is the distinct postings the search ever surfaced, including those
+  jobscout has deactivated; *Activas* is the ones still active. jobscout has
+  **no** verified "expired on LinkedIn" signal: the gap between the two is only
+  what jobscout itself deactivated.
+- *Score medio* averages active jobs with a successful evaluation, rounded, and
+  reads *sin dato* when there are none; *≥ 70* counts those reaching 70, the same
+  bar that paints a score in the signal colour.
+- *Aplicadas* counts the `apply` decisions imported with `import-feedback`, never
+  the model recommendation nor marks that only live in the browser.
+- The payload keeps the other per-series metrics (duplicates, freshness, human
+  rates), which `keyword-plan` still uses.
 
 Observed position is provenance only: LinkedIn result order is **not** treated as
 a quality signal.

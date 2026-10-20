@@ -98,6 +98,10 @@ MAX_FIELD_CHARS = 800
 #: still are.
 FRESH_WINDOW_DAYS = 21
 
+#: A job counts as "high score" when its score reaches this value; it matches the
+#: JS ``s-hi`` band (``score >= 70``) so the table and the offer chips agree.
+HIGH_SCORE_THRESHOLD = 70
+
 #: A detail-fetch evidence row counts as *current* when it is at most this many
 #: days old. It matches :data:`FRESH_WINDOW_DAYS` but stays a separate, named
 #: boundary because it answers a different question: whether the last link check
@@ -696,6 +700,10 @@ def _fetch_keyword_stats(
     deactivated postings separately, because that share is exactly what makes a
     keyword's active numbers look better than they are.
 
+    ``seen_jobs`` counts every distinct posting the search ever surfaced, inactive
+    ones included, and ``high_score_jobs`` counts the scored ones at or above
+    :data:`HIGH_SCORE_THRESHOLD`.
+
     Every rate is computed from stored rows only. A metric with no data behind it
     (no scored job, no imported human decision, no usable date) stays ``None``
     instead of being guessed as zero.
@@ -840,6 +848,7 @@ def _fetch_keyword_stats(
                 "label": _keyword_source_label(keyword, provider),
                 "retired": retirement is not None,
                 "sightings": sightings,
+                "seen_jobs": all_jobs,
                 "unique_jobs": unique_jobs,
                 "duplicate_sightings": duplicate_sightings,
                 "duplicate_rate": _rate(duplicate_sightings, sightings),
@@ -848,6 +857,9 @@ def _fetch_keyword_stats(
                 "scored_jobs": scored_jobs,
                 "unscored_jobs": max(0, unique_jobs - scored_jobs),
                 "avg_score": _mean(scores),
+                "high_score_jobs": sum(
+                    1 for value in scores if value >= HIGH_SCORE_THRESHOLD
+                ),
                 "top5_avg_score": _mean(scores[:5]),
                 "top10_avg_score": _mean(scores[:10]),
                 "apply_count": recommendations.count("apply"),
@@ -866,56 +878,6 @@ def _fetch_keyword_stats(
             }
         )
     return stats
-
-
-def _top_keywords(
-    stats: Sequence[dict[str, Any]], *, limit: int = 10
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """(top by model score quality, top by model yield, top by human approval).
-
-    Each list only includes keyword *series* the data can actually rank: a series
-    with no scored job is absent from quality, one with no apply/consider is
-    absent from model yield, and one with no imported human decision is absent
-    from human approval. An empty list is the honest answer, never a placeholder
-    row. Series are sorted by provider/keyword so two platforms that used
-    the same literal keyword stay separate and deterministic.
-
-    Retired series are excluded before ranking, so they never occupy a slot and a
-    still-active series can be promoted into the list.
-    """
-    stats = [item for item in stats if not item.get("retired")]
-    quality = sorted(
-        (item for item in stats if item["scored_jobs"] > 0 and item["avg_score"] is not None),
-        key=lambda item: (
-            -float(item["avg_score"]),
-            -item["unique_jobs"],
-            item["provider"],
-            item["keyword"],
-        ),
-    )[:limit]
-    yield_ranked = sorted(
-        (item for item in stats if (item["apply_count"] + item["consider_count"]) > 0),
-        key=lambda item: (
-            -(item["apply_count"] + item["consider_count"]),
-            -(float(item["avg_score"]) if item["avg_score"] is not None else 0.0),
-            item["provider"],
-            item["keyword"],
-        ),
-    )[:limit]
-    human = sorted(
-        (
-            item
-            for item in stats
-            if item["human_reviewed"] > 0 and item["human_apply_rate"] is not None
-        ),
-        key=lambda item: (
-            -float(item["human_apply_rate"]),
-            -item["human_reviewed"],
-            item["provider"],
-            item["keyword"],
-        ),
-    )[:limit]
-    return quality, yield_ranked, human
 
 
 def _summary(
@@ -1107,11 +1069,10 @@ def build_payload(
         )
 
     keyword_stats = _fetch_keyword_stats(conn, now=reference)
-    # The analytics table, the origin filter, and the top lists show only active
-    # searches by default; retired series stay in the payload, marked, as history.
+    # Retired series stay in the payload, marked, as history; both collections
+    # are rendered so the table can grey them instead of hiding them.
     active_keyword_stats = [item for item in keyword_stats if not item["retired"]]
     retired_keyword_stats = [item for item in keyword_stats if item["retired"]]
-    top_quality, top_yield, top_human = _top_keywords(active_keyword_stats)
     summary = _summary(
         conn,
         offers,
@@ -1137,9 +1098,6 @@ def build_payload(
         "offers": offers,
         "keywords": active_keyword_stats,
         "retired_keywords": retired_keyword_stats,
-        "top_quality": top_quality,
-        "top_yield": top_yield,
-        "top_human": top_human,
     }
 
 
@@ -1390,45 +1348,11 @@ __STYLE__
   </section>
 
 <section id="panel-keywords" role="tabpanel" aria-labelledby="tab-keywords" hidden>
-<section class="block" id="analitica" aria-labelledby="analytics-title">
-  <div class="section-head">
-    <h2 id="analytics-title">Desempeño por palabra clave</h2>
-  </div>
-  <p class="muted">
-    Calculado a partir de la procedencia guardada de las búsquedas y de la última
-    evaluación exitosa. <strong>La posición observada es procedencia, no una medida de
-    calidad</strong>: el orden de resultados de LinkedIn no se trata como verdad.
-  </p>
-  <details class="method">
-    <summary>Metodología de las métricas</summary>
-    <p>
-      Cada tasa se calcula solo sobre ofertas activas y sobre hechos guardados: una
-      métrica sin datos detrás queda como <em>sin dato</em>, nunca como un cero
-      inventado. La frescura usa un umbral de 21 días y cae a la fecha de primera
-      visualización cuando no hay fecha de publicación; las ofertas sin ninguna fecha
-      usable no se cuentan como frescas. La columna de decisión humana proviene del
-      feedback importado con <code>jobscout import-feedback</code>, no de sus marcas en
-      este navegador.
-    </p>
-  </details>
-  <div class="table-wrap">
-    <div id="keyword-table"></div>
-  </div>
-  <div class="two-col">
-    <section aria-labelledby="top-quality-title">
-      <h3 id="top-quality-title">Top 10 por calidad del puntaje</h3>
-      <div id="top-quality"></div>
-    </section>
-    <section aria-labelledby="top-yield-title">
-      <h3 id="top-yield-title">Top 10 por recomendaciones positivas</h3>
-      <div id="top-yield"></div>
-    </section>
-    <section aria-labelledby="top-human-title">
-      <h3 id="top-human-title">Top 10 por aprobación humana</h3>
-      <div id="top-human"></div>
-    </section>
-  </div>
-</section>
+<table id="keyword-table">
+  <thead><tr><th>Keyword</th><th>Proveedor</th><th class="num" title="Ofertas distintas vistas por esta búsqueda, inactivas incluidas">Vistas</th><th class="num">Activas</th><th class="num" data-initial-sort="descending">Score medio</th><th class="num" title="Ofertas activas con score de 70 o más">≥ 70</th><th class="num" title="Decisiones «aplicar» importadas con jobscout import-feedback">Aplicadas</th></tr></thead>
+  <tbody></tbody>
+</table>
+<p class="note" id="keyword-empty" hidden>Todavía no hay procedencia de palabras clave registrada.</p>
 </section>
 </main>
 
@@ -1680,63 +1604,25 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 #show-more { display:block; margin:var(--sp-16) auto 0 var(--sp-8); }
 .report-warnings p { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); }
 
-/* The analytics region is a paper panel separated by one hairline, not a second
-   sheet with its own elevation. */
-.block { display:flex; flex-direction:column; gap:var(--sp-12); background:var(--paper);
-  border:1px solid var(--rule); border-radius:2px; padding:var(--sp-16) var(--sp-24); }
-.block > .muted { font-size:var(--fs-13); }
-.method { background:var(--paper); border:1px solid var(--rule);
-  border-radius:2px; padding:0; overflow:hidden; }
-.method > summary { display:flex; align-items:center; gap:var(--sp-8); cursor:pointer;
-  padding:var(--sp-8) var(--sp-12); font-size:var(--fs-13); font-weight:600;
-  color:var(--ink); }
-.method > summary::-webkit-details-marker { display:none; }
-.method > summary::before { content:""; flex:0 0 auto; width:0; height:0;
-  border-top:6px solid transparent; border-bottom:6px solid transparent;
-  border-left:7px solid var(--rule); }
-.method > summary:hover, .method > summary:focus-visible { background:var(--sheet); }
-.method > summary:hover::before, .method > summary:focus-visible::before {
-  border-left-color:var(--ink); }
-.method[open] > summary::before { transform:rotate(90deg); border-left-color:var(--ink); }
-.method p { margin:0; padding:0 var(--sp-12) var(--sp-12); font-size:var(--fs-13);
-  color:var(--ink-2); }
-
-.table-wrap { overflow-x:auto; border:1px solid var(--rule);
-  border-radius:2px; background:var(--paper); }
-table { border-collapse:collapse; width:100%; font-size:var(--fs-13); }
-caption { caption-side:top; text-align:left; padding:var(--sp-8) var(--sp-12);
-  font-size:var(--fs-13); color:var(--ink-3);
-  border-bottom:1px solid var(--rule); }
-th, td { padding:var(--sp-8); text-align:left; white-space:nowrap;
-  border-bottom:1px solid var(--rule); }
-thead th { background:var(--paper); color:var(--ink-3); font-size:var(--fs-11);
-  font-weight:600; text-transform:uppercase; letter-spacing:.05em; }
-tbody tr:last-child td { border-bottom:0; }
-tbody tr:hover td { background:var(--sheet); }
-/* Every column after the keyword is numeric, so it aligns, tabulates and uses mono. */
-th + th, td + td { text-align:right; font-family:var(--mono);
-  font-variant-numeric:tabular-nums; }
-th:first-child, td:first-child { text-align:left; font-family:var(--sans); }
-/* Each header cell holds the sort control, so the hit target is the whole label.
-   The arrow is a faint "sortable" hint, ink when that column is the active sort,
-   and the direction is mirrored in aria-sort so it is never glyph-only. */
-.sort-btn { font:inherit; color:inherit; background:none; border:0;
-  padding:var(--sp-4) 0; display:inline-flex; align-items:center;
-  gap:var(--sp-4); cursor:pointer; }
-.sort-btn::after { content:"\\2191"; color:var(--rule); font-family:var(--sans); }
+/* Keyword view: the mockup's table, on tokens. */
+table { width:100%; border-collapse:collapse; margin-top:var(--sp-8); }
+th { font-family:var(--mono); font-size:var(--fs-11); font-weight:600;
+  text-transform:uppercase; letter-spacing:.06em; color:var(--ink-3); text-align:left;
+  padding:var(--sp-8); border-bottom:1px solid var(--ink); cursor:pointer; }
+td { padding:var(--sp-8); border-bottom:1px solid var(--rule); font-variant-numeric:tabular-nums; }
+td.num, th.num { text-align:right; font-family:var(--mono); }
+tr.retired td { color:var(--ink-3); }
+tr.retired td:first-child::after { content:" · retirada"; font-family:var(--mono);
+  font-size:var(--fs-11); }
+.note { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3);
+  padding:var(--sp-24) 0; }
+/* The header label is the sort control; only the active column shows its arrow,
+   and aria-sort carries the direction so it never rests on the glyph alone. */
+.sort-btn { font:inherit; color:inherit; background:none; border:0; padding:0;
+  cursor:pointer; text-transform:inherit; letter-spacing:inherit; }
 .sort-btn:hover, .sort-btn:focus-visible { color:var(--ink); }
-.sort-btn:hover::after, .sort-btn:focus-visible::after { color:var(--ink); }
-th[aria-sort="ascending"] .sort-btn::after { content:"\\2191"; color:var(--ink); }
-th[aria-sort="descending"] .sort-btn::after { content:"\\2193"; color:var(--ink); }
-
-.two-col { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:var(--sp-12); }
-.two-col > section { display:flex; flex-direction:column; gap:var(--sp-8);
-  background:var(--paper); border:1px solid var(--rule);
-  border-radius:2px; padding:var(--sp-12); }
-.two-col h3 { font-size:var(--fs-11); font-weight:600; text-transform:uppercase;
-  letter-spacing:.06em; color:var(--ink); }
-.two-col ol { margin:0; padding-left:var(--sp-16); display:flex; flex-direction:column;
-  gap:var(--sp-4); font-size:var(--fs-13); color:var(--ink-2); }
+th[aria-sort="ascending"] .sort-btn::after { content:" \\2191"; }
+th[aria-sort="descending"] .sort-btn::after { content:" \\2193"; }
 
 .empty { padding:var(--sp-24) 0; font-family:var(--mono); font-size:var(--fs-12);
   color:var(--ink-3); }
@@ -2436,76 +2322,35 @@ _SCRIPT = r"""
     refreshFilterState();
   }
 
-  function cell(text) { return el("td", null, text); }
-
-  // A rate the stored data cannot support is rendered as "sin dato", never as 0.
-  function pct(value) {
-    return (value === null || value === undefined)
-      ? "sin dato" : Math.round(value * 100) + "%";
-  }
-
-  function score(value) {
-    return (value === null || value === undefined) ? "sin dato" : value;
-  }
-
   function renderKeywordTable() {
-    var host = document.getElementById("keyword-table");
-    host.textContent = "";
-    if (!payload.keywords.length) {
-      host.appendChild(el("p", "muted", "Todavía no hay procedencia de palabras clave registrada."));
+    var rows = payload.keywords.concat(payload.retired_keywords || []);
+    document.getElementById("tab-keywords-count").textContent = String(rows.length);
+    var table = document.getElementById("keyword-table");
+    var empty = document.getElementById("keyword-empty");
+    if (!rows.length) {
+      table.hidden = true;
+      empty.hidden = false;
       return;
     }
-    var table = el("table");
-    table.appendChild(el("caption", null,
-      "Métricas por palabra clave de origen, calculadas solo sobre ofertas activas. " +
-      "Tasa duplicados = apariciones repetidas sobre apariciones totales; Tasa aplicar = " +
-      "decisiones humanas de aplicar sobre ofertas revisadas; Frescura = ofertas de " +
-      "21 días o menos entre las que tienen fecha conocida; No activas = proporción de " +
-      "ofertas ya desactivadas."));
-    var thead = el("thead");
-    var headRow = el("tr");
-    ["Palabra clave", "Apariciones", "Ofertas únicas", "Tasa duplicados",
-     "Puntaje promedio", "Top 5", "Top 10", "Con puntaje", "Aplicar", "Considerar",
-     "Revisadas", "Tasa aplicar (humano)", "Frescura", "No activas"].forEach(function (label) {
-      headRow.appendChild(el("th", null, label));
-    });
-    thead.appendChild(headRow);
-    table.appendChild(thead);
-    var tbody = el("tbody");
-    payload.keywords.forEach(function (item) {
+    var providerLabels = {
+      linkedin: "LinkedIn", tecnoempleo: "Tecnoempleo", getmanfred: "GetManfred"
+    };
+    var body = table.querySelector("tbody");
+    body.textContent = "";
+    rows.forEach(function (item) {
       var row = el("tr");
-      row.appendChild(cell(item.label || item.keyword));
-      row.appendChild(cell(item.sightings));
-      row.appendChild(cell(item.unique_jobs));
-      row.appendChild(cell(pct(item.duplicate_rate)));
-      row.appendChild(cell(score(item.avg_score)));
-      row.appendChild(cell(score(item.top5_avg_score)));
-      row.appendChild(cell(score(item.top10_avg_score)));
-      row.appendChild(cell(item.scored_jobs));
-      row.appendChild(cell(item.apply_count));
-      row.appendChild(cell(item.consider_count));
-      row.appendChild(cell(item.human_reviewed));
-      row.appendChild(cell(pct(item.human_apply_rate)));
-      row.appendChild(cell(pct(item.fresh_share)));
-      row.appendChild(cell(pct(item.inactive_rate)));
-      tbody.appendChild(row);
+      if (item.retired) { row.className = "retired"; }
+      row.appendChild(el("td", null, item.keyword));
+      row.appendChild(el("td", null, providerLabels[item.provider] || item.provider));
+      row.appendChild(el("td", "num", String(item.seen_jobs)));
+      row.appendChild(el("td", "num", String(item.unique_jobs)));
+      // A missing average is stated as "sin dato", never rounded to a number.
+      row.appendChild(el("td", "num", (item.avg_score === null || item.avg_score === undefined)
+        ? "sin dato" : String(Math.round(item.avg_score))));
+      row.appendChild(el("td", "num", String(item.high_score_jobs)));
+      row.appendChild(el("td", "num", String(item.human_apply)));
+      body.appendChild(row);
     });
-    table.appendChild(tbody);
-    host.appendChild(table);
-  }
-
-  function renderTopList(hostId, items, describe) {
-    var host = document.getElementById(hostId);
-    host.textContent = "";
-    if (!items.length) {
-      host.appendChild(el("p", "muted", "Todavía no hay datos suficientes."));
-      return;
-    }
-    var list = el("ol");
-    items.forEach(function (item) {
-      list.appendChild(el("li", null, describe(item)));
-    });
-    host.appendChild(list);
   }
 
   function populateKeywordFilter() {
@@ -2598,24 +2443,7 @@ _SCRIPT = r"""
   bindTabs();
   bindBackToTop();
   populateKeywordFilter();
-  document.getElementById("tab-keywords-count").textContent = String(payload.keywords.length);
   renderKeywordTable();
-  renderTopList("top-quality", payload.top_quality, function (item) {
-    return (item.label || item.keyword) + " \u2014 promedio " + score(item.avg_score) +
-      ", top 5 " + score(item.top5_avg_score) + ", " +
-      item.scored_jobs + " de " + item.unique_jobs + " oferta(s) con puntaje";
-  });
-  renderTopList("top-yield", payload.top_yield, function (item) {
-    return (item.label || item.keyword) + " \u2014 " + (item.apply_count + item.consider_count) +
-      " con recomendación de aplicar o considerar de " +
-      item.scored_jobs + " oferta(s) con puntaje";
-  });
-  renderTopList("top-human", payload.top_human, function (item) {
-    return (item.label || item.keyword) + " \u2014 " + pct(item.human_apply_rate) +
-      " de aprobación humana (" + item.human_apply + " aplicar, " +
-      item.human_consider + " considerar (legacy), " + item.human_reject + " descartar, " +
-      item.human_reviewed + " revisada(s))";
-  });
   bindFilters();
   refreshFeedbackCount();
   applyFilters();
@@ -2668,13 +2496,17 @@ _SCRIPT = r"""
 
   function makeSortable(table) {
     var headers = table.querySelectorAll("thead th");
-    var caption = table.querySelector("caption");
-    if (caption) {
-      caption.textContent = caption.textContent +
-        " Haga clic en un encabezado para ordenar las filas.";
-    }
     for (var index = 0; index < headers.length; index++) {
       makeHeaderSortable(table, headers, index);
+    }
+    // Open with the best-scoring searches first; aria-sort carries that order so
+    // the arrow is never the only sign of which column is sorted.
+    for (var i = 0; i < headers.length; i++) {
+      var initial = headers[i].getAttribute("data-initial-sort");
+      if (initial) {
+        headers[i].setAttribute("aria-sort", initial);
+        sortRows(table, i, initial);
+      }
     }
   }
 
@@ -2701,8 +2533,13 @@ _SCRIPT = r"""
     });
   }
 
-  var keywordTable = document.querySelector("#keyword-table table");
-  if (keywordTable) { makeSortable(keywordTable); }
+  var keywordTable = document.getElementById("keyword-table");
+  if (keywordTable) {
+    var keywordBody = keywordTable.querySelector("tbody");
+    if (keywordBody && keywordBody.querySelector("tr")) {
+      makeSortable(keywordTable);
+    }
+  }
 })();
 """
 

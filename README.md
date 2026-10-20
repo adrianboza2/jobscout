@@ -812,11 +812,11 @@ siquiera en `--dry-run`:
   `Azure Security Engineer` permanece en el catálogo de LinkedIn.
 - El historial de búsquedas y la analítica del tablero se conservan: no se borra
   ninguna fila, y los pares retirados solo se omiten como candidatos de `prune`.
-- En el tablero, las series retiradas quedan fuera de la tabla de palabras clave
-  y de las tres listas de ranking por defecto, pero siguen embebidas y marcadas
-  como `retired` (con fecha y motivo) en el historial; `summary.keywords` sigue
-  contando todas las series analizadas, retiradas incluidas, y la nota del resumen
-  indica cuántas quedaron retiradas. La procedencia por oferta no cambia.
+- En el tablero, las series retiradas siguen en la tabla de palabras clave, en
+  gris y marcadas `· retirada`, y en el payload como `retired_keywords` (sin fecha
+  ni motivo, que están en `keyword-plan`). El filtro de origen de Ofertas solo
+  ofrece las series activas. `summary.keywords` sigue contando todas las series
+  analizadas, retiradas incluidas. La procedencia por oferta no cambia.
 
 La procedencia de cada palabra clave (qué búsqueda trajo cada oferta y en qué
 posición) se guarda en SQLite, y el tablero la agrega:
@@ -826,36 +826,31 @@ posición) se guarda en SQLite, y el tablero la agrega:
 2. Enriquece con `fetch-details` y puntúa con `score --all --rescore`.
 3. Exporta tu feedback desde el tablero e impórtalo con `import-feedback`. Sin
    feedback importado, las columnas de decisión humana quedan en *sin dato*.
-4. Genera el tablero y abre la sección de **rendimiento de palabras clave**: una
-   fila por palabra clave con *Apariciones*, *Ofertas únicas*, *Tasa duplicados*,
-   *Puntaje promedio*, *Top 5*, *Top 10*, *Con puntaje*, *Aplicar*, *Considerar*,
-   *Revisadas*, *Tasa aplicar (humano)*, *Frescura* y *No activas*. Las series
-   retiradas no se muestran; si todas las series están retiradas, la tabla muestra
-   su estado vacío en lugar de quedar rota.
-5. Prioriza las palabras clave con mejor puntaje promedio, más aplicar/considerar
-   del modelo y mejor tasa de aprobación humana; descarta las que solo aportan
-   apariciones duplicadas o ya no producen ofertas activas.
+4. Genera el tablero y abre la pestaña **Palabras clave**: una tabla ordenable con
+   una fila por par palabra clave/proveedor y las columnas *Keyword*, *Proveedor*,
+   *Vistas*, *Activas*, *Score medio*, *≥ 70* y *Aplicadas*. Se abre ordenada por
+   *Score medio* descendente; un clic en una cabecera reordena. Las series
+   retiradas aparecen en gris con `· retirada`. Sin ninguna serie, muestra
+   "Todavía no hay procedencia de palabras clave registrada.".
+5. Prioriza las palabras clave con mejor score medio, más ofertas ≥ 70 y más
+   decisiones de aplicar; descarta las que ya casi no producen ofertas activas.
 6. Ajusta las palabras clave y repite. **Cada corrida es manual**: no hay
    programación automática. Las notificaciones locales son opt-in y manuales
    (`jobscout notify`).
 
 Cómo leer las métricas:
 
-- *Puntaje promedio*, *Top 5* y *Top 10* solo promedian ofertas activas con
-  evaluación exitosa y muestran *sin dato* si no hay ninguna. *Top 5*/*Top 10*
-  responden "¿qué tan buenas son mis mejores ofertas para esta búsqueda?", no
-  "¿qué tan bueno es el promedio?".
-- *Tasa duplicados* es apariciones repetidas sobre apariciones totales: una
-  palabra clave que solo repite lo que ya trajeron otras aporta poco.
-- *Tasa aplicar (humano)* usa únicamente las decisiones importadas
-  (`apply`/`reject`, más el legacy `consider` que se sigue contando), nunca la
-  recomendación del modelo. Se muestra como *sin dato* mientras no haya
-  decisiones para esa palabra clave, y `0 %` solo cuando hubo decisiones reales y
-  ninguna fue aplicar.
-- *Frescura* es la proporción de ofertas de 21 días o menos entre las que tienen
-  fecha conocida. jobscout **no** tiene una señal verificada de "oferta expirada
-  en LinkedIn", así que no la inventa: *No activas* es la proporción de ofertas
-  que jobscout ya desactivó, y es lo único que se afirma sobre ofertas caídas.
+- *Vistas* son las ofertas distintas que trajo la búsqueda alguna vez, incluidas
+  las que jobscout ya desactivó; *Activas*, las que siguen activas. jobscout
+  **no** tiene una señal verificada de "oferta expirada en LinkedIn": la
+  diferencia entre ambas es solo lo que jobscout desactivó.
+- *Score medio* promedia las ofertas activas con evaluación exitosa, redondeado,
+  y muestra *sin dato* si no hay ninguna; *≥ 70* cuenta las que llegan a 70, el
+  mismo umbral que pinta una nota en color señal.
+- *Aplicadas* cuenta las decisiones `apply` importadas con `import-feedback`,
+  nunca la recomendación del modelo ni las marcas que solo están en el navegador.
+- El payload conserva el resto de métricas por serie (duplicados, frescura,
+  tasas humanas), que `keyword-plan` sigue usando.
 
 La posición observada es solo procedencia: el orden de resultados de LinkedIn
 **no** se trata como señal de calidad.
