@@ -402,7 +402,6 @@ def _fetch_active_jobs(
                j.posted_at AS posted_at,
                j.first_seen_at AS first_seen_at,
                j.last_seen_at AS last_seen_at,
-               j.content_status AS content_status,
                j.seniority AS seniority,
                j.employment_type AS employment_type,
                e.overall_score AS score,
@@ -414,7 +413,6 @@ def _fetch_active_jobs(
                e.blockers_json AS blockers_json,
                e.unknowns_json AS unknowns_json,
                e.rationale AS rationale,
-               e.scorer AS scorer,
                e.model AS model,
                e.created_at AS evaluated_at,
                latest_e.status AS evaluation_status
@@ -573,16 +571,14 @@ def _keyword_source_label(keyword: str, provider: str) -> str:
     return f"{keyword} \u00b7 {suffix}" if suffix else keyword
 
 
-def _fetch_job_keywords(
+def _fetch_job_keyword_keys(
     conn: sqlite3.Connection, job_ids: Sequence[int]
-) -> dict[int, list[dict[str, Any]]]:
-    """Keyword provenance per job: which search run observed it, and at what rank.
+) -> dict[int, list[str]]:
+    """The distinct ``provider|keyword`` series keys that surfaced each job.
 
-    Result order is *evidence*, not truth: the observed rank is kept so the
-    reader can see where a posting surfaced, never as a quality signal. Each
-    entry keeps the provider and the actual ``cycle_id`` of the run that observed
-    it; the shared ``source_key`` is ``provider|keyword`` so the dashboard filter
-    matches every offer the provider surfaced for that keyword.
+    Only the keys ship: the keyword filter is their one reader, and one entry
+    per sighting was most of the page weight. The full provenance (rank, cycle,
+    position kind) stays in SQLite. Keys keep the order of first sighting.
     """
     if not job_ids:
         return {}
@@ -591,13 +587,7 @@ def _fetch_job_keywords(
         f"""
         SELECT i.job_id AS job_id,
                r.query AS keyword,
-               r.provider AS provider,
-               r.cycle_id AS cycle_id,
-               r.location AS run_location,
-               i.rank_in_run AS rank_in_run,
-               i.position_kind AS position_kind,
-               i.decision AS decision,
-               i.created_at AS seen_at
+               r.provider AS provider
         FROM search_run_items i
         JOIN search_runs r ON r.id = i.run_id
         WHERE i.job_id IN ({placeholders})
@@ -607,25 +597,11 @@ def _fetch_job_keywords(
         """,
         [int(job_id) for job_id in job_ids],
     ).fetchall()
-    grouped: dict[int, list[dict[str, Any]]] = {}
+    grouped: dict[int, dict[str, None]] = {}
     for row in rows:
-        provider = str(row["provider"] or "")
-        keyword = str(row["keyword"])
-        cycle_id = row["cycle_id"]
-        position_kind = row["position_kind"]
-        grouped.setdefault(int(row["job_id"]), []).append(
-            {
-                "keyword": keyword,
-                "rank": int(row["rank_in_run"] or 0),
-                "position_kind": str(position_kind) if position_kind else None,
-                "decision": str(row["decision"]),
-                "provider": provider,
-                "cycle_id": cycle_id,
-                "source_key": _source_key(provider, keyword),
-                "seen_at": row["seen_at"],
-            }
-        )
-    return grouped
+        key = _source_key(str(row["provider"] or ""), str(row["keyword"]))
+        grouped.setdefault(int(row["job_id"]), {})[key] = None
+    return {job_id: list(keys) for job_id, keys in grouped.items()}
 
 
 def _fetch_imported_feedback(
@@ -980,7 +956,7 @@ def build_payload(
     reference = now or utcnow()
     rows = _fetch_active_jobs(conn, top=top)
     job_ids = [int(row["id"]) for row in rows]
-    keywords_by_job = _fetch_job_keywords(conn, job_ids)
+    keyword_keys_by_job = _fetch_job_keyword_keys(conn, job_ids)
     # One batched SELECT for every shown offer instead of one query per offer.
     detail_by_job = latest_detail_fetches_for_jobs(conn, job_ids)
     # The imported decision read does not consult ``cycle_id``; the latest sweep
@@ -994,10 +970,8 @@ def build_payload(
         posted_at = row["posted_at"]
         first_seen_at = row["first_seen_at"]
         age_days = _age_days(posted_at, now=reference)
-        age_source = "posted"
         if age_days is None:
             age_days = _age_days(first_seen_at, now=reference)
-            age_source = "first_seen" if age_days is not None else "unknown"
         score = row["score"]
         # Preference is a second, independent axis. It is recomputed from the
         # stored posting text on every payload build, never persisted alongside
@@ -1018,16 +992,9 @@ def build_payload(
                 "company": _concisify(row["company"]) or "(empresa desconocida)",
                 "location": _concisify(row["location"]),
                 "url": _safe_url(row["url"]),
-                "posted_at": posted_at,
-                "first_seen_at": first_seen_at,
-                "last_seen_at": row["last_seen_at"],
                 "is_new": _is_new(first_seen_at, last_sweep_at),
                 "age_days": age_days,
-                "age_source": age_source,
                 "salary": _salary(row["salary"]),
-                "seniority": str(row["seniority"] or ""),
-                "employment_type": str(row["employment_type"] or ""),
-                "content_status": str(row["content_status"] or "unknown"),
                 "score": round(float(score), 2) if score is not None else None,
                 "recommendation": (
                     str(row["recommendation"])
@@ -1045,7 +1012,6 @@ def build_payload(
                 "confidence": (
                     round(float(row["confidence"]), 3) if row["confidence"] is not None else None
                 ),
-                "scorer": str(row["scorer"]) if row["scorer"] else "",
                 "model": str(row["model"]) if row["model"] else "",
                 "evaluated_at": row["evaluated_at"],
                 "rationale": _collapse_whitespace(row["rationale"]),
@@ -1054,8 +1020,14 @@ def build_payload(
                 "gaps": _string_list(row["gaps_json"]),
                 "blockers": _string_list(row["blockers_json"]),
                 "unknowns": _string_list(row["unknowns_json"]),
-                "keywords": keywords_by_job.get(job_id, []),
-                "preference": preference.to_dict(),
+                "keyword_keys": keyword_keys_by_job.get(job_id, []),
+                # Only what the row and the text filter read; the schema tag and
+                # rule ids stay in ``PreferenceAssessment.to_dict``.
+                "preference": {
+                    "outcome": str(preference.outcome),
+                    "reason": preference.reason,
+                    "evidence": preference.evidence,
+                },
                 # Durable imported human decision: the absence of a row is the
                 # only source of the unreviewed view, kept separate from the
                 # browser-local ``reviewed``/``unreviewed`` filter.
@@ -1785,13 +1757,10 @@ _SCRIPT = r"""
       return false;
     }
     if (filters.keyword) {
-      var hit = offer.keywords.some(function (entry) {
-        // The filter value is the provider|keyword series key, so the same
-        // literal keyword from two platforms is never selected together, while
-        // every cycle of one platform's keyword matches.
-        return (entry.source_key || entry.keyword) === filters.keyword;
-      });
-      if (!hit) { return false; }
+      // The filter value is the provider|keyword series key, so the same
+      // literal keyword from two platforms is never selected together, while
+      // every cycle of one platform's keyword matches.
+      if (offer.keyword_keys.indexOf(filters.keyword) === -1) { return false; }
     }
     var reviewed = Boolean(feedback[offer.id] && feedback[offer.id].decision);
     if (filters.review === "reviewed" && !reviewed) { return false; }

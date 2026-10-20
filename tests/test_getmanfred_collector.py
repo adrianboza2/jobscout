@@ -212,17 +212,16 @@ def test_keyword_provenance_is_stored_without_mixing_platforms(conn, settings) -
     assert ("linkedin", "Cloud Engineer") in series
     # Every stored keyword observation is scoped to its provider; none is None.
     for offer in payload["offers"]:
-        for keyword in offer["keywords"]:
-            assert keyword["provider"] in {"getmanfred", "linkedin"}
-    # The GetManfred offer carries the keyword it matched as provenance. The
-    # payload no longer serializes the offer's provider, so identify it by the
-    # provider recorded on its keyword observation.
+        for key in offer["keyword_keys"]:
+            assert key.split("|", 1)[0] in {"getmanfred", "linkedin"}
+    # The GetManfred offer carries the keyword it matched as its series key. The
+    # payload no longer serializes the offer's provider, so identify it by key.
     gm_offer = next(
         offer
         for offer in payload["offers"]
-        if any(keyword["provider"] == "getmanfred" for keyword in offer["keywords"])
+        if any(key.startswith("getmanfred|") for key in offer["keyword_keys"])
     )
-    assert gm_offer["keywords"][0]["keyword"] == "Cloud Engineer"
+    assert gm_offer["keyword_keys"] == ["getmanfred|Cloud Engineer"]
 
 
 def test_postings_from_sitemap_keep_contract() -> None:

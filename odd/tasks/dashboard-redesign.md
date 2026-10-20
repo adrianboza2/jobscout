@@ -337,8 +337,16 @@ marketing components are not.
       pastes. A longer reason already stored is shown and exported whole until edited.
     - "Solo sin decisión importada" is a one-button `.seg`, like "Solo nuevas"; the dead
       `.btn*`/`.filter-toggle` CSS is gone.
-- [ ] DR-6 **Speed pass.** Measure weight and time to first screen against the baseline and
+- [x] DR-6 **Speed pass.** Measure weight and time to first screen against the baseline and
   record both here.
+    - Trimmed: `offer.keywords` (one entry per sighting, 59 % of the page) becomes
+      `offer.keyword_keys`, the distinct `provider|keyword` keys the filter reads;
+      `preference.schema`/`rules` and the offer fields the script never read
+      (`scorer`, `posted_at`, `first_seen_at`, `last_seen_at`, `employment_type`,
+      `seniority`, `content_status`, `age_source`) are gone.
+    - Kept on purpose: `offer.detail` (65 KB, unused since DR-3). Dropping it removes a
+      documented feature (five functions, ~8 tests, a README section): separate owner
+      decision.
 - [ ] Later, owned by their own cards:
   - Discrepancias tab (item 5);
   - Vetos tab and the `⚠ flag` chip (item 4);
@@ -408,3 +416,19 @@ marketing components are not.
   decision, the legacy text and the reason textarea are additions with no mockup
   counterpart; the export `title` is longer. The owner reviewed `reports/dr5-exportar.html`.
   Next: DR-6.
+- 2026-10-21: DR-6 done. Payload trimmed as listed in the task (page from the same DB copy,
+  700 offers): **2 162 300 → 773 717 bytes (2.16 → 0.77 MB, −64 %)**, below the 2.2 MB
+  baseline. Time to first screen: no browser here, so the proxy is the median `JSON.parse`
+  time of the embedded payload in node (25 runs): **18.9 → 6.0 ms**. The 2026-10-19 baseline
+  recorded only weight; the "before" time is the DR-5 page on the same data. Real first
+  paint was not measured in a browser (the owner judged speed low-stakes for a local page);
+  `reports/dr6-antes.html` and `reports/dr6-despues.html` are published for that. The keyword
+  filter matches the same offers for all 28 series before and after. Rewritten tests:
+  `test_offers_are_ranked_by_score_then_freshness` (age fallback asserted on `age_days`),
+  `test_offer_carries_every_field_the_report_promises`, `test_dropped_payload_fields_are_absent`
+  (now also pins the DR-6 drops), `test_cli_smoke_against_bundled_fixtures`,
+  `test_analytics_separate_same_keyword_across_providers`,
+  `test_analytics_merge_cycles_for_same_provider_and_keyword`,
+  `test_keyword_provenance_is_stored_without_mixing_platforms`. Deleted:
+  `test_posted_at_is_shown_readably_but_the_payload_keeps_it_verbatim` (pinned only the
+  payload; its absence is now asserted). All steps of this card are done.

@@ -497,7 +497,9 @@ analítica de palabras clave del tablero identifica cada serie por
 `provider|keyword`: el ciclo es procedencia, no identidad, así que las ofertas del
 mismo `provider`/`keyword` observadas en varios ciclos se agregan en una sola
 fila y clave de filtro compartida, y la procedencia por oferta conserva su
-`cycle_id` real. El mismo término en LinkedIn, GetManfred y Tecnoempleo nunca se
+`cycle_id` real en SQLite. El tablero solo embebe las claves de serie distintas de
+cada oferta (lo que lee el filtro de palabra clave), no una entrada por
+avistamiento. El mismo término en LinkedIn, GetManfred y Tecnoempleo nunca se
 mezcla. Los ciclos cuyo ID empieza con `smoke` (recortado, sin distinguir
 mayúsculas) se excluyen de la tabla de analítica; no se borran filas ni la
 procedencia por oferta.

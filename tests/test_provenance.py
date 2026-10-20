@@ -245,14 +245,12 @@ def test_analytics_separate_same_keyword_across_providers(conn) -> None:
         series[("linkedin", "backend engineer")]["source_key"]
         != series[("getmanfred", "backend engineer")]["source_key"]
     )
-    # The offer provenance entry carries the series key and the position kind.
-    # Offers are keyed by id: the payload no longer serializes the provider.
+    # Each offer carries its own provider's series key. Offers are keyed by id:
+    # the payload no longer serializes the provider. The position kind stays in
+    # SQLite (asserted on the stored rows in the tests above).
     offers = {offer["id"]: offer for offer in payload["offers"]}
-    getmanfred_offer = offers[getmanfred_jobs[0]]
-    linkedin_offer = offers[linkedin_jobs[0]]
-    assert getmanfred_offer["keywords"][0]["source_key"].startswith("getmanfred|")
-    assert getmanfred_offer["keywords"][0]["position_kind"] == "none"
-    assert linkedin_offer["keywords"][0]["position_kind"] == "search_rank"
+    assert offers[getmanfred_jobs[0]]["keyword_keys"] == ["getmanfred|backend engineer"]
+    assert offers[linkedin_jobs[0]]["keyword_keys"] == ["linkedin|backend engineer"]
 
 
 def test_analytics_merge_cycles_for_same_provider_and_keyword(conn) -> None:
@@ -333,16 +331,12 @@ def test_analytics_merge_cycles_for_same_provider_and_keyword(conn) -> None:
     )
     assert series[("getmanfred", "iam engineer")]["retired"] is False
 
-    # Offer provenance keeps the real cycle ID of every observation.
+    # An offer seen in both cycles carries the series key once: the per-cycle
+    # provenance stays in SQLite, the page only needs the filter key.
     offers = {offer["id"]: offer for offer in payload["offers"]}
-    assert offers[cycle_1_jobs[0]]["keywords"][0]["cycle_id"] == "cycle-1"
-    assert offers[cycle_1_jobs[0]]["keywords"][1]["cycle_id"] == "cycle-2"
-    assert offers[cycle_2_jobs[0]]["keywords"][0]["cycle_id"] == "cycle-2"
-    assert offers[getmanfred_jobs[0]]["keywords"][0]["cycle_id"] is None
-    assert (
-        offers[cycle_1_jobs[0]]["keywords"][0]["source_key"]
-        == "linkedin|iam engineer"
-    )
+    assert offers[cycle_1_jobs[0]]["keyword_keys"] == ["linkedin|iam engineer"]
+    assert offers[cycle_2_jobs[0]]["keyword_keys"] == ["linkedin|iam engineer"]
+    assert offers[getmanfred_jobs[0]]["keyword_keys"] == ["getmanfred|iam engineer"]
 
 
 def test_linkedin_regression_provenance_and_rank(conn, settings) -> None:

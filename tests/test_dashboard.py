@@ -1070,11 +1070,12 @@ def test_offers_are_ranked_by_score_then_freshness(db_file: Path) -> None:
     assert [offer["score"] for offer in payload["offers"]] == [80.0, 40.0, None]
     assert payload["offers"][0]["recommendation"] == "apply"
     assert payload["offers"][1]["recommendation"] == "consider"
-    # The unscored job falls back to its first_seen_at for age provenance.
+    # The unscored job has no posted_at, so its age falls back to first_seen_at
+    # (2026-09-15T10:00Z, 26 h before NOW).
     unscored = payload["offers"][2]
     assert unscored["score"] is None
     assert unscored["recommendation"] is None
-    assert unscored["age_source"] == "first_seen"
+    assert unscored["age_days"] == 1.08
 
 
 def test_top_limits_the_embedded_offers(db_file: Path) -> None:
@@ -1089,15 +1090,14 @@ def test_offer_carries_every_field_the_report_promises(db_file: Path) -> None:
     offer = _payload(db_file, top=1)["offers"][0]
 
     for key in (
-        "id", "title", "company", "location", "url", "posted_at", "age_days",
-        "score", "recommendation", "confidence", "scorer", "model", "rationale",
-        "strengths", "gaps", "blockers", "unknowns", "keywords",
+        "id", "title", "company", "location", "url", "age_days",
+        "score", "recommendation", "confidence", "model", "rationale",
+        "strengths", "gaps", "blockers", "unknowns", "keyword_keys",
     ):
         assert key in offer, key
     assert offer["url"].startswith("https://www.linkedin.com/jobs/view/")
     assert offer["age_days"] is not None
-    assert offer["keywords"][0]["keyword"] == "senior backend engineer"
-    assert offer["keywords"][0]["rank"] == 1
+    assert offer["keyword_keys"] == ["linkedin|senior backend engineer"]
 
 
 def test_rationale_is_kept_in_full(db_file: Path) -> None:
@@ -1333,6 +1333,13 @@ def test_dropped_payload_fields_are_absent(dr1_db: Path) -> None:
 
     assert "source" not in offer
     assert "sighting_count" not in offer
+    # DR-6: fields the page never read, and per-sighting keyword provenance.
+    for key in (
+        "posted_at", "first_seen_at", "last_seen_at", "age_source", "seniority",
+        "employment_type", "content_status", "scorer", "keywords",
+    ):
+        assert key not in offer, key
+    assert set(offer["preference"]) == {"outcome", "reason", "evidence"}
     assert set(offer["detail"]) == {
         "state",
         "age_days",
@@ -1845,15 +1852,6 @@ def test_human_feedback_shows_selection_hover_and_a_saved_confirmation(db_file: 
     assert 'el("span", "decision-state-text",' in html_text
     assert 'row.querySelector(".decision-state-text")' in html_text
     assert 'var button = el("button", "mini decision-btn", visibleText);' in html_text
-
-
-def test_posted_at_is_shown_readably_but_the_payload_keeps_it_verbatim(db_file: Path) -> None:
-    """The payload keeps the stored ISO timestamp verbatim."""
-    html_text = generate_and_read(db_file)
-    payload = _extract_payload(html_text)
-
-    stored = payload["offers"][0]["posted_at"]
-    assert stored == "2026-09-14T10:00:00Z"
 
 
 def test_report_keeps_empty_error_and_local_storage_states(db_file: Path) -> None:
@@ -3260,7 +3258,9 @@ def test_cli_smoke_against_bundled_fixtures(tmp_path: Path, capsys) -> None:
     # Provenance from the fixture's own query is preserved as data, not as truth.
     assert data["keywords"][0]["keyword"]
     assert data["keywords"][0]["sightings"] >= 1
-    assert data["offers"][0]["keywords"][0]["rank"] >= 1
+    # Each offer key is a series the keyword filter offers.
+    series_keys = {item["source_key"] for item in data["keywords"]}
+    assert data["offers"][0]["keyword_keys"][0] in series_keys
 
 
 # ---------------------------------------------------------------------------

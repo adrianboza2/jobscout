@@ -3,6 +3,24 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-21 — dashboard redesign DR-6: speed pass
+
+Done (`odd/tasks/dashboard-redesign.md`, DR-6): the payload ships only what the
+page reads. `offer.keywords` (one entry per sighting, 59 % of the page) became
+`offer.keyword_keys`; `preference.schema`/`rules` and eight unread offer fields
+are gone. Page 2.16 → 0.77 MB; payload `JSON.parse` in node 18.9 → 6.0 ms. All
+steps of the redesign card are done.
+
+- **Lesson:** measure bytes per payload field before choosing what to trim: one
+  field held 59 % of the page, everything else together was a rounding error.
+- **Lesson:** a field rename is checked by replaying the old and new filter over
+  the same database copy (28 series, same offers matched), not only by the suite.
+- **Open (owner):** `offer.detail` (link evidence, 65 KB) has had no UI since
+  DR-3; dropping it removes a documented feature, so it waits for a decision.
+- **Open (owner):** first paint in a real browser was not measured;
+  `reports/dr6-antes.html` / `dr6-despues.html` are there for it.
+- **Next:** move the card to `odd/tasks/done/`, then the next card.
+
 ## Session 2026-10-20 (h) — dashboard redesign DR-5: decision + conditional export
 
 Done (`odd/tasks/dashboard-redesign.md`, DR-5): the header shows `Exportar N

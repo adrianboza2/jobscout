@@ -489,7 +489,8 @@ position; `none` = inventory with no order). The dashboard keyword analytics
 identify each series by `provider|keyword`: the cycle is provenance, not identity,
 so offers for the same `provider`/`keyword` seen across several cycles aggregate
 into one row and a shared filter key, while per-offer provenance keeps its actual
-`cycle_id`. The same term on LinkedIn, GetManfred, and Tecnoempleo is never
+`cycle_id` in SQLite. The dashboard embeds only each offer's distinct series keys
+(what the keyword filter reads), not one entry per sighting. The same term on LinkedIn, GetManfred, and Tecnoempleo is never
 merged. Cycles whose ID starts with `smoke` (trimmed, case-insensitive) are
 excluded from the analytics table; no rows or per-offer provenance are deleted.
 
