@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>jobscout — maqueta</title>
+<style>
+:root{
+  --paper:#f3f0e8; --sheet:#fbfaf6; --ink:#17160f; --ink-2:#55524a; --ink-3:#8a867b;
+  --rule:#d8d3c6; --rule-2:#e8e4d9;
+  --signal:#c8361b; --signal-wash:#f6e3dc;
+  --mid:#7a6a1f; --mid-wash:#f0ead2;
+  --low:#8a867b;
+  --serif:"Iowan Old Style","Charter","Georgia",serif;
+  --sans:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Mono",monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:14px/1.5 var(--sans)}
+.wrap{max-width:1280px;margin:0 auto;padding:0 32px}
+header{border-bottom:1px solid var(--ink);background:var(--paper);position:sticky;top:0;z-index:2}
+.mast{display:flex;align-items:baseline;gap:24px;padding:18px 0 10px}
+.mast h1{font:600 22px/1 var(--serif);margin:0;letter-spacing:-.01em}
+.status{font:12px/1.4 var(--mono);color:var(--ink-2);display:flex;gap:18px;margin-left:auto}
+.status b{color:var(--ink);font-weight:600}
+.status .bad{color:var(--signal)}
+nav{display:flex;gap:0;align-items:flex-end}
+nav button{all:unset;cursor:pointer;padding:8px 14px 9px;font:500 13px var(--sans);color:var(--ink-2);border-bottom:2px solid transparent}
+nav button[aria-selected=true]{color:var(--ink);border-color:var(--ink)}
+nav button .n{font:12px var(--mono);color:var(--ink-3);margin-left:6px}
+nav .spacer{flex:1}
+.export{all:unset;cursor:pointer;font:12px var(--mono);padding:6px 10px;border:1px solid var(--ink);margin-bottom:6px}
+.export:hover{background:var(--ink);color:var(--paper)}
+.toolbar{display:flex;gap:10px;align-items:center;padding:14px 0;border-bottom:1px solid var(--rule)}
+.toolbar input[type=search]{flex:1;max-width:360px;font:13px var(--sans);padding:7px 10px;border:1px solid var(--rule);background:var(--sheet);color:var(--ink)}
+.seg{display:flex;border:1px solid var(--rule)}
+.seg button{all:unset;cursor:pointer;padding:6px 10px;font:12px var(--sans);color:var(--ink-2);border-right:1px solid var(--rule);background:var(--sheet)}
+.seg button:last-child{border-right:0}
+.seg button[aria-pressed=true]{background:var(--ink);color:var(--paper)}
+select{font:12px var(--sans);padding:6px 8px;border:1px solid var(--rule);background:var(--sheet);color:var(--ink)}
+.toolbar .count{margin-left:auto;font:12px var(--mono);color:var(--ink-3)}
+/* rows */
+.list{margin:0;padding:0;list-style:none}
+.row{border-bottom:1px solid var(--rule)}
+.row summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:64px 1fr 190px 120px 80px 28px;gap:18px;align-items:center;padding:14px 8px}
+.row summary::-webkit-details-marker{display:none}
+.row summary:hover{background:var(--sheet)}
+.row summary:focus-visible{outline:2px solid var(--ink);outline-offset:-2px}
+.score{font:600 26px/1 var(--mono);font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+.score small{display:block;height:3px;margin-top:6px;background:var(--rule-2)}
+.score small i{display:block;height:100%;background:currentColor}
+.s-hi{color:var(--signal)} .s-mid{color:var(--mid)} .s-lo{color:var(--low)}
+.t{font:600 15px/1.3 var(--sans)}
+.c{color:var(--ink-2);font-size:13px;margin-top:2px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{font:11px/1 var(--mono);padding:4px 6px;border:1px solid var(--rule);color:var(--ink-2);text-transform:uppercase;letter-spacing:.04em}
+.chip.new{border-color:var(--signal);color:var(--signal)}
+.chip.rec-apply{background:var(--signal-wash);border-color:transparent;color:var(--signal)}
+.chip.rec-consider{background:var(--mid-wash);border-color:transparent;color:var(--mid)}
+.sal{font:13px var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+.sal em{display:block;font:11px var(--mono);font-style:normal;color:var(--ink-3)}
+.sal.unk{color:var(--ink-3)}
+.chip.flag{border-color:var(--mid);color:var(--mid)}
+.salbox{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13px;margin:0}
+.salbox dt{font:12px var(--mono);color:var(--ink-3)}
+.salbox dd{margin:0}
+.range{position:relative;height:6px;background:var(--rule-2);margin:10px 0 4px;max-width:360px}
+.range i{position:absolute;top:0;bottom:0;background:var(--ink)}
+.range b{position:absolute;top:-4px;width:2px;height:14px;background:var(--signal)}
+.age{font:12px var(--mono);color:var(--ink-3);text-align:right}
+.chev{color:var(--ink-3);transition:transform .15s}
+.row[open] .chev{transform:rotate(90deg)}
+.row[open] summary{background:var(--sheet)}
+/* expanded */
+.body{background:var(--sheet);padding:4px 8px 22px 90px;display:grid;grid-template-columns:1.1fr 1fr;gap:36px}
+h3{font:600 11px/1 var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--ink-3);margin:18px 0 10px}
+.why{font:16px/1.55 var(--serif);margin:0;max-width:62ch}
+.dims{display:grid;gap:12px}
+.dim{display:grid;grid-template-columns:110px 1fr 34px;gap:10px;align-items:start}
+.dim .k{font:12px var(--mono);color:var(--ink-2)}
+.dim .k em{display:block;font-style:normal;color:var(--ink-3);font-size:11px}
+.bar{height:6px;background:var(--rule-2);margin-top:5px}
+.bar i{display:block;height:100%;background:var(--ink)}
+.dim .v{font:12px var(--mono);text-align:right}
+.dim p{grid-column:2/4;margin:2px 0 0;font-size:13px;color:var(--ink-2)}
+.dim q{display:block;font:12px var(--mono);color:var(--ink-3);quotes:none;border-left:2px solid var(--rule);padding-left:8px;margin-top:4px}
+.lists{grid-column:1/3;display:grid;grid-template-columns:repeat(4,1fr);gap:24px;border-top:1px solid var(--rule);padding-top:4px}
+.lists ul{margin:0;padding-left:16px;font-size:13px;color:var(--ink-2)}
+.lists li{margin-bottom:4px}
+.lists .blk h3{color:var(--signal)}
+.foot{grid-column:1/3;display:flex;gap:18px;align-items:center;font:12px var(--mono);color:var(--ink-3);border-top:1px solid var(--rule);padding-top:12px}
+.foot a{color:var(--ink);margin-left:auto}
+.mini{all:unset;cursor:pointer;border:1px solid var(--rule);padding:3px 8px;font:12px var(--mono);color:var(--ink-2)}
+.mini:hover{border-color:var(--ink);color:var(--ink)}
+/* keywords */
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th{font:600 11px var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);text-align:left;padding:10px 8px;border-bottom:1px solid var(--ink);cursor:pointer}
+td{padding:10px 8px;border-bottom:1px solid var(--rule);font-variant-numeric:tabular-nums}
+td.num,th.num{text-align:right;font-family:var(--mono)}
+tr.retired td{color:var(--ink-3)}
+tr.retired td:first-child::after{content:" · retirada";font:11px var(--mono)}
+.note{font:12px var(--mono);color:var(--ink-3);padding:24px 0}
+[hidden]{display:none!important}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="mast">
+      <h1>jobscout</h1>
+      <div class="status">
+        <span>último sweep <b>19 oct, 07:00</b></span>
+        <span><b>21</b> nuevas</span>
+        <span><b>21/21</b> evaluadas</span>
+        <span>detalles pendientes <b>113</b></span>
+        <span class="bad">2 búsquedas fallidas</span>
+      </div>
+    </div>
+    <nav role="tablist">
+      <button role="tab" aria-selected="true" data-v="offers">Ofertas<span class="n">700</span></button>
+      <button role="tab" aria-selected="false" data-v="div">Discrepancias<span class="n">14</span></button>
+      <button role="tab" aria-selected="false" data-v="kw">Palabras clave<span class="n">22</span></button>
+      <button role="tab" aria-selected="false" data-v="gates" title="Reservada: punto 4 (gates FAIL/FLAG)">Vetos<span class="n">3</span></button>
+      <span class="spacer"></span>
+      <button class="export" title="Solo aparece si hay decisiones locales">Exportar 2 decisiones</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+<section data-view="offers">
+  <div class="toolbar">
+    <input type="search" placeholder="Buscar título, empresa, ubicación…">
+    <div class="seg"><button aria-pressed="true">Todas</button><button aria-pressed="false">Aplicar</button><button aria-pressed="false">Considerar</button><button aria-pressed="false">Descartar</button></div>
+    <div class="seg"><button aria-pressed="false">Solo nuevas</button></div>
+    <select><option>Score ≥ 0</option><option>≥ 50</option><option>≥ 70</option></select>
+    <select><option>Todas las keywords</option></select>
+    <select><option>Orden: score</option><option>Orden: más recientes</option></select>
+    <span class="count">700 ofertas</span>
+  </div>
+
+  <ul class="list">
+    <li><details class="row" open>
+      <summary>
+        <div class="score s-hi">82<small><i style="width:82%"></i></small></div>
+        <div><div class="t">Junior Cloud Security Engineer</div><div class="c">Empresa Ejemplo S.L. · Madrid · Híbrido</div></div>
+        <div class="chips"><span class="chip rec-apply">aplicar</span><span class="chip new">nueva</span></div>
+        <div class="sal">32–38K<em>indicado</em></div>
+        <div class="age">hace 2 d</div>
+        <div class="chev">›</div>
+      </summary>
+      <div class="body">
+        <div>
+          <h3>Justificación del modelo</h3>
+          <p class="why">Rol junior de seguridad cloud en Azure, con Madrid híbrido y sin exigir más de un año de experiencia. Encaja con el perfil en stack y ubicación; la única duda es la certificación AZ-500, que piden como deseable.</p>
+          <h3>Salario · bruto anual</h3>
+          <div class="range"><i style="left:20%;width:30%"></i><b style="left:30%"></b></div>
+          <dl class="salbox">
+            <dt>indicado</dt><dd>32–38K € (oferta, 14 pagas normalizado)</dd>
+            <dt>referencia</dt><dd>31–40K € · Manfred Guía Salarial 2026 · Security Engineer 2–5 años</dd>
+          </dl>
+        </div>
+        <div>
+          <h3>Desglose por dimensiones</h3>
+          <div class="dims">
+            <div class="dim"><div class="k">role_fit<em>peso 30%</em></div><div class="bar"><i style="width:90%"></i></div><div class="v">90</div>
+              <p>Seguridad cloud en Azure, foco DevSecOps.</p><q>“Diseñar controles de seguridad en Azure y pipelines CI/CD”</q></div>
+            <div class="dim"><div class="k">experience<em>peso 25%</em></div><div class="bar"><i style="width:80%"></i></div><div class="v">80</div>
+              <p>Pide 0–1 años; el perfil tiene 0,5.</p></div>
+            <div class="dim"><div class="k">location<em>peso 20%</em></div><div class="bar"><i style="width:95%"></i></div><div class="v">95</div>
+              <p>Madrid, 2 días de oficina.</p></div>
+            <div class="dim"><div class="k">stack<em>peso 25%</em></div><div class="bar"><i style="width:65%"></i></div><div class="v">65</div>
+              <p>Terraform y Azure sí; Sentinel no aparece en el perfil.</p></div>
+          </div>
+        </div>
+        <div class="lists">
+          <div><h3>Puntos fuertes</h3><ul><li>Azure + DevSecOps</li><li>Junior real (0–1 años)</li></ul></div>
+          <div><h3>Carencias</h3><ul><li>Sentinel / KQL</li><li>AZ-500 deseable</li></ul></div>
+          <div class="blk"><h3>Bloqueos</h3><ul><li>—</li></ul></div>
+          <div><h3>Incógnitas</h3><ul><li>Banda salarial exacta</li></ul></div>
+        </div>
+        <div class="foot">
+          <span>deepseek-v4.1-flash · confianza 0,78 · evaluada 19 oct</span>
+          <button class="mini">✓ aplicar</button><button class="mini">✕ descartar</button>
+          <a href="#">Ver la oferta ↗</a>
+        </div>
+      </div>
+    </details></li>
+
+    <li><details class="row">
+      <summary>
+        <div class="score s-mid">64<small><i style="width:64%"></i></small></div>
+        <div><div class="t">Platform Engineer (Kubernetes)</div><div class="c">Otra Empresa · Madrid · Remoto</div></div>
+        <div class="chips"><span class="chip rec-consider">considerar</span><span class="chip new">nueva</span><span class="chip flag">⚠ flag</span></div>
+        <div class="sal">41–55K<em>estimado</em></div>
+        <div class="age">hace 1 d</div>
+        <div class="chev">›</div>
+      </summary>
+    </details></li>
+
+    <li><details class="row">
+      <summary>
+        <div class="score s-mid">58<small><i style="width:58%"></i></small></div>
+        <div><div class="t">DevOps Engineer Junior</div><div class="c">Consultora Tres · Alcobendas</div></div>
+        <div class="chips"><span class="chip rec-consider">considerar</span></div>
+        <div class="sal unk">—<em>sin dato</em></div>
+        <div class="age">hace 6 d</div>
+        <div class="chev">›</div>
+      </summary>
+    </details></li>
+
+    <li><details class="row">
+      <summary>
+        <div class="score s-lo">21<small><i style="width:21%"></i></small></div>
+        <div><div class="t">Backend Engineer Node.js</div><div class="c">Startup Cuatro · Barcelona · Híbrido</div></div>
+        <div class="chips"><span class="chip">descartar</span></div>
+        <div class="sal">28–34K<em>estimado</em></div>
+        <div class="age">hace 9 d</div>
+        <div class="chev">›</div>
+      </summary>
+    </details></li>
+  </ul>
+</section>
+
+<section data-view="div" hidden>
+  <p class="note">Discrepancias: misma fila que Ofertas, con dos marcadores de score (heurístico · LLM) y la diferencia como criterio de orden; al final, una muestra de control de acuerdos. Llega con el punto 5 del roadmap (hoy no hay evaluaciones heurísticas guardadas).</p>
+</section>
+
+<section data-view="gates" hidden>
+  <p class="note">Vetos (punto 4): lista de ofertas con FLAG/FAIL y la cita de la oferta que lo dispara, para revisarlas en la sesión semanal. Llega con el punto 4.</p>
+</section>
+
+<section data-view="kw" hidden>
+  <table>
+    <thead><tr><th>Keyword</th><th>Proveedor</th><th class="num">Vistas</th><th class="num">Activas</th><th class="num">Score medio</th><th class="num">≥ 70</th><th class="num">Aplicadas</th></tr></thead>
+    <tbody>
+      <tr><td>Junior Cloud Security Engineer</td><td>LinkedIn</td><td class="num">118</td><td class="num">64</td><td class="num">57</td><td class="num">9</td><td class="num">2</td></tr>
+      <tr><td>DevSecOps Engineer</td><td>LinkedIn</td><td class="num">96</td><td class="num">51</td><td class="num">49</td><td class="num">5</td><td class="num">0</td></tr>
+      <tr class="retired"><td>Platform Engineer</td><td>Tecnoempleo</td><td class="num">12</td><td class="num">3</td><td class="num">31</td><td class="num">0</td><td class="num">0</td></tr>
+    </tbody>
+  </table>
+</section>
+</main>
+<script>
+document.querySelectorAll('nav [role=tab]').forEach(function(t){
+  t.addEventListener('click',function(){
+    document.querySelectorAll('nav [role=tab]').forEach(function(o){o.setAttribute('aria-selected',o===t)});
+    document.querySelectorAll('[data-view]').forEach(function(s){s.hidden=s.dataset.view!==t.dataset.v});
+  });
+});
+document.querySelectorAll('.seg').forEach(function(g){
+  g.addEventListener('click',function(e){
+    if(e.target.tagName!=='BUTTON')return;
+    if(g.children.length===1){e.target.setAttribute('aria-pressed',e.target.getAttribute('aria-pressed')!=='true');return}
+    [].forEach.call(g.children,function(b){b.setAttribute('aria-pressed',b===e.target)});
+  });
+});
+</script>
+</body>
+</html>

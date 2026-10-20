@@ -3,6 +3,23 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-20 (c) — dashboard redesign: scope and design agreed
+
+No code changed. The owner approved the redesign card
+`odd/tasks/dashboard-redesign.md` and its static mockup
+`odd/tasks/dashboard-redesign-mockup.html` (synthetic data).
+
+- **Owner decisions:** desktop only; light theme only (tokens leave room for
+  dark mode later); apply/reject kept minimal; the visual system is
+  written into the card (inspired by design-taste and Ramp's refero
+  DESIGN.md, no package or web font adopted).
+- **Finding, not investigated yet (owner):** only 5 of 700 active offers
+  have a non-empty `dimensions_json` in their latest evaluation; none was
+  written after 2026-10-01.
+- **Finding:** no heuristic evaluations are stored (all 3,207 are
+  `opencode`), so the divergence view (item 5) needs its backend first.
+- **Next:** DR-1 (payload only) in a new session.
+
 ## Session 2026-10-20 (b) — sweep fixes: retirements, LinkedIn pagination, detail backlog
 
 Done:
@@ -149,7 +166,8 @@ May–June 2027; no post-application outcome tracking for now.
    top of the current one; items 1 and 5 should land in the new UI, not the
    old one. Contract unchanged: self-contained, offline, safe over `file://`,
    feedback still exported through `import-feedback`. Scope and design to be
-   agreed with the owner before any code.
+   agreed with the owner before any code; agreed 2026-10-20, see
+   `odd/tasks/dashboard-redesign.md` (steps DR-1..DR-6).
 
 ### Carried-over priorities (unchanged, still first if a sweep session comes)
 
