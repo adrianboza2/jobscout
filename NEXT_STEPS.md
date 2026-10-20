@@ -23,7 +23,13 @@ Done:
   sweep's "no human decision" block and its Telegram delivery are removed.
   Watch: the pending count in the next sweep logs should fall.
 
-Owner decisions: keep the 8 s pacing; the `*/3` day-of-month cron quirk (day 31
+Owner decisions: the OpenCode Console API key is renewed (2026-10-20); the
+roadmap's "unknown profile-key warnings" (2026-10-18 item 2) is dropped:
+`profile.yaml` is only ever edited by an AI agent working from
+`profile.example.yaml`, so typos are unlikely. Its only unknown key, `source`
+(provenance note, never used by the scorer), was moved into the file's header
+comment while every offer is already pending re-score after the model change.
+Keep the 8 s pacing; the `*/3` day-of-month cron quirk (day 31
 and day 1 run 24 h apart) is accepted; no Telegram notification from the sweep.
 
 Pending, owner to decide (not started):
@@ -65,8 +71,7 @@ it as `fallback_model`. The READMEs are updated.
 
 - **Owner decision:** primary `opencode/deepseek-v4.1-flash-free`, fallback
   `opencode-go/deepseek-v4.1-flash#low`.
-- **Owner pending:** renew the OpenCode Console API key (expired 2026-10-20);
-  then confirm the free model accepts the `low` variant.
+- **Owner pending:** ~~renew the OpenCode Console API key~~ (done 2026-10-20).
 - **Structure:** the empty `openspec/` directory is removed; closed task cards
   now live under `odd/tasks/done/`.
 - **Confirmed:** the salary estimator described below is NOT implemented; it
@@ -99,7 +104,7 @@ May–June 2027; no post-application outcome tracking for now.
 1. **Expandable offer row** (dashboard render only). `dashboard.py` renders,
    per offer, the data `evaluations` already stores: dimension breakdown,
    strengths, gaps, rationale. No schema, scoring, or LLM change.
-2. **Unknown profile-key warnings.** `scoring/profile.py` warns at load time
+2. **(Dropped 2026-10-20, see the session above.) Unknown profile-key warnings.** `scoring/profile.py` warns at load time
    using `difflib.get_close_matches` (stdlib): near-miss of a known field →
    `"unknown key 'profile.deal_breakerss' — did you mean 'deal_breakers'?"`;
    far-miss keys → one collapsed summary line. Warnings go to stderr on every
