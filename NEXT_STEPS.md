@@ -31,6 +31,17 @@ working MVP.
   primary and deepseek-v4.1-flash-free as fallback (quality over speed).
 - **Glassdoor/Indeed:** not queried per offer (the scorer never fetches);
   Indeed showed no pay on Madrid junior listings.
+- **Re-score with the estimator (12:05–20:32):** 582 offers without stated pay
+  (the 118 with a salary, mostly GetManfred, were skipped). 375 longcat until
+  its free quota ran out (`provider.quota: Endpoint is unavailable`, ~18:47),
+  31 deepseek, 176 minimax after deepseek's first error; 0 left. The sweep
+  will re-score the 207 non-longcat ones with longcat over the next cycles.
+- **Next:**
+  1. Re-run the model benchmark with longcat now that `bench.py` migrates its
+     DB copy (the earlier run scored 0/30 for that reason).
+  2. LinkedIn detail adapter: extract a salary written in the description
+     (e.g. Dempo's "€25,000 – €35,000") into `jobs.salary`. Needs live markup
+     captured once and pushed through the parser offline.
 
 ## Session 2026-10-21 (c) — dashboard DR-7: closer to the mockup
 
