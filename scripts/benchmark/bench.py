@@ -10,7 +10,7 @@ REPO = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO / "src"))
 from jobscout.config import Settings
-from jobscout.db import connect, get_job
+from jobscout.db import connect, get_job, init_db
 from jobscout.scoring import evaluate_job, load_profile
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -42,6 +42,8 @@ plan += [(g, i, "contrast", 1) for g, i in [("A", i) for i in sel["A"]]]
 plan += [("A", i, "real", 2) for i in sel["A"][:4]]
 
 conn = connect(db_copy)
+# The copy may predate a schema migration; bring it up to date before scoring.
+init_db(conn)
 with open(out_dir / f"{slug}.jsonl", "w") as out:
     for group, job_id, prof, rep in plan:
         job = get_job(conn, job_id)
