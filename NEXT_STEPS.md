@@ -3,6 +3,35 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-21 (d) — salary estimate in the OpenCode prompt, profile skills
+
+- **Overnight re-score:** all 700 active offers scored 01:03–04:04 (452 primary,
+  248 longcat after one primary error, 0 left), dashboard regenerated.
+- **Profile (owner, reverses the sep-2026 "no skills" decision):**
+  `must_have_skills` Azure, Linux, Python, Git, Networking, GitHub Actions,
+  CI/CD; `nice_to_have_skills` Docker, Terraform, Kubernetes, Prometheus,
+  Grafana, Bash, PowerShell, Microsoft Sentinel, Microsoft Entra ID;
+  `require_all_must_have` stays false; `salary_currency: EUR`.
+- **Salary estimate (roadmap item 3, owner redesign):** no fixed table. The
+  model estimates low/mid/high gross annual EUR, `employer_tier` (six tiers
+  after Manfred's hexamodal distribution) and a one-line basis, guided by
+  `SALARY_ESTIMATE_GUIDE` in `scoring/opencode.py`: tier bands, Manfred 2026
+  role anchors, Nothiring Aug-2026 medians, stated-pay offers in our own DB,
+  the five weighted factors (employer 30, stack 25, English 20, experience 15,
+  on-call/onsite 10). Informational only: it never changes the score
+  (owner). Prompt version `opencode-v6-salary-estimate`; DB schema v7 adds
+  five nullable columns to `evaluations`. Dashboard: stated salary green,
+  otherwise `≈ low–high k` grey "estimado"; the body shows the range, the
+  tier and the basis.
+- **Live probe (DB copy, 10 offers):** Devoteam junior DevOps 22–27k,
+  Accenture Azure migration analyst 22–27k, Dempo junior cloud 25–35k (read
+  from the description; `jobs.salary` was empty), Mapfre mid platform
+  34–43k, Nubosas stated 23–26k respected.
+- **Models (owner, permanent):** `.env` now has longcat-2.5-preview-free as
+  primary and deepseek-v4.1-flash-free as fallback (quality over speed).
+- **Glassdoor/Indeed:** not queried per offer (the scorer never fetches);
+  Indeed showed no pay on Madrid junior listings.
+
 ## Session 2026-10-21 (c) — dashboard DR-7: closer to the mockup
 
 - **Why:** the owner still found the mockup prettier than DR-6. Cause: the
@@ -22,7 +51,7 @@ working MVP.
 - **Verified:** full suite, plus headless Chromium screenshots (scratchpad
   Playwright, not a project dependency). Report grows to ~940 KB.
 - **Open:** the page is still not usable at phone width (row grid squeezes);
-  the salary estimator (roadmap item 3) is still not implemented.
+  the salary estimator was implemented in session (d).
 
 ## Session 2026-10-21 (b) — scoring diagnosis, DP card audit
 

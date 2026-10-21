@@ -205,6 +205,12 @@ descartar** (el motivo, de hasta 500 caracteres, se abre al elegir) y **Ver la
 oferta ↗**. Los avisos del
 informe son líneas discretas al final, junto a los metadatos.
 
+El salario indicado por la oferta se muestra en verde y con la etiqueta
+`indicado`. Cuando la oferta no lo indica, la fila muestra la estimación del
+modelo en gris, precedida de `≈` y con la etiqueta `estimado`: es un bruto anual
+orientativo para España, solo informativo, y nunca cambia el score ni la
+recomendación.
+
 ```bash
 # POSIX
 python -m jobscout dashboard --output reports/jobscout-dashboard.html

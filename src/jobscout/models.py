@@ -444,6 +444,14 @@ class Evaluation:
     gaps: list[str] = field(default_factory=list)
     unknowns: list[str] = field(default_factory=list)
     rationale: str = ""
+    #: OpenCode's optional, informational salary estimate in gross annual EUR
+    #: (Spain). The triple is either complete or entirely ``None``; it never
+    #: participates in scoring or in the successful-evaluation contract.
+    salary_estimate_low: int | None = None
+    salary_estimate_mid: int | None = None
+    salary_estimate_high: int | None = None
+    employer_tier: str | None = None
+    salary_basis: str | None = None
     status: EvaluationStatus | str = EvaluationStatus.OK
     error: str | None = None
     model: str | None = None
@@ -468,6 +476,11 @@ class Evaluation:
             "gaps": list(self.gaps),
             "unknowns": list(self.unknowns),
             "rationale": self.rationale,
+            "salary_estimate_low": self.salary_estimate_low,
+            "salary_estimate_mid": self.salary_estimate_mid,
+            "salary_estimate_high": self.salary_estimate_high,
+            "employer_tier": self.employer_tier,
+            "salary_basis": self.salary_basis,
             "status": str(self.status),
             "error": self.error,
             "model": self.model,

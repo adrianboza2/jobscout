@@ -319,6 +319,28 @@ def _salary(value: Any) -> str | None:
     return collapsed or None
 
 
+def _salary_est(row: sqlite3.Row) -> list[Any] | None:
+    """The compact ``[low, mid, high, tier, basis]`` estimate, or ``None``.
+
+    The triple is stored complete or entirely ``NULL``; the check keeps the
+    client payload in its existing compact style and never invents a range.
+    """
+    low = row["salary_estimate_low"]
+    mid = row["salary_estimate_mid"]
+    high = row["salary_estimate_high"]
+    if low is None or mid is None or high is None:
+        return None
+    tier = row["employer_tier"]
+    basis = row["salary_basis"]
+    return [
+        int(low),
+        int(mid),
+        int(high),
+        str(tier) if tier else None,
+        str(basis) if basis else None,
+    ]
+
+
 def _dimensions(value: Any) -> list[dict[str, Any]]:
     """Parse ``dimensions_json`` without inventing a score for a broken entry.
 
@@ -414,6 +436,11 @@ def _fetch_active_jobs(
                e.gaps_json AS gaps_json,
                e.blockers_json AS blockers_json,
                e.unknowns_json AS unknowns_json,
+               e.salary_estimate_low AS salary_estimate_low,
+               e.salary_estimate_mid AS salary_estimate_mid,
+               e.salary_estimate_high AS salary_estimate_high,
+               e.employer_tier AS employer_tier,
+               e.salary_basis AS salary_basis,
                e.rationale AS rationale,
                e.model AS model,
                e.created_at AS evaluated_at,
@@ -997,6 +1024,7 @@ def build_payload(
                 "is_new": _is_new(first_seen_at, last_sweep_at),
                 "age_days": age_days,
                 "salary": _salary(row["salary"]),
+                "salary_est": _salary_est(row),
                 "score": round(float(score), 2) if score is not None else None,
                 "recommendation": (
                     str(row["recommendation"])
@@ -1549,14 +1577,15 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 .sal em { display:block; font-family:var(--mono); font-size:var(--fs-11); font-style:normal;
   font-weight:400; color:var(--ink-3); }
 .sal.unk { color:var(--ink-3); font-weight:400; }
-/* Reserved for a future estimated-salary source: the figure stays neutral and is
-   marked with "≈" plus the "estimado" label, never mixed with a stated salary. */
+/* The OpenCode estimate stays neutral and is marked with "≈" plus the
+   "estimado" label, never mixed with a stated salary. */
 .sal.est { color:var(--ink-3); font-weight:400; }
 .sal.est::before { content:"\\2248 "; }
 .salbox { display:grid; grid-template-columns:auto 1fr; gap:var(--sp-4) var(--sp-16); font-size:var(--fs-13); margin:0; }
 .salbox dt { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); }
 .salbox dd { margin:0; }
 .salbox dd.sal-stated { color:var(--money); font-weight:600; }
+.salbox dd.sal-est .tier, .salbox dd.sal-est .basis { color:var(--ink-3); font-size:var(--fs-12); margin-top:var(--sp-2); }
 .age { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); text-align:right; font-variant-numeric:tabular-nums; }
 .chev { color:var(--ink-3); transition:transform .15s; }
 .row[open] .chev { transform:rotate(90deg); }
@@ -1718,6 +1747,34 @@ _SCRIPT = r"""
     if (className) { node.className = className; }
     if (text !== undefined && text !== null) { node.textContent = String(text); }
     return node;
+  }
+
+  // Salary estimates are informational only. The row keeps the compact
+  // "22–28k" style, while the expanded body spells whole euros with Spanish
+  // thousands dots.
+  var EMPLOYER_TIER_LABELS = {
+    consultora_pequena: "consultora pequeña / pyme",
+    consultora_grande: "gran consultora / corporación",
+    startup: "startup de producto",
+    scaleup_nacional: "scale-up nacional",
+    internacional: "internacional / remoto global",
+    big_tech: "big tech"
+  };
+
+  function salaryThousands(value) {
+    return String(Math.round(Number(value))).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  }
+
+  function salaryRangeK(estimate) {
+    function compact(value) {
+      return String(Math.round(Number(value) / 100) / 10).replace(".", ",");
+    }
+    return compact(estimate[0]) + "\u2013" + compact(estimate[2]) + "k";
+  }
+
+  function salaryEstimateText(estimate) {
+    return salaryThousands(estimate[0]) + " \u2013 " + salaryThousands(estimate[2]) +
+      " \u20ac \u00b7 probable " + salaryThousands(estimate[1]) + " \u20ac";
   }
 
   // Defence in depth: the Python side already drops non-http(s) URLs, but never
@@ -2129,6 +2186,9 @@ _SCRIPT = r"""
     if (offer.salary) {
       salaryNode = el("div", "sal", offer.salary);
       salaryNode.appendChild(el("em", null, "indicado"));
+    } else if (offer.salary_est) {
+      salaryNode = el("div", "sal est", salaryRangeK(offer.salary_est));
+      salaryNode.appendChild(el("em", null, "estimado"));
     } else {
       salaryNode = el("div", "sal unk", "\u2014");
       salaryNode.appendChild(el("em", null, "sin dato"));
@@ -2165,11 +2225,27 @@ _SCRIPT = r"""
     } else {
       left.appendChild(el("p", "why muted", "sin justificación"));
     }
-    if (offer.salary) {
+    if (offer.salary || offer.salary_est) {
       left.appendChild(el("h3", null, "Salario · bruto anual"));
       var salaryBox = el("dl", "salbox");
-      salaryBox.appendChild(el("dt", null, "indicado"));
-      salaryBox.appendChild(el("dd", "sal-stated", offer.salary));
+      if (offer.salary) {
+        salaryBox.appendChild(el("dt", null, "indicado"));
+        salaryBox.appendChild(el("dd", "sal-stated", offer.salary));
+      }
+      if (offer.salary_est) {
+        salaryBox.appendChild(el("dt", null, "estimado"));
+        var estimateNode = el("dd", "sal-est", salaryEstimateText(offer.salary_est));
+        var tier = offer.salary_est[3];
+        var basis = offer.salary_est[4];
+        if (tier) {
+          estimateNode.appendChild(el("div", "tier",
+            EMPLOYER_TIER_LABELS[tier] || tier));
+        }
+        if (basis) {
+          estimateNode.appendChild(el("div", "basis", basis));
+        }
+        salaryBox.appendChild(estimateNode);
+      }
       left.appendChild(salaryBox);
     }
     if (!dims.length) {

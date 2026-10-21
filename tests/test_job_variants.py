@@ -9,6 +9,7 @@ from __future__ import annotations
 from jobscout.collectors.linkedin_details import DetailItem, DetailResult
 from jobscout.db import (
     SCHEMA_SQL,
+    SCHEMA_VERSION,
     _sync_job_active,
     active_variants,
     connect,
@@ -172,8 +173,8 @@ def test_v6_upgrade_backfills_one_variant_per_job_and_keeps_history() -> None:
         )
 
         assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
-        assert init_db(connection) == 6
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
+        assert init_db(connection) == SCHEMA_VERSION
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
         # Exactly one variant per legacy job; no extra rows are invented.
         assert count_jobs(connection) == 3
@@ -201,7 +202,7 @@ def test_v6_upgrade_backfills_one_variant_per_job_and_keeps_history() -> None:
         assert flagged_source.source == ""
 
         # The migration is idempotent: a second init adds nothing.
-        assert init_db(connection) == 6
+        assert init_db(connection) == SCHEMA_VERSION
         assert len(job_variants_for_job(connection, resolved)) == 1
         assert len(job_variants_for_job(connection, unresolved)) == 1
     finally:
@@ -253,8 +254,8 @@ def test_v6_upgrade_adds_variant_id_column_without_rewriting_legacy_fetches() ->
 
 
 def test_fresh_database_migration_is_idempotent(conn) -> None:
-    assert init_db(conn) == 6
-    assert init_db(conn) == 6
+    assert init_db(conn) == SCHEMA_VERSION
+    assert init_db(conn) == SCHEMA_VERSION
     assert job_variants_for_job(conn, 1) == []
     assert (
         conn.execute(

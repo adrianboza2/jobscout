@@ -50,6 +50,30 @@ _GAP_ALIASES = ("gaps", "cons", "negatives", "shortfalls")
 _UNKNOWN_ALIASES = ("unknowns", "uncertainties", "open_questions")
 _RATIONALE_ALIASES = ("rationale", "reasoning", "summary", "explanation")
 
+# The OpenCode scorer's optional salary estimate. These keys are part of the
+# accepted payload shape but never affect the score, the recommendation, or the
+# parse status: a missing or invalid estimate is simply absent.
+_SALARY_KEYS = (
+    "salary_estimate_low",
+    "salary_estimate_mid",
+    "salary_estimate_high",
+    "employer_tier",
+    "salary_basis",
+)
+_SALARY_MIN_EUR = 8_000
+_SALARY_MAX_EUR = 400_000
+_SALARY_BASIS_MAX_CHARS = 160
+_EMPLOYER_TIERS = frozenset(
+    {
+        "consultora_pequena",
+        "consultora_grande",
+        "startup",
+        "scaleup_nacional",
+        "internacional",
+        "big_tech",
+    }
+)
+
 _MAX_RAW_CHARS = 200_000
 _MAX_STRING_CHARS = 4_000
 _MAX_LIST_ITEMS = 50
@@ -187,6 +211,54 @@ def _coerce_confidence(value: Any, *, repairs: list[str]) -> float:
         number = 1.0
         repairs.append("confidence: value above 1 clamped to 1")
     return round(number, 3)
+
+
+def _coerce_salary_amount(value: Any) -> int | None:
+    """Whole euros from an int, float, or ``"24000"``/``"24k"`` string."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return int(round(float(value)))
+    if isinstance(value, str):
+        match = re.search(r"(\d+(?:[.,]\d+)?)\s*([kK])?", value.replace("\u20ac", ""))
+        if match is None:
+            return None
+        number = float(match.group(1).replace(",", "."))
+        if match.group(2):
+            number *= 1000
+        return int(round(number))
+    return None
+
+
+def _salary_estimate_fields(data: dict[str, Any]) -> dict[str, Any]:
+    """Validate the optional salary estimate without turning bad data into repairs."""
+    low = _coerce_salary_amount(data.get("salary_estimate_low"))
+    mid = _coerce_salary_amount(data.get("salary_estimate_mid"))
+    high = _coerce_salary_amount(data.get("salary_estimate_high"))
+    valid_triple = (
+        low is not None
+        and mid is not None
+        and high is not None
+        and all(_SALARY_MIN_EUR <= amount <= _SALARY_MAX_EUR for amount in (low, mid, high))
+        and low <= mid <= high
+    )
+    if not valid_triple:
+        low = mid = high = None
+
+    tier_value = data.get("employer_tier")
+    tier = str(tier_value).strip() if tier_value is not None else ""
+    if tier not in _EMPLOYER_TIERS:
+        tier = ""
+
+    basis_value = data.get("salary_basis")
+    basis = str(basis_value).strip() if basis_value is not None else ""
+    return {
+        "salary_estimate_low": low,
+        "salary_estimate_mid": mid,
+        "salary_estimate_high": high,
+        "employer_tier": tier or None,
+        "salary_basis": basis[:_SALARY_BASIS_MAX_CHARS] or None,
+    }
 
 
 def _coerce_str_list(value: Any, *, field_name: str, repairs: list[str]) -> list[str]:
@@ -346,6 +418,8 @@ def validate_payload(data: Any, *, strict: bool = False) -> ParseOutcome:
     if rationale_key and rationale_key != "rationale":
         repairs.append(f"rationale: read from alias '{rationale_key}'")
 
+    payload.update(_salary_estimate_fields(data))
+
     recommendation_value, _ = _find(data, ("recommendation", "verdict", "decision"))
     recommendation = str(recommendation_value or "").strip().lower().replace(" ", "_")
     if recommendation in _RECOMMENDATION_ALIASES:
@@ -368,6 +442,7 @@ def validate_payload(data: Any, *, strict: bool = False) -> ParseOutcome:
         *_UNKNOWN_ALIASES,
         *_CONFIDENCE_ALIASES,
         *_RATIONALE_ALIASES,
+        *_SALARY_KEYS,
         "recommendation",
         "verdict",
         "decision",

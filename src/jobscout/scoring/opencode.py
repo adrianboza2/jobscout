@@ -85,7 +85,7 @@ from .profile import Profile
 from .schema import parse_llm_evaluation, success_contract_errors
 
 SCORER_NAME = ScorerName.OPENCODE
-OPENCODE_PROMPT_VERSION = "opencode-v5-seniority-aware"
+OPENCODE_PROMPT_VERSION = "opencode-v6-salary-estimate"
 OPENCODE_MAX_JOB_TEXT_CHARS = 6_000
 MAX_ERROR_CHARS = 500
 
@@ -151,8 +151,11 @@ OPENCODE_OUTPUT_CONTRACT = (
     "- Reply with exactly one JSON object and nothing else. No prose, no\n"
     "  markdown fences, and no commentary before or after the object.\n"
     "- Return only these keys: overall_score, recommendation, confidence,\n"
-    "  and rationale. Do not return dimensions, blockers, strengths, gaps,\n"
-    "  unknowns, evidence, or any other keys.\n"
+    "  rationale, salary_estimate_low, salary_estimate_mid,\n"
+    "  salary_estimate_high, employer_tier, salary_basis. Do not return\n"
+    "  dimensions, blockers, strengths, gaps, unknowns, evidence, or any other\n"
+    "  keys.\n"
+    "- The salary keys never change overall_score or recommendation.\n"
     "- Use one numeric overall_score from 0 to 100, one recommendation from\n"
     "  apply, consider, or skip, and confidence from 0 to 1. Never answer\n"
     "  need_more_info, and never return an empty or placeholder score: a 0 is\n"
@@ -181,6 +184,48 @@ OPENCODE_OUTPUT_CONTRACT = (
 )
 
 
+# The salary estimate is informational and deliberately separated from the
+# score. Keeping its rubric in one constant makes the prompt version auditable
+# and leaves the scoring rules above untouched.
+SALARY_ESTIMATE_GUIDE = """
+
+SALARY ESTIMATE (gross annual EUR, Spain, centred on Madrid):
+- Estimate what THIS offer realistically pays for the role and level it describes, not what
+  the candidate is worth. Be brutally realistic: most junior offers in Madrid pay 20-28k,
+  advertised ranges skew high, and generic portal averages are inflated.
+- If the posting states a salary, base the range on it (convert monthly to annual: x14 for
+  Spanish monthly pay unless 12 payments are stated).
+- First classify employer_tier, then pick the band, then adjust. Approximate weight of each
+  factor in the final figure: employer type 30%, tech stack and niche 25%, English and
+  international exposure 20%, experience and seniority demanded 15%, on-call and office
+  presence 10%.
+- employer_tier bands (junior <2y / mid 2-5y / senior 5y+):
+  consultora_pequena (small consultancy, staffing "carnica", local SME, IT support company):
+    17-24k / 26-35k / 35-45k. N1 helpdesk or 24x7 operator at an SME: 16-21k.
+  consultora_grande (Accenture, NTT Data, Capgemini, Devoteam, Sopra Steria, Indra; banks,
+    insurers, telcos, utilities such as Mapfre, BBVA, Telefonica): 22-27k / 30-42k / 42-60k.
+  startup (national product startup, early or growth stage): 25-32k / 38-50k / 50-70k.
+  scaleup_nacional (Series B/C national scale-up: Factorial, Cabify, Glovo, Fever):
+    30-38k / 45-60k / 60-90k.
+  internacional (international scale-up or global SaaS hiring in Spain or fully remote for a
+    foreign company): 38-50k / 55-80k / 90-150k.
+  big_tech (Google, Amazon, Microsoft, Meta, OpenAI): base 50-70k junior, 130k+ senior.
+- Role anchors in Spain (Manfred salary guide 2026): SRE/DevOps <2y 25-35k, 2-5y 36-45k,
+  5-10y 46-60k; SysAdmin <2y 20-25k, 2-5y 26-35k; Security engineer <2y 25-30k, 2-5y 31-40k,
+  5-10y 41-55k. Market medians from offers that state pay: DevOps/Platform 50k, Security 50k
+  (mostly mid and senior roles). Offers seen with stated pay: junior DevOps at small
+  companies 23-30k, junior SRE at a product company 35-45k, mid DevOps 40-52k, senior DevOps
+  or Platform 55-80k.
+- Adjustments: on-call or 24x7 availability +3-6k; mandatory 100% onsite +10-20%; required
+  fluent English or an international team moves the figure to the top of the band;
+  Kubernetes, Terraform, cloud security or production on-call responsibility move it up;
+  ticket-driven support, L1 operation or "cloud" titles that are really support move it down.
+- salary_estimate_low <= salary_estimate_mid <= salary_estimate_high, whole euros. mid is the
+  most likely figure. salary_basis: one short sentence (max 160 chars) naming the tier, level
+  and the main adjustment.
+"""
+
+
 def build_cli_prompt(job: Any, profile: Profile) -> str:
     """Compose the hardened scoring messages into a single CLI prompt.
 
@@ -196,7 +241,7 @@ def build_cli_prompt(job: Any, profile: Profile) -> str:
     composed = "\n\n".join(
         f"{message['role'].upper()}:\n{message['content']}" for message in messages
     )
-    return composed + OPENCODE_OUTPUT_CONTRACT
+    return composed + OPENCODE_OUTPUT_CONTRACT + SALARY_ESTIMATE_GUIDE
 
 
 def effective_prompt_version(settings: Settings) -> str:
@@ -836,6 +881,11 @@ class OpenCodeScorer:
             gaps=list(payload.get("gaps") or []),
             unknowns=list(payload.get("unknowns") or []),
             rationale=rationale,
+            salary_estimate_low=payload.get("salary_estimate_low"),
+            salary_estimate_mid=payload.get("salary_estimate_mid"),
+            salary_estimate_high=payload.get("salary_estimate_high"),
+            employer_tier=payload.get("employer_tier"),
+            salary_basis=payload.get("salary_basis"),
             status=EvaluationStatus.OK,
             model=response.model,
             prompt_version=recorded_prompt_version,

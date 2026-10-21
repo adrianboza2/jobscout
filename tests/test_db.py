@@ -168,6 +168,43 @@ def _create_v4_database(path: Path) -> sqlite3.Connection:
     return connection
 
 
+#: The historical v6 shape of ``evaluations`` (no salary-estimate columns).
+V6_EVALUATIONS_SQL = """
+CREATE TABLE evaluations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    scorer TEXT NOT NULL,
+    model TEXT,
+    prompt_version TEXT,
+    profile_id INTEGER REFERENCES profiles(id) ON DELETE SET NULL,
+    overall_score REAL,
+    recommendation TEXT NOT NULL DEFAULT 'need_more_info',
+    confidence REAL NOT NULL DEFAULT 0.0,
+    dimensions_json TEXT NOT NULL DEFAULT '[]',
+    blockers_json TEXT NOT NULL DEFAULT '[]',
+    strengths_json TEXT NOT NULL DEFAULT '[]',
+    gaps_json TEXT NOT NULL DEFAULT '[]',
+    unknowns_json TEXT NOT NULL DEFAULT '[]',
+    rationale TEXT,
+    status TEXT NOT NULL DEFAULT 'ok',
+    error TEXT,
+    raw_document_id INTEGER REFERENCES raw_documents(id) ON DELETE SET NULL,
+    input_fingerprint TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+"""
+
+
+def _create_v6_database(path: Path) -> sqlite3.Connection:
+    """Build a database that looks like a real pre-v7 install."""
+    connection = connect(path)
+    connection.executescript(SCHEMA_SQL)
+    connection.executescript("DROP TABLE evaluations;" + V6_EVALUATIONS_SQL)
+    connection.execute("PRAGMA user_version = 6")
+    connection.commit()
+    return connection
+
+
 def _columns(connection: sqlite3.Connection, table: str) -> dict[str, int]:
     """Column name -> ``notnull`` flag, for schema-shape assertions."""
     return {
@@ -212,7 +249,7 @@ def test_init_db_rejects_newer_schema(conn) -> None:
 
 
 def test_new_database_has_nullable_migration_columns(conn) -> None:
-    assert SCHEMA_VERSION == 6
+    assert SCHEMA_VERSION == 7
     columns = _columns(conn, "job_detail_fetches")
     assert "final_url" in columns
     # Nullable: a fresh install never invents a redirect target.
@@ -220,6 +257,17 @@ def test_new_database_has_nullable_migration_columns(conn) -> None:
     # The variant link is additive and nullable; a fresh row may omit it.
     assert "variant_id" in columns
     assert columns["variant_id"] == 0
+    # The salary estimate is optional on every evaluation.
+    evaluation_columns = _columns(conn, "evaluations")
+    for name in (
+        "salary_estimate_low",
+        "salary_estimate_mid",
+        "salary_estimate_high",
+        "employer_tier",
+        "salary_basis",
+    ):
+        assert name in evaluation_columns, name
+        assert evaluation_columns[name] == 0, name
 
 
 def test_migration_v4_adds_final_url_without_losing_history(tmp_path: Path) -> None:
@@ -354,6 +402,91 @@ def test_migration_v5_adds_cycle_and_position_without_losing_history(
         ).fetchone()
         assert item["position_kind"] is None
         assert item["rank_in_run"] == 3
+    finally:
+        connection.close()
+
+
+def test_migration_v7_adds_salary_estimate_columns_and_round_trips_values(
+    tmp_path: Path,
+) -> None:
+    connection = _create_v6_database(tmp_path / "legacy-v6.sqlite3")
+    try:
+        job, _ = store_posting(
+            connection,
+            _posting(source_job_id="3933333333"),
+            now="2026-09-15T10:00:00Z",
+        )
+        connection.execute(
+            """
+            INSERT INTO evaluations (
+                job_id, scorer, overall_score, recommendation, confidence,
+                dimensions_json, blockers_json, strengths_json, gaps_json,
+                unknowns_json, rationale, status, created_at
+            ) VALUES (?, 'heuristic', 80, 'apply', 0.7, '[]', '[]', '[]', '[]',
+                      '[]', 'legacy row', 'ok', ?)
+            """,
+            (job.id, "2026-09-15T10:00:00Z"),
+        )
+        connection.commit()
+
+        # The pre-migration table genuinely lacks the new columns.
+        for name in (
+            "salary_estimate_low",
+            "salary_estimate_mid",
+            "salary_estimate_high",
+            "employer_tier",
+            "salary_basis",
+        ):
+            assert name not in _columns(connection, "evaluations")
+
+        assert init_db(connection) == SCHEMA_VERSION
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        migrated = _columns(connection, "evaluations")
+        for name in (
+            "salary_estimate_low",
+            "salary_estimate_mid",
+            "salary_estimate_high",
+            "employer_tier",
+            "salary_basis",
+        ):
+            assert name in migrated, name
+            assert migrated[name] == 0, name
+
+        # Re-running init_db is a no-op, not a second migration.
+        assert init_db(connection) == SCHEMA_VERSION
+
+        # Historical rows survive as NULL; no estimate is backfilled.
+        legacy = latest_evaluation(connection, job.id)
+        assert legacy is not None
+        assert legacy.overall_score == 80
+        assert legacy.salary_estimate_low is None
+        assert legacy.salary_estimate_mid is None
+        assert legacy.salary_estimate_high is None
+        assert legacy.employer_tier is None
+        assert legacy.salary_basis is None
+
+        # New evaluations round-trip every salary-estimate value.
+        insert_evaluation(
+            connection,
+            Evaluation(
+                job_id=job.id,
+                scorer=ScorerName.OPENCODE,
+                overall_score=85,
+                recommendation=Recommendation.APPLY,
+                salary_estimate_low=22_000,
+                salary_estimate_mid=25_000,
+                salary_estimate_high=28_000,
+                employer_tier="consultora_grande",
+                salary_basis="Gran consultora, nivel junior.",
+            ),
+        )
+        stored = latest_evaluation(connection, job.id)
+        assert stored is not None
+        assert stored.salary_estimate_low == 22_000
+        assert stored.salary_estimate_mid == 25_000
+        assert stored.salary_estimate_high == 28_000
+        assert stored.employer_tier == "consultora_grande"
+        assert stored.salary_basis == "Gran consultora, nivel junior."
     finally:
         connection.close()
 

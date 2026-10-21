@@ -1325,6 +1325,39 @@ def test_salary_is_collapsed_or_none(dr1_db: Path) -> None:
     assert offers[jobs["d"]]["salary"] == "€35 -45K"
 
 
+def test_salary_estimate_ships_compact_or_null(dr1_db: Path) -> None:
+    """The model's estimate ships as [low, mid, high, tier, basis], else null."""
+    jobs = _seed_dr1_db_ids(dr1_db)
+    conn = connect(dr1_db)
+    try:
+        insert_evaluation(
+            conn,
+            _score(
+                jobs["b"],
+                72.0,
+                Recommendation.APPLY,
+                salary_estimate_low=22_000,
+                salary_estimate_mid=25_000,
+                salary_estimate_high=28_000,
+                employer_tier="consultora_grande",
+                salary_basis="Junior cloud at a large consultancy, hybrid.",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
+    assert offers[jobs["b"]]["salary_est"] == [
+        22_000,
+        25_000,
+        28_000,
+        "consultora_grande",
+        "Junior cloud at a large consultancy, hybrid.",
+    ]
+    assert offers[jobs["c"]]["salary_est"] is None
+
+
 def test_dropped_payload_fields_are_absent(dr1_db: Path) -> None:
     """Behaviour 13: removed offer, detail and keyword fields no longer ship."""
     jobs = _seed_dr1_db_ids(dr1_db)
@@ -1963,8 +1996,13 @@ def test_salary_provenance_is_labelled_indicado_or_sin_dato(db_file: Path) -> No
     assert 'salaryNode.appendChild(el("em", null, "sin dato"));' in html_text
     assert 'salaryBox.appendChild(el("dt", null, "indicado"));' in html_text
     assert 'salaryBox.appendChild(el("dd", "sal-stated", offer.salary));' in html_text
-    # A stated salary is money-green and bold in both the row and the body; the
-    # estimate style exists for a future source but carries no data today.
+    # Without a stated salary the model's estimate renders neutral as "estimado",
+    # with the employer tier and basis spelled out in the expanded body.
+    assert 'salaryNode = el("div", "sal est", salaryRangeK(offer.salary_est));' in html_text
+    assert 'salaryNode.appendChild(el("em", null, "estimado"));' in html_text
+    assert 'salaryBox.appendChild(el("dt", null, "estimado"));' in html_text
+    assert 'consultora_grande: "gran consultora / corporación"' in html_text
+    # A stated salary is money-green and bold in both the row and the body.
     assert "--money:#2f6b3a;" in css
     assert "--money-wash:#e3ede2;" in css
     assert ".sal.est { color:var(--ink-3); font-weight:400; }" in css

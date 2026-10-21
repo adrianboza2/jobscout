@@ -149,6 +149,103 @@ def test_extra_keys_are_preserved_separately() -> None:
     assert outcome.payload["extra"] == {"notes_from_model": "hi"}
 
 
+# ---------------------------------------------------------------------------
+# Optional salary estimate (informational, never part of the score)
+# ---------------------------------------------------------------------------
+
+
+def test_salary_estimate_coerces_amounts_tier_and_basis() -> None:
+    outcome = validate_payload(
+        {
+            "overall_score": 70,
+            "recommendation": "apply",
+            "confidence": 0.8,
+            "salary_estimate_low": "22000",
+            "salary_estimate_mid": "24k",
+            "salary_estimate_high": 28_000.0,
+            "employer_tier": "startup",
+            "salary_basis": "  " + "x" * 200,
+        }
+    )
+
+    assert outcome.ok
+    assert outcome.repairs == []
+    payload = outcome.payload
+    assert (
+        payload["salary_estimate_low"],
+        payload["salary_estimate_mid"],
+        payload["salary_estimate_high"],
+    ) == (22_000, 24_000, 28_000)
+    assert payload["employer_tier"] == "startup"
+    assert len(payload["salary_basis"]) == 160
+    # The accepted keys are canonical, never "extra" model noise.
+    assert payload["extra"] == {}
+
+
+@pytest.mark.parametrize(
+    "amounts",
+    [
+        (30_000, 20_000, 40_000),  # low > mid
+        (20_000, 30_000, 25_000),  # mid > high
+        (7_000, 20_000, 30_000),   # below the accepted floor
+        (20_000, 20_000, 500_000), # above the accepted ceiling
+        (20_000, 20_000, None),    # incomplete triple
+        ("not a number", 20_000, 30_000),
+    ],
+)
+def test_salary_estimate_invalid_triple_is_dropped(amounts) -> None:
+    low, mid, high = amounts
+    outcome = validate_payload(
+        {
+            "overall_score": 70,
+            "recommendation": "apply",
+            "confidence": 0.8,
+            "salary_estimate_low": low,
+            "salary_estimate_mid": mid,
+            "salary_estimate_high": high,
+        }
+    )
+
+    assert outcome.ok
+    assert outcome.repairs == []
+    assert outcome.payload["salary_estimate_low"] is None
+    assert outcome.payload["salary_estimate_mid"] is None
+    assert outcome.payload["salary_estimate_high"] is None
+
+
+def test_unknown_employer_tier_becomes_none_without_repairs() -> None:
+    outcome = validate_payload(
+        {
+            "overall_score": 70,
+            "recommendation": "apply",
+            "confidence": 0.8,
+            "employer_tier": "acme_corp",
+            "salary_basis": "free text",
+        }
+    )
+
+    assert outcome.ok
+    assert outcome.repairs == []
+    assert outcome.payload["employer_tier"] is None
+    assert outcome.payload["salary_basis"] == "free text"
+
+
+def test_missing_salary_keys_leave_status_and_repairs_unchanged() -> None:
+    outcome = validate_payload({"overall_score": 70, "recommendation": "apply", "confidence": 0.8})
+
+    assert outcome.ok
+    assert outcome.repairs == []
+    for key in (
+        "salary_estimate_low",
+        "salary_estimate_mid",
+        "salary_estimate_high",
+        "employer_tier",
+        "salary_basis",
+    ):
+        assert outcome.payload[key] is None
+        assert key not in outcome.payload["extra"]
+
+
 def test_valid_fixture_parses() -> None:
     outcome = parse_llm_evaluation(fixture_text("llm_response_valid.json"))
     assert outcome.ok

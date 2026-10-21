@@ -23,6 +23,7 @@ from jobscout.scoring.llm import UNTRUSTED_BEGIN, UNTRUSTED_END
 from jobscout.scoring.opencode import (
     OPENCODE_OUTPUT_CONTRACT,
     OPENCODE_PROMPT_VERSION,
+    SALARY_ESTIMATE_GUIDE,
     CommandOutcome,
     OpenCodeNotConfiguredError,
     OpenCodeScorer,
@@ -346,10 +347,64 @@ def test_prompt_requires_compact_closed_json_without_padding(strong_posting, pro
     assert prompt.index("SYSTEM:") < prompt.index("OPENCODE OUTPUT CONTRACT")
 
 
-def test_prompt_version_is_v5_and_distinguishable() -> None:
-    """The seniority policy ships as a new prompt generation, not a silent edit."""
-    assert OPENCODE_PROMPT_VERSION.startswith("opencode-v5")
-    assert OPENCODE_PROMPT_VERSION != "opencode-v4-balanced-recommendations"
+def test_prompt_version_is_v6_and_distinguishable() -> None:
+    """The salary estimate ships as a new prompt generation, not a silent edit."""
+    assert OPENCODE_PROMPT_VERSION == "opencode-v6-salary-estimate"
+    assert OPENCODE_PROMPT_VERSION != "opencode-v5-seniority-aware"
+
+
+def test_output_contract_allows_salary_keys_and_forbids_extras(strong_posting, profile) -> None:
+    prompt = build_cli_prompt(strong_posting, profile)
+
+    for key in (
+        "overall_score",
+        "recommendation",
+        "confidence",
+        "rationale",
+        "salary_estimate_low",
+        "salary_estimate_mid",
+        "salary_estimate_high",
+        "employer_tier",
+        "salary_basis",
+    ):
+        assert key in OPENCODE_OUTPUT_CONTRACT, key
+    assert "- The salary keys never change overall_score or recommendation." in (
+        OPENCODE_OUTPUT_CONTRACT
+    )
+    for forbidden in ("dimensions", "blockers", "strengths", "gaps", "unknowns", "evidence"):
+        assert forbidden in OPENCODE_OUTPUT_CONTRACT, forbidden
+    # The guide is appended after the contract and reaches the real prompt.
+    assert SALARY_ESTIMATE_GUIDE in prompt
+    assert "SALARY ESTIMATE (gross annual EUR, Spain, centred on Madrid):" in prompt
+    assert "consultora_pequena" in prompt
+    assert prompt.index(OPENCODE_OUTPUT_CONTRACT) < prompt.index(
+        "SALARY ESTIMATE (gross annual EUR"
+    )
+
+
+def test_evaluation_maps_salary_estimate_fields(
+    opencode_settings, strong_posting, profile
+) -> None:
+    payload = json.loads(VALID_JSON)
+    payload.update(
+        {
+            "salary_estimate_low": 22_000,
+            "salary_estimate_mid": 25_000,
+            "salary_estimate_high": 28_000,
+            "employer_tier": "consultora_grande",
+            "salary_basis": "Gran consultora, nivel junior, sin guardias.",
+        }
+    )
+    scorer, _ = make_scorer(opencode_settings, [command_outcome(0, json.dumps(payload))])
+
+    evaluation = scorer.score(strong_posting, profile)
+
+    assert evaluation.status == EvaluationStatus.OK.value
+    assert evaluation.salary_estimate_low == 22_000
+    assert evaluation.salary_estimate_mid == 25_000
+    assert evaluation.salary_estimate_high == 28_000
+    assert evaluation.employer_tier == "consultora_grande"
+    assert evaluation.salary_basis == "Gran consultora, nivel junior, sin guardias."
 
 
 def test_prompt_encodes_seniority_and_technology_policy(strong_posting, profile) -> None:

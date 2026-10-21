@@ -201,6 +201,11 @@ decision, the **✓ aplicar** / **✕ descartar** buttons (the reason field, up 
 characters, opens after choosing) and **Ver la oferta ↗**. Report warnings are quiet lines at the end, next
 to the metadata.
 
+A stated salary is shown in green with the `indicado` label. When the posting
+does not state one, the row shows the model's estimate in grey, prefixed with
+`≈` and labelled `estimado`: it is an indicative gross annual figure for Spain,
+informational only, and it never changes the score or the recommendation.
+
 ```bash
 # POSIX
 python -m jobscout dashboard --output reports/jobscout-dashboard.html

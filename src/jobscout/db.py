@@ -48,7 +48,7 @@ from .models import (
 )
 from .timeutil import utcnow_iso
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS search_runs (
@@ -195,6 +195,11 @@ CREATE TABLE IF NOT EXISTS evaluations (
     strengths_json TEXT NOT NULL DEFAULT '[]',
     gaps_json TEXT NOT NULL DEFAULT '[]',
     unknowns_json TEXT NOT NULL DEFAULT '[]',
+    salary_estimate_low INTEGER,
+    salary_estimate_mid INTEGER,
+    salary_estimate_high INTEGER,
+    employer_tier TEXT,
+    salary_basis TEXT,
     rationale TEXT,
     status TEXT NOT NULL DEFAULT 'ok',
     error TEXT,
@@ -417,8 +422,26 @@ def _migrate_v6_add_job_variants(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_v7_add_salary_estimate(conn: sqlite3.Connection) -> None:
+    """Add the nullable OpenCode salary-estimate columns if missing.
+
+    Every column is additive and nullable, so historical evaluations keep their
+    exact values and simply read as ``NULL``; no estimate is ever backfilled.
+    """
+    columns = _table_columns(conn, "evaluations")
+    for name, column_type in (
+        ("salary_estimate_low", "INTEGER"),
+        ("salary_estimate_mid", "INTEGER"),
+        ("salary_estimate_high", "INTEGER"),
+        ("employer_tier", "TEXT"),
+        ("salary_basis", "TEXT"),
+    ):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE evaluations ADD COLUMN {name} {column_type}")
+
+
 def _apply_migrations(conn: sqlite3.Connection, current: int) -> None:
-    """Upgrade an existing database in place from ``current`` to v6.
+    """Upgrade an existing database in place from ``current`` to v7.
 
     ``SCHEMA_SQL`` only uses ``CREATE TABLE IF NOT EXISTS``, so it can create a
     brand-new database with the current shape but can never add a column to a
@@ -431,6 +454,8 @@ def _apply_migrations(conn: sqlite3.Connection, current: int) -> None:
         _migrate_v5_add_cycle_and_position(conn)
     if current < 6:
         _migrate_v6_add_job_variants(conn)
+    if current < 7:
+        _migrate_v7_add_salary_estimate(conn)
 
 
 def init_db(conn: sqlite3.Connection) -> int:
@@ -502,6 +527,11 @@ def _row_to_evaluation(row: sqlite3.Row) -> Evaluation:
         gaps=_loads(row["gaps_json"], []),
         unknowns=_loads(row["unknowns_json"], []),
         rationale=row["rationale"] or "",
+        salary_estimate_low=row["salary_estimate_low"],
+        salary_estimate_mid=row["salary_estimate_mid"],
+        salary_estimate_high=row["salary_estimate_high"],
+        employer_tier=row["employer_tier"],
+        salary_basis=row["salary_basis"],
         status=row["status"],
         error=row["error"],
         raw_document_id=row["raw_document_id"],
@@ -1995,9 +2025,11 @@ def insert_evaluation(conn: sqlite3.Connection, evaluation: Evaluation) -> Evalu
             INSERT INTO evaluations (
                 job_id, scorer, model, prompt_version, profile_id, overall_score,
                 recommendation, confidence, dimensions_json, blockers_json,
-                strengths_json, gaps_json, unknowns_json, rationale, status, error,
-                raw_document_id, input_fingerprint, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                strengths_json, gaps_json, unknowns_json, salary_estimate_low,
+                salary_estimate_mid, salary_estimate_high, employer_tier,
+                salary_basis, rationale, status, error, raw_document_id,
+                input_fingerprint, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 evaluation.job_id,
@@ -2013,6 +2045,11 @@ def insert_evaluation(conn: sqlite3.Connection, evaluation: Evaluation) -> Evalu
                 _dumps(list(evaluation.strengths)),
                 _dumps(list(evaluation.gaps)),
                 _dumps(list(evaluation.unknowns)),
+                evaluation.salary_estimate_low,
+                evaluation.salary_estimate_mid,
+                evaluation.salary_estimate_high,
+                evaluation.employer_tier,
+                evaluation.salary_basis,
                 evaluation.rationale,
                 str(evaluation.status),
                 evaluation.error,
