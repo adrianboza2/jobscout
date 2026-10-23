@@ -3,6 +3,84 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-23 — scorer model gone, free quota, scorer permissions, Tecnoempleo search study
+
+- **Scorer model (owner, provisional):** `opencode-go/longcat-2.5-preview-free`
+  no longer exists (`provider.no-route: Model unavailable`; not in
+  `opencode models`). `.env` now uses `opencode/deepseek-v4.1-flash-free` with no
+  fallback, because every free OpenCode model shares one quota.
+- **Free quota:** about 55 calls, shared by all free OpenCode (Zen) models, then
+  "Free usage limit reached" for hours (still exhausted 1.5 h later; looks
+  daily). The 2026-10-22 sweep scored 176: 59 ok (48 of them re-scores of old
+  offers, 11 new), 117 failed; 34 offers from that sweep still have no score.
+  `score --all` walks offers by `id`, so a model change re-scores old offers
+  before new ones reach the cap.
+- **Pending: choose the new scorer.** Benchmark the current free models
+  (deepseek-v4.1-flash-free, big-pickle, glm-5.3-flash-free, mimo-v2.6-flash-free,
+  nemotron-3-ultra-free, nemotron-3.5-super-vl-free, nemotron-3.5-lightning-free,
+  flint-40b-free; beam-free was rejected by the owner) with
+  `scripts/benchmark/bench.py --quota-wait 600`, one model at a time and never
+  in the quota needed by a sweep (~2 models per day). A first parallel attempt
+  was invalid (all models hit the shared limit after 54 answers) and was stopped
+  on owner request; no result is usable yet.
+- **Pending: scoring queue (needs owner decision).** Score never-scored offers
+  first (ordered by the heuristic score), model-only re-scores last, and stop the
+  run at the first free-quota error instead of failing the rest of the batch.
+- **Scorer permissions (done, merged; suite 1167 passed; one real scoring call
+  on a database copy returned `ok` in 8 s):** the private `opencode.json` gets OpenCode 2.x
+  `permissions` rules. The model keeps read/grep/glob/webfetch (owner: keep
+  them, they may be useful). Denied: shell, write, edit, execute (which reaches
+  OpenCode Console admin tools), subagent, skill, question, websearch (HTTP 402),
+  external_directory, doom_loop, and reads of `*.env`/`*.pem`/`*.key`/`auth.json`.
+  The file is rewritten when it differs (it used to be written only once), and
+  the CLI runs from a private empty `data/opencode-work` instead of `/tmp`.
+  Verified live: `policies` does not remove tools, and a catch-all `*` deny
+  hangs every run.
+- **Owner decision:** the scorer and company research may use the internet when
+  it improves results; the scorer will read a per-company dossier instead of
+  browsing per offer. AGENTS.md still has to record it.
+- **Tecnoempleo search study (live, 2026-10-23, Madrid, parsed with
+  `postings_from_html`):** its text search matches the offer name, profile,
+  position *and technologies*, which is where the Java/Data/Android noise comes
+  from. Of the 13 known-good offers (score >= 50) still published: current
+  text search (4 of 14 queries, page 1) found 9; quoted phrases 3; the
+  professional-function browse (`?pr=,263,&es=,34,43,40,39,8,45,19,`: DevOps,
+  Técnico de Sistemas, Ciberseguridad, Redes, Soporte Técnico, Administrador,
+  Helpdesk) 12, with no development roles and 265 offers never collected before;
+  function browse + experience <= 2 years 2. Results are newest first, so about 5
+  pages cover a sweep interval (fewer requests than today's up to 28). The only
+  miss is "Dixcover - Programa Prácticas FP Accenture" (another function): keep
+  one "prácticas" text query. The title seniority rule hides 154 of 711 scored
+  offers with no loss of any offer scored >= 50 or marked apply/consider.
+  **Not applied yet** (see Next, item 1). The live pages and the fetch script
+  are kept in `captures/tecnoempleo-2026-10-23/` (gitignored, local only).
+- **CV:** copied to `cv.md` (gitignored) from the Obsidian vault; source of
+  truth for later tailored drafts.
+- **Next:**
+  1. **Tecnoempleo: replace the 14 text queries with the function browse.**
+     Collector: `TecnoempleoSearchConfig`/`build_search_url` gain a browse mode
+     that emits `https://www.tecnoempleo.com/ofertas-trabajo/?pr=,263,&es=,34,43,40,39,8,45,19,&pagina=N`
+     (today only `te` and `pagina` are supported, `tecnoempleo.py:137-155`);
+     5 pages per sweep, 10 for the first backfill (within the hard cap of 10);
+     robots handling and pacing unchanged. Keep one text query, "prácticas",
+     for internship programmes filed under other functions. Keyword plan and
+     the Hermes sweep script then run the browse instead of the per-keyword
+     Tecnoempleo searches (sweep script changed once, after merging). Offline
+     tests use synthetic fixtures; the live evidence is the capture above.
+  2. **Seniority pre-filter (all providers):** titles with senior, sr, lead,
+     principal, architect/arquitecto, manager, head, director, staff or jefe,
+     unless they also say junior/jr/trainee/beca/becario/prácticas/intern, are
+     marked filtered with the reason, never sent to the model and never
+     deleted; the dashboard hides them behind a count. Measured: 154 of 711
+     scored offers, none scored >= 50 or marked apply/consider; on the
+     Tecnoempleo function browse 329 -> 272 with all 12 known-good kept.
+  3. **Scoring queue** (pending owner decision, above), needed before the
+     Tecnoempleo backfill: 265 new offers at ~55 free calls a day.
+  4. **Choose the new scorer** (pending, above).
+  5. Then the application-drafts plan: company dossiers with internet (the
+     scorer reads them), tailored CV and cover letter in Markdown from
+     `cv.md`, interview prep, LaTeX later.
+
 ## Session 2026-10-21 (d) — salary estimate in the OpenCode prompt, profile skills
 
 - **Overnight re-score:** all 700 active offers scored 01:03–04:04 (452 primary,
