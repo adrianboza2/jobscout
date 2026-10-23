@@ -73,6 +73,8 @@ desktop.ini
 profile.yaml
 profile.yml
 profile.local.yaml
+# Master CV: source of truth for tailored drafts (contact data included).
+cv.md
 
 # --- Runtime skill-registry artifacts (keep the directory itself) -----------
 .atl/
