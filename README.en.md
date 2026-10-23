@@ -733,7 +733,15 @@ variant in the model id itself. With `JOBSCOUT_OPENCODE_PURE=true` (the default)
 it also uses a private `XDG_CONFIG_HOME` at
 `<database folder>/opencode-config` and disables project config, autoupdate, and
 Claude Code skills; isolation is done through the environment because OpenCode
-plugins are arbitrary code.
+plugins are arbitrary code. The private `opencode.json` denies the actions that
+can change the machine or hang a non-interactive run (`shell`, `write`, `edit`,
+`execute`, `subagent`, `skill`, `question`, `websearch`, `external_directory`,
+`doom_loop`) and reading secret files (`*.env`, `*.env.*`, `*.pem`, `*.key`,
+`*auth.json`), so the model keeps only `read`, `grep`, `glob`, and `webfetch`;
+an outdated config file is rewritten automatically on the next run. By default
+the CLI runs from a private, empty directory next to the database
+(`<database folder>/opencode-work`), not the shared temp directory;
+`JOBSCOUT_OPENCODE_WORKDIR` sets another path.
 
 The variant is set with `JOBSCOUT_OPENCODE_VARIANT` (default `low`).
 `JOBSCOUT_OPENCODE_FALLBACK_MODEL` is optional and accepts `#variant`: after the
@@ -867,22 +875,25 @@ These guarantees are enforced by the code, not just documented:
 
 ### Residual risk: OpenCode tool permissions (H2)
 
-`opencode run` (OpenCode 2.x) **exposes no reliable flag to deny tools or
-sandbox execution**. The only related switch is `--dangerously-skip-permissions`,
-which *widens* access and is never passed by jobscout. Tool policy lives in your
-local OpenCode configuration, which jobscout does not control or verify.
+OpenCode 2.x does accept `permissions` rules in its `opencode.json`. jobscout
+writes a private file that denies the actions that can change the machine or
+hang a non-interactive run, plus reading secret files (see above);
+`--dangerously-skip-permissions` *widens* access, so it is never passed. Tool
+policy still lives in your local OpenCode configuration, which jobscout does not
+control or verify beyond that file.
 
 What jobscout does today: it runs with `--standalone` and a private
 `XDG_CONFIG_HOME` (environment isolation, not `--pure`, which OpenCode 2.x
-removed) by default, runs from a neutral working directory (the system temp
-directory, so this repository's agent instructions are not loaded), and
-neutralizes prompt-delimiter forgery.
+removed) by default, runs from a private, empty directory next to the database
+(so this repository's agent instructions are not loaded and other processes'
+files are not visible), and neutralizes prompt-delimiter forgery.
 
-What remains: a prompt-injected or misbehaving model could still attempt tool
-calls permitted by your local OpenCode configuration. **This is an accepted
-residual risk (H2).** If you need a hard guarantee, configure a restrictive
-OpenCode agent in your local config, or do not use the OpenCode scorer with
-untrusted postings.
+What remains: a prompt-injected or misbehaving model could still attempt the
+allowed tools (`read`, `grep`, `glob`, `webfetch`) inside the working directory,
+and `webfetch` could exfiltrate what it reads. **This is an accepted residual
+risk (H2).** If you need a hard guarantee, configure a restrictive OpenCode
+agent in your local config, or do not use the OpenCode scorer with untrusted
+postings.
 
 ### Dashboard scope
 

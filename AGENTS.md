@@ -88,6 +88,12 @@ The full offline suite is the acceptance gate for any change.
   config dir next to the database (`data/opencode-config`) plus
   `OPENCODE_DISABLE_PROJECT_CONFIG`, `OPENCODE_DISABLE_AUTOUPDATE` and
   `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS`, so user plugins never run inside the scorer.
+- Tools: the private `opencode.json` carries OpenCode 2.x `permissions` rules. The model
+  keeps `read`, `grep`, `glob` and `webfetch` (owner, 2026-10-23: they may be useful);
+  shell, write, edit, execute, subagent, skill, question, websearch, external_directory,
+  doom_loop and reads of secret files are denied. It runs from an empty
+  `data/opencode-work`. Verified live: `policies` does not remove tools, and a catch-all
+  `*` deny hangs every run; any rule left at "ask" also hangs a non-interactive run.
 - Variants depend on the model (`deepseek-v4.1-flash`: `low`/`high`/`max`, no `minimal`).
   Probe a new model once by hand before switching; a missing variant fails with
   `Variant unavailable`.
@@ -124,8 +130,10 @@ never "fix" code or tests because of that error.
   parsing function, offline.
 - Never touch authenticated/private provider pages (for example InfoJobs `candidate/...`):
   those adapters are blocked on purpose.
-- The scorer reads stored text only; it never fetches a URL. New data comes from detail
-  adapters that fetch once and persist (`fetch-*-details` / `fetch-details`).
+- Posting data comes from detail adapters that fetch once and persist
+  (`fetch-*-details` / `fetch-details`). The scorer may use the internet when it improves
+  results (owner, 2026-10-23), e.g. `webfetch` or a cached per-company dossier; it never
+  replaces the stored posting text.
 - A definitive 404/410 deactivates an offer (`is_active = 0`) and keeps its history; it never
   deletes rows. Refreshing only overwrites fields with non-empty values.
 - Keep the HTML report self-contained, offline, and safe to open over `file://`.

@@ -751,7 +751,16 @@ variante en el propio id del modelo. Con `JOBSCOUT_OPENCODE_PURE=true` (por
 defecto) además se usa un `XDG_CONFIG_HOME` privado en
 `<carpeta de la BD>/opencode-config` y se desactivan la configuración del
 proyecto, la autoupdate y las skills de Claude Code; el aislamiento es por
-entorno porque los plugins de OpenCode son código arbitrario.
+entorno porque los plugins de OpenCode son código arbitrario. El
+`opencode.json` privado deniega las acciones que pueden cambiar la máquina o
+colgar una ejecución no interactiva (`shell`, `write`, `edit`, `execute`,
+`subagent`, `skill`, `question`, `websearch`, `external_directory`,
+`doom_loop`) y la lectura de ficheros de secretos (`*.env`, `*.env.*`, `*.pem`,
+`*.key`, `*auth.json`), de modo que el modelo solo conserva `read`, `grep`,
+`glob` y `webfetch`; un fichero de configuración antiguo se reescribe solo en
+la siguiente ejecución. Por defecto el CLI corre en un directorio privado y
+vacío junto a la BD (`<carpeta de la BD>/opencode-work`), no en el directorio
+temporal compartido; `JOBSCOUT_OPENCODE_WORKDIR` permite fijar otra ruta.
 
 La variante se configura con `JOBSCOUT_OPENCODE_VARIANT` (por defecto `low`).
 `JOBSCOUT_OPENCODE_FALLBACK_MODEL` es opcional y admite `#variante`: tras el
@@ -890,23 +899,25 @@ Estas garantías las aplica el código, no solo la documentación:
 
 ### Riesgo residual: permisos de herramientas de OpenCode (H2)
 
-`opencode run` (OpenCode 2.x) **no expone una bandera confiable para denegar
-herramientas ni para aislar la ejecución**. La única opción relacionada es
-`--dangerously-skip-permissions`, que *amplía* el acceso y jobscout nunca la
-pasa. La política de herramientas vive en la configuración local de OpenCode, que
-jobscout no controla ni verifica.
+OpenCode 2.x sí acepta reglas `permissions` en su `opencode.json`. jobscout
+escribe un fichero privado que deniega las acciones capaces de cambiar la
+máquina o colgar una ejecución no interactiva y la lectura de ficheros de
+secretos (ver arriba); `--dangerously-skip-permissions` *amplía* el acceso, así
+que nunca se pasa. La política sigue viviendo en la configuración local de
+OpenCode, que jobscout no controla ni verifica más allá de ese fichero.
 
 Lo que sí hace hoy: ejecuta con `--standalone` y un `XDG_CONFIG_HOME` privado
 (aislamiento por entorno, no `--pure`, que OpenCode 2.x eliminó) por defecto,
-corre desde un directorio neutral (el temporal del sistema, para no cargar las
-instrucciones de este repositorio) y neutraliza la falsificación de delimitadores
-en el prompt.
+corre desde un directorio privado y vacío junto a la base de datos (para no
+cargar las instrucciones de este repositorio ni ver ficheros de otros procesos)
+y neutraliza la falsificación de delimitadores en el prompt.
 
 Lo que queda: un modelo inyectado por prompt o con comportamiento errático aún
-podría intentar llamadas a herramientas permitidas por tu configuración local de
-OpenCode. **Es un riesgo residual aceptado (H2).** Si necesitas una garantía
-dura, configura un agente restrictivo en tu OpenCode local o no uses el puntuador
-de OpenCode con ofertas no confiables.
+podría intentar las herramientas permitidas (`read`, `grep`, `glob`,
+`webfetch`) dentro del directorio de trabajo, y `webfetch` podría exfiltrar lo
+que lea. **Es un riesgo residual aceptado (H2).** Si necesitas una garantía
+dura, configura un agente restrictivo en tu OpenCode local o no uses el
+puntuador de OpenCode con ofertas no confiables.
 
 ### Alcance del tablero
 

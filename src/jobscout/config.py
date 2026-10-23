@@ -12,7 +12,6 @@ from __future__ import annotations
 import math
 import os
 import re
-import tempfile
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -80,10 +79,11 @@ DEFAULT_OPENCODE_VARIANT = "low"
 #: Optional model (possibly ``<model>#<variant>``) used when the primary model
 #: fails with a technical error during a ``score`` run.
 DEFAULT_OPENCODE_FALLBACK_MODEL: str | None = None
-# Run from a neutral directory by default so the CLI does not pick up this
-# repository's AGENTS.md/opencode.json instructions and derail the strict
-# JSON scoring prompt. Override with JOBSCOUT_OPENCODE_WORKDIR.
-DEFAULT_OPENCODE_WORKDIR = tempfile.gettempdir()
+# Run from a private, empty directory next to the database by default so the
+# CLI does not pick up this repository's AGENTS.md/opencode.json instructions
+# and cannot see another process's files. Override with
+# JOBSCOUT_OPENCODE_WORKDIR; a library caller can pass "" to inherit the cwd.
+DEFAULT_OPENCODE_WORKDIR: str | None = None
 DEFAULT_OPENCODE_TIMEOUT_SECONDS = 180.0
 DEFAULT_OPENCODE_MAX_OUTPUT_BYTES = 1_048_576
 # Isolate the CLI from the user's plugins and project config by default. Plugins
@@ -491,9 +491,10 @@ class Settings:
     llm_json_mode: bool = True
 
     # OpenCode CLI scorer (optional; uses the CLI's own local authentication and
-    # never an API key). ``opencode_workdir`` defaults to a neutral temp
-    # directory so the CLI cannot load this repository's agent instructions; a
-    # library caller can pass ``""`` to inherit the process working directory.
+    # never an API key). ``opencode_workdir`` defaults to a private, empty
+    # directory next to the database so the CLI cannot load this repository's
+    # agent instructions or read another process's files; a library caller can
+    # pass ``""`` to inherit the process working directory.
     opencode_command: str = DEFAULT_OPENCODE_COMMAND
     opencode_model: str = DEFAULT_OPENCODE_MODEL
     opencode_variant: str | None = DEFAULT_OPENCODE_VARIANT

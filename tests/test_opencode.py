@@ -32,6 +32,8 @@ from jobscout.scoring.opencode import (
     build_command,
     effective_prompt_version,
     extract_evaluation_text,
+    isolated_config_home,
+    isolated_workdir,
     resolve_executable,
     run_command,
     scrubbed_subprocess_env,
@@ -268,6 +270,134 @@ def test_isolation_is_skipped_when_pure_is_disabled(settings) -> None:
 
     assert env == {"PATH": "/usr/bin"}
     assert not (Path(settings.db_path).parent / "opencode-config").exists()
+
+
+def test_isolated_config_denies_dangerous_actions_and_secret_reads(settings) -> None:
+    config_home = isolated_config_home(settings)
+    config_file = config_home / "opencode" / "opencode.json"
+    written = json.loads(config_file.read_text(encoding="utf-8"))
+
+    triples = {
+        (rule["action"], rule["resource"], rule["effect"])
+        for rule in written["permissions"]
+    }
+    denied_actions = {
+        "shell",
+        "write",
+        "edit",
+        "execute",
+        "subagent",
+        "skill",
+        "question",
+        "websearch",
+        "external_directory",
+        "doom_loop",
+    }
+    expected = {(action, "*", "deny") for action in denied_actions}
+    expected |= {
+        ("read", resource, "deny")
+        for resource in ("*.env", "*.env.*", "*.pem", "*.key", "*auth.json")
+    }
+    assert triples == expected
+
+    # The read-only tools stay available; only secret files are blocked.
+    for allowed in ("read", "grep", "glob", "webfetch"):
+        assert (allowed, "*", "deny") not in triples
+
+
+def test_outdated_isolated_config_is_rewritten(settings) -> None:
+    config_file = (
+        Path(settings.db_path).parent / "opencode-config" / "opencode" / "opencode.json"
+    )
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(
+        json.dumps(
+            {
+                "$schema": "https://opencode.ai/config.json",
+                "share": "disabled",
+                "autoupdate": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    isolated_config_home(settings)
+
+    written = json.loads(config_file.read_text(encoding="utf-8"))
+    assert "permissions" in written
+    assert any(rule["action"] == "shell" for rule in written["permissions"])
+
+
+def test_current_isolated_config_is_left_untouched(settings) -> None:
+    config_home = isolated_config_home(settings)
+    config_file = config_home / "opencode" / "opencode.json"
+    # Same parsed JSON with different formatting: it must not be rewritten.
+    formatted = json.dumps(
+        json.loads(config_file.read_text(encoding="utf-8")), indent=2
+    )
+    config_file.write_text(formatted, encoding="utf-8")
+
+    isolated_config_home(settings)
+
+    assert config_file.read_text(encoding="utf-8") == formatted
+
+
+def test_isolated_workdir_is_created_next_to_the_database(settings) -> None:
+    workdir = isolated_workdir(settings)
+
+    expected = Path(settings.db_path).expanduser().resolve().parent / "opencode-work"
+    assert workdir == expected
+    assert workdir.is_dir()
+
+
+def test_complete_runs_in_the_private_workdir_next_to_the_database(
+    opencode_settings, strong_posting, profile
+) -> None:
+    scorer, runner = make_scorer(
+        opencode_settings, [command_outcome(0, event_stream(text_event(VALID_JSON)))]
+    )
+
+    scorer.complete(strong_posting, profile)
+
+    cwd = runner.calls[0]["cwd"]
+    expected = (
+        Path(opencode_settings.db_path).expanduser().resolve().parent / "opencode-work"
+    )
+    assert cwd == str(expected)
+    assert Path(cwd).is_absolute()
+    assert expected.is_dir()
+
+
+def test_complete_honours_an_explicit_workdir(
+    opencode_settings, strong_posting, profile
+) -> None:
+    settings = opencode_settings.with_overrides(opencode_workdir="/tmp/explicit-work")
+    scorer, runner = make_scorer(
+        settings, [command_outcome(0, event_stream(text_event(VALID_JSON)))]
+    )
+
+    scorer.complete(strong_posting, profile)
+
+    assert runner.calls[0]["cwd"] == "/tmp/explicit-work"
+
+
+def test_complete_with_an_empty_workdir_inherits_the_process_cwd(
+    opencode_settings, strong_posting, profile
+) -> None:
+    settings = opencode_settings.with_overrides(opencode_workdir="")
+    scorer, runner = make_scorer(
+        settings, [command_outcome(0, event_stream(text_event(VALID_JSON)))]
+    )
+
+    scorer.complete(strong_posting, profile)
+
+    assert runner.calls[0]["cwd"] is None
+
+
+def test_default_opencode_workdir_is_unset_through_env() -> None:
+    settings = Settings.from_env(env={}, dotenv_path=None)
+
+    assert settings.opencode_workdir is None
 
 
 def test_command_execution_scrubs_secret_env_without_touching_argv(
@@ -600,7 +730,9 @@ def test_successful_event_stream_produces_structured_evaluation(
     assert call["argv"][0] == "opencode"
     assert call["argv"][1] == "run"
     assert call["timeout"] == opencode_settings.opencode_timeout_seconds
-    assert call["cwd"] == opencode_settings.opencode_workdir
+    assert call["cwd"] == str(
+        Path(opencode_settings.db_path).expanduser().resolve().parent / "opencode-work"
+    )
     assert "shell" not in call
 
 

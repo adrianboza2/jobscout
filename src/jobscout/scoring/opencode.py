@@ -362,14 +362,56 @@ def bound_output(text: str, *, max_bytes: int) -> tuple[str, bool]:
 # loaded from ``.env`` may not be reflected in ``os.environ``.
 _SECRET_ENV_NAMES = (f"{PREFIX}LLM_API_KEY",)
 
+#: Actions denied on every resource. ``shell``/``write``/``edit``/``execute``
+#: can change the machine (``execute`` also reaches OpenCode Console admin
+#: tools); ``subagent``/``skill`` load more agents or code; ``question``,
+#: ``external_directory`` and ``doom_loop`` default to "ask", and any prompt
+#: hangs a non-interactive run until the timeout; ``websearch`` is paid
+#: (HTTP 402) and only wastes a turn.
+_ISOLATED_DENIED_ACTIONS = (
+    "shell",
+    "write",
+    "edit",
+    "execute",
+    "subagent",
+    "skill",
+    "question",
+    "websearch",
+    "external_directory",
+    "doom_loop",
+)
+
+#: Secret file patterns that must never be read: the model could send their
+#: contents out through ``webfetch``. ``read``/``grep``/``glob``/``webfetch``
+#: stay allowed on purpose everywhere else.
+_ISOLATED_SECRET_RESOURCES = ("*.env", "*.env.*", "*.pem", "*.key", "*auth.json")
+
 #: Minimal config written into the private config home. ``share: disabled``
 #: keeps a scoring prompt out of OpenCode's sharing service and ``autoupdate``
 #: is off so an isolated run never replaces the executable mid-batch.
+#: ``permissions`` is the OpenCode 2.x mechanism that actually removes tools.
 _ISOLATED_OPENCODE_CONFIG = {
     "$schema": "https://opencode.ai/config.json",
     "share": "disabled",
     "autoupdate": False,
+    "permissions": [
+        {"action": action, "resource": "*", "effect": "deny"}
+        for action in _ISOLATED_DENIED_ACTIONS
+    ]
+    + [
+        {"action": "read", "resource": resource, "effect": "deny"}
+        for resource in _ISOLATED_SECRET_RESOURCES
+    ],
 }
+
+
+def _config_is_current(config_file: Path) -> bool:
+    """Return whether ``config_file`` already parses to the isolated config."""
+    try:
+        written = json.loads(config_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return written == _ISOLATED_OPENCODE_CONFIG
 
 
 def isolated_config_home(settings: Settings) -> Path:
@@ -380,18 +422,53 @@ def isolated_config_home(settings: Settings) -> Path:
     predictable shared location such as ``/tmp`` would let another account plant
     one. The child process gets this directory as ``XDG_CONFIG_HOME``, so it
     never reads the user's real OpenCode configuration.
+
+    The config file is rewritten whenever it is missing or does not parse to
+    the current constant, so an installation created by an older version picks
+    up new deny rules without manual intervention.
     """
     # Resolved here, not in the child: the CLI runs from ``opencode_workdir``
-    # (a temp dir by default), where a relative ``data/...`` would point into
-    # exactly the shared location this function exists to avoid.
+    # (the private directory by default), where a relative ``data/...`` would
+    # point into exactly the shared location this function exists to avoid.
     home = Path(settings.db_path).expanduser().resolve().parent / "opencode-config"
     config_file = home / "opencode" / "opencode.json"
     config_file.parent.mkdir(parents=True, exist_ok=True)
-    if not config_file.exists():
+
+    if not _config_is_current(config_file):
         config_file.write_text(
             json.dumps(_ISOLATED_OPENCODE_CONFIG) + "\n", encoding="utf-8"
         )
+
     return home
+
+
+def isolated_workdir(settings: Settings) -> Path:
+    """Return (and create) the private working directory next to the database.
+
+    ``read``/``grep``/``glob`` are allowed inside the working directory, so it
+    must not be a shared place such as the system temp dir where another
+    process's files would be visible.
+    """
+    workdir = Path(settings.db_path).expanduser().resolve().parent / "opencode-work"
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    return workdir
+
+
+def resolved_workdir(settings: Settings) -> str | None:
+    """Translate ``opencode_workdir`` into the child process ``cwd``.
+
+    ``None`` means the private directory next to the database, ``""`` means
+    "inherit the process cwd" (the library default), and any other value is
+    used verbatim.
+    """
+    if settings.opencode_workdir is None:
+        return str(isolated_workdir(settings))
+
+    if settings.opencode_workdir == "":
+        return None
+
+    return settings.opencode_workdir
 
 
 def scrubbed_subprocess_env(
@@ -705,7 +782,7 @@ class OpenCodeScorer:
         command = None if self.runner is not None else self.resolve_command()
         argv = build_command(self.settings, prompt, command=command)
         timeout = self.settings.opencode_timeout_seconds
-        cwd = self.settings.opencode_workdir or None
+        cwd = resolved_workdir(self.settings)
         env = scrubbed_subprocess_env(self.settings)
         active_runner = self.runner or run_command
 
@@ -945,6 +1022,7 @@ __all__ = [
     "CommandOutcome",
     "OPENCODE_OUTPUT_CONTRACT",
     "isolated_config_home",
+    "isolated_workdir",
     "OpenCodeError",
     "OpenCodeExecutionError",
     "OpenCodeNotConfiguredError",
@@ -959,6 +1037,7 @@ __all__ = [
     "extract_evaluation_text",
     "input_fingerprint",
     "resolve_executable",
+    "resolved_workdir",
     "run_command",
     "scrubbed_subprocess_env",
 ]
