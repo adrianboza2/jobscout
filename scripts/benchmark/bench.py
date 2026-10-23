@@ -20,7 +20,13 @@ parser.add_argument("--variant", default="", help="model variant; empty means no
 # The 2026-10-20 offers are the default so later runs compare like with like.
 parser.add_argument("--selection", type=Path, default=HERE / "selection-2026-10-20.json")
 parser.add_argument("--contrast-profile", type=Path, default=HERE / "contrast_profile.yaml")
+# Free OpenCode models share one rolling rate limit; without waiting, a model's
+# result depends on when it ran rather than on how well it scores.
+parser.add_argument("--quota-wait", type=int, default=0,
+                    help="seconds to wait and retry after 'Free usage limit reached'; 0 disables")
+parser.add_argument("--quota-retries", type=int, default=12)
 args = parser.parse_args()
+QUOTA_MARK = "Free usage limit reached"
 
 model, out_dir = args.model, args.out_dir
 slug = model.replace("/", "_")
@@ -47,18 +53,25 @@ init_db(conn)
 with open(out_dir / f"{slug}.jsonl", "w") as out:
     for group, job_id, prof, rep in plan:
         job = get_job(conn, job_id)
-        t0 = time.monotonic()
-        try:
-            ev = evaluate_job(conn, job, real if prof == "real" else contrast,
-                              scorer_name="opencode", settings=settings)
-            row = dict(status=str(ev.status), score=ev.overall_score,
-                       rec=str(ev.recommendation), conf=ev.confidence,
-                       used_model=ev.model, rationale=ev.rationale,
-                       error=(ev.error or "")[:300])
-        except Exception as exc:  # keep going: one crash must not end the run
-            row = dict(status="crash", error=repr(exc)[:300])
+        waits = 0
+        while True:
+            t0 = time.monotonic()
+            try:
+                ev = evaluate_job(conn, job, real if prof == "real" else contrast,
+                                  scorer_name="opencode", settings=settings)
+                row = dict(status=str(ev.status), score=ev.overall_score,
+                           rec=str(ev.recommendation), conf=ev.confidence,
+                           used_model=ev.model, rationale=ev.rationale,
+                           error=(ev.error or "")[:300])
+            except Exception as exc:  # keep going: one crash must not end the run
+                row = dict(status="crash", error=repr(exc)[:300])
+            if not (args.quota_wait and QUOTA_MARK in row["error"] and waits < args.quota_retries):
+                break
+            waits += 1
+            print(f"{model}: quota hit on job {job_id}, waiting {args.quota_wait}s ({waits})", flush=True)
+            time.sleep(args.quota_wait)
         row.update(model=model, group=group, job_id=job_id, profile=prof,
-                   rep=rep, secs=round(time.monotonic() - t0, 1))
+                   rep=rep, secs=round(time.monotonic() - t0, 1), quota_waits=waits)
         out.write(json.dumps(row, ensure_ascii=False) + "\n"); out.flush()
 conn.close()
 print("done", model)

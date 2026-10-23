@@ -49,8 +49,14 @@ wait
 ```
 
 `select_offers.py` admite `--db` y `--out`; `bench.py` admite `--variant`
-(vacío por defecto), `--selection` y `--contrast-profile`; `report.py` admite
-`--db`.
+(vacío por defecto), `--selection`, `--contrast-profile`, `--quota-wait` y
+`--quota-retries`; `report.py` admite `--db`.
+
+Los modelos gratuitos de OpenCode comparten una sola cuota (unas 55 llamadas
+seguidas, 2026-10-23). Lanzarlos en paralelo hace que el resultado dependa de
+cuándo corrió cada uno: con modelos gratuitos, lanza un modelo detrás de otro con
+`--quota-wait 600`, que espera y reintenta la misma llamada al ver
+"Free usage limit reached", y nunca en la cuota que necesita un sweep.
 
 `bench.py` copia la BD real a `out_dir/<modelo>/bench.sqlite3` y escribe solo
 ahí y en `out_dir/<modelo>.jsonl`: la BD original nunca se modifica.
