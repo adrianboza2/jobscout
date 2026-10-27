@@ -308,13 +308,19 @@ contador inventado por el HTML.
 comparables de forma garantizada. Por eso hoy **no** existe una vista de "nuevas
 en el último ciclo": no se puede calcular de forma confiable y no se aproxima.
 
-### Sin filtro de seniority por título
+### Filtro previo de seniority por título
 
-Se probó un filtro que ocultaba ofertas por palabras del título (`senior`, `sr`,
-`lead`, `architect`, etc.) y se **eliminó a propósito**: la heurística producía
-falsos negativos (dejaba pasar ruido) y falsos positivos (ocultaba ofertas
-buenas). El dashboard vuelve a mostrar todas las ofertas activas; el juicio de
-seniority sigue en el prompt del evaluador, no en el título.
+Las ofertas con un título claramente senior (`senior`, `sr`, `lead`, `principal`,
+`architect`, `arquitecto`, `arquitecta`, `manager`, `head`, `director`, `staff`,
+`jefe`) se marcan como filtradas al leer los datos, sin cambiar el esquema. Las
+excepciones junior (`junior`, `jr`, `trainee`, `beca`, `becario`, `becaria`,
+`prácticas`/`practicas`, `intern`, `internship`) cancelan el filtro. `score` las
+omite antes de aplicar `--limit` y muestra `skipped N offer(s) filtered by
+seniority`; `--job-id` las puntúa igual. El dashboard conserva todas las ofertas
+activas (`jobs_shown == len(offers)`) pero las oculta por defecto, muestra el
+contador «N ocultas por seniority» y un botón `#filter-show-seniority` para
+mostrarlas; el reinicio de filtros las vuelve a ocultar. Una oferta mostrada
+enseña el motivo en su fila. Nada se borra ni se desactiva.
 
 Una vez importado el feedback, `calibrate` produce la evidencia de qué tan bien
 coincide el modelo contigo:
@@ -704,6 +710,12 @@ Los tres puntuadores devuelven la misma forma explicable: `overall_score` (0-100
 Cada evaluación guarda además el puntuador, el modelo, la versión del prompt, el
 id de la instantánea del perfil, un `input_fingerprint` y el documento crudo
 asociado, para que todo puntaje sea auditable después.
+
+Antes de puntuar, las ofertas con un título claramente senior se omiten mediante
+el filtro de seniority por título: `score --all` las descarta antes de aplicar
+`--limit`, imprime `skipped N offer(s) filtered by seniority` y expone
+`skipped_seniority` en `--json`. `--job-id` las puntúa igual, y las evaluaciones
+existentes de ofertas filtradas no se tocan.
 
 | Puntuador | Cuándo usarlo | Requisitos |
 |-----------|---------------|------------|

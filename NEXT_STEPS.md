@@ -3,6 +3,47 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-27 — scorer on OpenCode Go, bottom-half analysis, cleanup plan
+
+- **Scorer model (owner, permanent):** `.env` now uses
+  `opencode-go/deepseek-v4.1-flash` (paid OpenCode Go, no shared free quota;
+  owner: quality first, token cost does not matter). This closes "choose the
+  new scorer" from 2026-10-23. The 38 active offers that had never been scored
+  (ids 1117–1170) were scored with it: 38 ok after one retry (#1136,
+  `ECONNRESET`); 1 apply, 26 consider, 10 skip, 1 need_more_info. Every active
+  offer now has a score; dashboard regenerated.
+- **Bottom-half analysis (758 active offers, latest ok score each, scores from
+  four models, only 38 from Go):** median 35; deciles 15/18/22/28/35/48/55/58/64.
+  Below the median: 383 offers, 375 skip, 8 consider. The model's reason is
+  seniority/years of experience in 324 of 383; title words almost only found
+  there: senior 118 vs 1 above, architect 19/1, lead 12/0. Language, location
+  and clearance are under 10 each. By source, Tecnoempleo has 143 of 179 below
+  the median (its text search also matches technologies). LinkedIn
+  "IAM Engineer" / "Identity and Access Management Engineer" have 22/23 and
+  22/25 below (median 22), but both are already out of the keyword plan; those
+  offers are leftovers. LinkedIn queries without "Junior" have a median of
+  24–30; the "Junior …" queries 58–62; GetManfred 55.
+- **"Discard" means hide, never delete** (project contract): filtered offers
+  keep their rows and history and can be shown again.
+- **Next (owner, 2026-10-27; replaces the 2026-10-23 list below):**
+  1. **Seniority pre-filter** (spec: item 2 of the 2026-10-23 list). Filtered
+     offers are not sent to the model, which also saves Go calls.
+  2. **Tecnoempleo function browse** (spec: item 1 of the 2026-10-23 list),
+     then the Hermes sweep script, changed once after merging.
+  3. **Residual query review:** after 1, measure again by query which LinkedIn
+     searches still put most offers below the median (candidates: "Azure Cloud
+     Security", "Azure Security Engineer", "Cloud Security Engineer",
+     "Security Infrastructure Engineer", "Platform Engineer"), and the owner
+     decides which ones to retire through `RETIRED_SEARCHES`.
+  4. **Full re-score with `opencode-go/deepseek-v4.1-flash`** once 1–3 are
+     merged: a one-off manual `score --all` run (not capped at 180), outside the
+     sweep window, so every offer is scored by the same model and the
+     scores can be compared again. Then regenerate the dashboard and repeat the
+     percentile analysis.
+  5. Scoring queue (never-scored offers first): less urgent without the free
+     quota, but `score --all` still walks by `id` under the 180 cap.
+  6. Application-drafts plan (unchanged).
+
 ## Session 2026-10-23 — scorer model gone, free quota, scorer permissions, Tecnoempleo search study
 
 - **Scorer model (owner, provisional):** `opencode-go/longcat-2.5-preview-free`
@@ -594,12 +635,10 @@ the keyword table and the three top-keyword lists by default; they stay in the p
 marked `retired` (date and reason included), `summary.keywords` still counts every
 analyzed series, and the summary note reports the retired count.
 
-A title-based senior/lead filter (`dashboard.is_senior_noise` over
-`SENIOR_NOISE_MARKERS`) was tried in CP-9 and **deliberately removed in CP-10**:
-the owner found it produced both false negatives (real noise slipped through)
-and false positives (good offers were hidden), so a fuzzy title heuristic is the
-wrong tool. Do not re-add a title heuristic for this purpose; seniority judgement
-stays in the evaluator's prompt.
+A title-based seniority pre-filter was tried in CP-9, removed in CP-10, and
+**reinstated by the owner on 2026-10-27** (CP-10 reversed). The current rule,
+its junior exceptions, and the score/dashboard behaviour are specified in
+`odd/tasks/done/seniority-prefilter.md`.
 
 LinkedIn result position is provenance, not quality ground truth. Measured on
 2026-09-30: good offers are spread across result positions (one scored 62 at ranks

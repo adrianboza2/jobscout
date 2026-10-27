@@ -299,13 +299,19 @@ human convention), and runs from different platforms or cycles are not guarantee
 to be comparable. Today there is therefore **no** "new in the latest cycle" view:
 it cannot be computed trustworthily and is not approximated.
 
-### No title-based seniority filter
+### Title-based seniority pre-filter
 
-A filter that hid offers by title keywords (`senior`, `sr`, `lead`, `architect`,
-and similar) was tried and **deliberately removed**: the heuristic produced both
-false negatives (real noise slipped through) and false positives (good offers
-were hidden). The dashboard shows every active offer again; seniority judgement
-stays with the evaluator's prompt, not the title.
+Offers whose title is clearly senior (`senior`, `sr`, `lead`, `principal`,
+`architect`, `arquitecto`, `arquitecta`, `manager`, `head`, `director`, `staff`,
+`jefe`) are marked as filtered at read time, with no schema change. Junior
+exceptions (`junior`, `jr`, `trainee`, `beca`, `becario`, `becaria`,
+`prácticas`/`practicas`, `intern`, `internship`) cancel the filter. `score` skips
+them before applying `--limit` and prints `skipped N offer(s) filtered by
+seniority`; `--job-id` scores them anyway. The dashboard keeps every active
+offer (`jobs_shown == len(offers)`) but hides them by default, shows the
+"N ocultas por seniority" count and a `#filter-show-seniority` toggle to reveal
+them; resetting the filters hides them again. A revealed offer shows the reason
+in its row. Nothing is deleted or deactivated.
 
 Once feedback is imported, `calibrate` produces the evidence of how well the
 model agrees with you:
@@ -685,6 +691,12 @@ All three scorers return the same explainable shape: `overall_score` (0-100),
 `rationale`. Every evaluation also stores the scorer, model, prompt version,
 profile snapshot id, an `input_fingerprint`, and the raw document id, so each
 score is auditable after the fact.
+
+Before scoring, offers with a clearly senior title are skipped by the title-based
+seniority pre-filter: `score --all` drops them before applying `--limit`, prints
+`skipped N offer(s) filtered by seniority`, and exposes `skipped_seniority` in
+`--json`. `--job-id` scores them anyway, and existing evaluations of filtered
+offers stay untouched.
 
 | Scorer | When to use it | Requirements |
 |--------|----------------|--------------|

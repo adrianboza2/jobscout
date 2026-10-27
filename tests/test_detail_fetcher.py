@@ -2011,12 +2011,14 @@ def test_fetch_details_fixture_smoke_then_score_and_rank(
         == EXIT_OK
     )
     scored = json.loads(capsys.readouterr().out)
-    assert scored["succeeded"] == 3
+    # The fixture's "Senior Backend Engineer" is held back by the seniority filter.
+    assert scored["succeeded"] == 2
+    assert scored["skipped_seniority"] == 1
     assert scored["failed"] == []
 
     assert main(["--db", str(db_path), "rank", "--top", "3", "--json"]) == EXIT_OK
     ranked = json.loads(capsys.readouterr().out)
-    assert ranked["count"] == 3
+    assert ranked["count"] == 2
     assert ranked["jobs"][0]["score"] is not None
     assert ranked["jobs"][0]["score"] >= ranked["jobs"][-1]["score"]
 

@@ -60,6 +60,7 @@ from .models import (
     _loads,
 )
 from .preference import PreferenceOutcome, assess_text
+from .seniority import seniority_filter_reason
 from .timeutil import parse_datetime, utcnow, utcnow_iso
 
 #: Default report location. ``/reports/`` is git-ignored, so a generated report
@@ -912,6 +913,9 @@ def _summary(
     for offer in offers:
         state = offer.get("evaluation_status") or "none"
         evaluation_states[state] = evaluation_states.get(state, 0) + 1
+    # The title filter is read-time only, so the count comes from the offers
+    # themselves and never from a stored column.
+    seniority_filtered = sum(1 for offer in offers if offer.get("seniority_filter"))
     total = int(conn.execute("SELECT COUNT(*) FROM jobs WHERE is_active = 1").fetchone()[0])
     human_reviewed_jobs = int(conn.execute("SELECT COUNT(*) FROM job_feedback").fetchone()[0])
     return {
@@ -921,6 +925,9 @@ def _summary(
         "unscored": len(offers) - len(scored),
         "evaluation_states": evaluation_states,
         "recommendations": counts,
+        # Offers hidden by the read-time title filter; the payload still carries
+        # every active offer, so ``jobs_shown`` stays the full count.
+        "seniority_filtered": seniority_filtered,
         # Preference verdicts are recomputed from the stored posting text and are
         # deliberately separate from the model recommendation above.
         "preferences": preference_counts,
@@ -1014,6 +1021,9 @@ def build_payload(
             row["location"],
             row["company"],
         )
+        # Computed from the title at read time; never persisted, so a rule change
+        # needs no migration and old rows are reclassified on the next build.
+        seniority_filter = seniority_filter_reason(row["title"])
         offers.append(
             {
                 "id": job_id,
@@ -1051,6 +1061,9 @@ def build_payload(
                 "blockers": _string_list(row["blockers_json"]),
                 "unknowns": _string_list(row["unknowns_json"]),
                 "keyword_keys": keyword_keys_by_job.get(job_id, []),
+                # ``None`` when the title is acceptable; a reason string (for
+                # example ``title: senior``) when the client hides it by default.
+                "seniority_filter": seniority_filter,
                 # Only what the row and the text filter read; the schema tag and
                 # rule ids stay in ``PreferenceAssessment.to_dict``.
                 "preference": {
@@ -1352,6 +1365,10 @@ __STYLE__
       <div class="seg">
         <button type="button" id="filter-new" aria-pressed="false"
           title="Muestra solo las ofertas nuevas del último barrido">Solo nuevas</button>
+      </div>
+      <div class="seg">
+        <button type="button" id="filter-show-seniority" aria-pressed="false"
+          title="Las ofertas con título claramente senior se ocultan por defecto">Mostrar 0 ocultas por seniority</button>
       </div>
       <select id="filter-min-score" aria-label="Puntaje mínimo">
         <option value="0">Score ≥ 0</option>
@@ -1714,7 +1731,7 @@ _SCRIPT = r"""
   var STORAGE_KEY = payload.feedback_schema + ":" + payload.project_id;
 
   var feedback = loadFeedback();
-  var filters = { text: "", recommendation: "", isNew: false, minScore: null, keyword: "", sort: "score" };
+  var filters = { text: "", recommendation: "", isNew: false, showSeniority: false, minScore: null, keyword: "", sort: "score" };
 
   function labelFrom(map, value, fallback) {
     return Object.prototype.hasOwnProperty.call(map, value) ? map[value] : fallback;
@@ -1861,6 +1878,9 @@ _SCRIPT = r"""
   }
 
   function matches(offer) {
+    // Filtered offers stay in the payload but are hidden until the rail toggle
+    // asks for them; a shown filtered offer still displays its reason.
+    if (offer.seniority_filter && !filters.showSeniority) { return false; }
     if (filters.recommendation && effectiveRecommendation(offer) !== filters.recommendation) {
       return false;
     }
@@ -2180,6 +2200,13 @@ _SCRIPT = r"""
       veto.title = preference.reason || "";
       chips.appendChild(veto);
     }
+    // Shown only when the rail toggle reveals filtered offers; the reason is
+    // part of the row so a revealed offer explains why it is normally hidden.
+    if (offer.seniority_filter) {
+      var seniorityChip = el("span", "chip seniority", offer.seniority_filter);
+      seniorityChip.title = "Oculta por defecto: " + offer.seniority_filter;
+      chips.appendChild(seniorityChip);
+    }
     summary.appendChild(chips);
 
     var salaryNode;
@@ -2351,6 +2378,16 @@ _SCRIPT = r"""
     if (offersTab) { offersTab.textContent = String(payload.offers.length); }
   }
 
+  // The rail shows the hidden count even while the offers are hidden, so the
+  // reader knows the list is filtered and can reveal it from the keyboard.
+  function refreshSeniorityFilterState() {
+    var button = document.getElementById("filter-show-seniority");
+    var count = Number((payload.summary && payload.summary.seniority_filtered) || 0);
+    button.setAttribute("aria-pressed", filters.showSeniority ? "true" : "false");
+    button.textContent =
+      (filters.showSeniority ? "Ocultar " : "Mostrar ") + count + " ocultas por seniority";
+  }
+
   // The toolbar mirrors every control's state, so a filter is never active
   // without the control showing it.
   function refreshFilterState() {
@@ -2361,6 +2398,7 @@ _SCRIPT = r"""
       var selected = buttons[i].getAttribute("data-value") === filters.recommendation;
       buttons[i].setAttribute("aria-pressed", selected ? "true" : "false");
     }
+    refreshSeniorityFilterState();
   }
 
   // Every control that changes the visible set goes through here, so the list and
@@ -2449,7 +2487,7 @@ _SCRIPT = r"""
   }
 
   function resetFilters() {
-    filters = { text: "", recommendation: "", isNew: false, minScore: null, keyword: "", sort: "score" };
+    filters = { text: "", recommendation: "", isNew: false, showSeniority: false, minScore: null, keyword: "", sort: "score" };
     document.getElementById("filter-text").value = "";
     document.getElementById("filter-min-score").value = "0";
     document.getElementById("filter-keyword").value = "";
@@ -2471,6 +2509,10 @@ _SCRIPT = r"""
     });
     document.getElementById("filter-new").addEventListener("click", function () {
       filters.isNew = !filters.isNew;
+      applyFilters();
+    });
+    document.getElementById("filter-show-seniority").addEventListener("click", function () {
+      filters.showSeniority = !filters.showSeniority;
       applyFilters();
     });
     document.getElementById("filter-min-score").addEventListener("change", function (event) {

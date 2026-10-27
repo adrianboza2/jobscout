@@ -159,7 +159,7 @@ def test_score_prints_unicode_evidence_on_a_cp1252_stdout(
     assert main(_score_args(db_path)) == EXIT_OK
     output = capture.raw()
 
-    assert "scored 4 job(s)" in output
+    assert "scored 3 job(s)" in output
     assert "\\u2011" in output  # escaped, so the operator still sees the data
     assert "\\U0001f600" in output
     assert UNICODE_HYPHEN not in output  # cp1252 cannot carry it at all

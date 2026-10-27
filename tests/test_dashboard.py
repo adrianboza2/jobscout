@@ -3674,43 +3674,84 @@ def test_dashboard_retired_flag_is_provider_scoped_and_normalized(tmp_path: Path
 
 
 # ---------------------------------------------------------------------------
-# CP-10: the CP-9 senior/lead title filter was removed outright
+# Seniority pre-filter (owner reversed CP-10 on 2026-10-27)
 # ---------------------------------------------------------------------------
 
 
-def test_dashboard_has_no_senior_noise_filter(tmp_path: Path) -> None:
-    """A title-based senior/lead filter was tried and removed; it must not return.
-
-    The owner found the heuristic produced both false negatives (real noise
-    slipped through) and false positives (good offers were hidden), so CP-10
-    deletes the flag, the summary key, and the toggle. This test fails loudly if
-    a title heuristic for this purpose is reintroduced.
-    """
-    path = tmp_path / "dash" / "noise-removed.sqlite3"
+def test_dashboard_marks_senior_titles_and_keeps_every_offer(tmp_path: Path) -> None:
+    """Filtered offers stay in the payload; only the client hides them."""
+    path = tmp_path / "dash" / "seniority.sqlite3"
     conn = connect(path)
     try:
         init_db(conn)
-        job, _ = store_posting(
+        senior, _ = store_posting(
             conn,
             _posting(
-                source_job_id="noise-removed",
-                url="https://example.test/jobs/noise-removed",
+                source_job_id="seniority-senior",
+                url="https://example.test/jobs/seniority-senior",
                 title="Senior Platform Engineer",
             ),
             now="2026-09-15T10:00:00Z",
         )
-        insert_evaluation(conn, _score(job.id, 50.0, Recommendation.CONSIDER))
+        exception, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="seniority-junior",
+                url="https://example.test/jobs/seniority-junior",
+                title="Junior Lead Developer",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+        plain, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="seniority-plain",
+                url="https://example.test/jobs/seniority-plain",
+                title="Cloud Engineer",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
     finally:
         conn.close()
 
     payload = _payload(path)
+    offers = {offer["id"]: offer for offer in payload["offers"]}
+
+    assert offers[senior.id]["seniority_filter"] == "title: senior"
+    assert offers[exception.id]["seniority_filter"] is None
+    assert offers[plain.id]["seniority_filter"] is None
+    assert payload["summary"]["seniority_filtered"] == 1
+    assert payload["summary"]["jobs_shown"] == len(payload["offers"]) == 3
+
+
+def test_dashboard_html_has_a_seniority_toggle_hidden_by_default(tmp_path: Path) -> None:
+    """The rail exposes the count and a keyboard-accessible toggle; reset hides."""
+    path = tmp_path / "dash" / "seniority-toggle.sqlite3"
+    conn = connect(path)
+    try:
+        init_db(conn)
+        store_posting(
+            conn,
+            _posting(
+                source_job_id="seniority-toggle",
+                url="https://example.test/jobs/seniority-toggle",
+                title="Senior Platform Engineer",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+    finally:
+        conn.close()
+
     html_text = generate_and_read(path)
 
-    # No per-offer display flag and no hidden-count summary key.
-    assert all("noise" not in offer for offer in payload["offers"])
-    assert "noise_offers" not in payload["summary"]
-    # No control, note, or client state for the removed filter.
+    assert 'id="filter-show-seniority"' in html_text
+    assert 'aria-pressed="false"' in html_text
+    assert "ocultas por seniority" in html_text
+    assert "showSeniority" in html_text
+    assert "seniority_filter" in html_text
+    # The reset action restores the hidden-by-default state.
+    assert html_text.count("showSeniority: false") >= 2
+    # The removed CP-9 filter must not come back under its old names.
     assert "filter-show-noise" not in html_text
     assert "noise-note" not in html_text
     assert "showNoise" not in html_text
-    assert "Mostrar ofertas senior/lead" not in html_text

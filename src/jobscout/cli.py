@@ -110,6 +110,7 @@ from .notify import (
 from .pipeline import ingest_collector_result, ingest_detail_results, ingest_fixture
 from .preference import PreferenceAssessment, PreferenceOutcome, assess_preference
 from .pruning import apply_offer_plan, build_plan
+from .seniority import seniority_filter_reason
 from .scoring import (
     SCORERS,
     effective_fingerprint,
@@ -1564,6 +1565,7 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
     conn = connect(settings.db_path)
     as_json = getattr(args, "as_json", False)
     results: list[dict[str, Any]] = []
+    skipped_seniority = 0
     try:
         init_db(conn)
         if args.job_id:
@@ -1571,20 +1573,30 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
             missing = [job_id for job_id in args.job_id if job_id not in {job.id for job in jobs}]
             for job_id in missing:
                 _write_line(f"job #{job_id} not found", stream=sys.stderr)
-        elif args.rescore:
-            jobs = all_active_jobs(conn, limit=args.limit)
         else:
-            # Input-aware selection: only offers whose current effective scoring
-            # input has no successful evaluation yet are re-scored, so a changed
-            # profile, model, prompt/policy, or description is picked up without
-            # re-running unchanged offers. ``--rescore`` still forces every
-            # active offer.
-            jobs = jobs_needing_evaluation(
-                conn,
-                scorer=args.scorer,
-                limit=args.limit,
-                fingerprint_for=fingerprint_resolver(args.scorer, settings, profile),
-            )
+            if args.rescore:
+                candidates = all_active_jobs(conn)
+            else:
+                # Input-aware selection: only offers whose current effective scoring
+                # input has no successful evaluation yet are re-scored, so a changed
+                # profile, model, prompt/policy, or description is picked up without
+                # re-running unchanged offers. ``--rescore`` still forces every
+                # active offer.
+                candidates = jobs_needing_evaluation(
+                    conn,
+                    scorer=args.scorer,
+                    fingerprint_for=fingerprint_resolver(args.scorer, settings, profile),
+                )
+            # The seniority filter runs before ``--limit`` so hidden offers do not
+            # consume the Hermes sweep's cap. ``--job-id`` deliberately bypasses it.
+            jobs = []
+            for job in candidates:
+                if seniority_filter_reason(job.title) is not None:
+                    skipped_seniority += 1
+                    continue
+                jobs.append(job)
+            if args.limit is not None:
+                jobs = jobs[: args.limit] if int(args.limit) > 0 else []
 
         ok_count = 0
         failed: list[dict[str, Any]] = []
@@ -1670,10 +1682,18 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
             "succeeded": ok_count,
             "failed": failed,
             "fallback_model": fallback_model,
+            "skipped_seniority": skipped_seniority,
             "evaluations": results,
         },
         as_json=as_json,
-        text=f"scored {len(results)} job(s), {ok_count} succeeded, {len(failed)} failed",
+        text=(
+            f"scored {len(results)} job(s), {ok_count} succeeded, {len(failed)} failed"
+            + (
+                f"\nskipped {skipped_seniority} offer(s) filtered by seniority"
+                if skipped_seniority
+                else ""
+            )
+        ),
     )
     if results and ok_count == 0:
         return EXIT_ERROR

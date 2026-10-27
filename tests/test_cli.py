@@ -89,7 +89,7 @@ def test_score_heuristic_then_rank_and_list(db_path: Path, capsys) -> None:
     assert "scorer=heuristic" in output
     assert "recommendation=" in output
     assert "blockers:" in output
-    assert "scored 4 job(s)" in output
+    assert "scored 3 job(s)" in output
 
     assert main(["--db", str(db_path), "rank", "--top", "2", "--json"]) == EXIT_OK
     ranked = json.loads(capsys.readouterr().out)
@@ -179,7 +179,7 @@ def test_score_is_idempotent_without_rescore(db_path: Path, capsys) -> None:
         "--rescore",
     ]
     assert main(rescore) == EXIT_OK
-    assert "scored 4 job(s)" in capsys.readouterr().out
+    assert "scored 3 job(s)" in capsys.readouterr().out
 
 
 def test_score_specific_job_and_unknown_job(db_path: Path, capsys) -> None:
@@ -209,6 +209,133 @@ def test_score_specific_job_and_unknown_job(db_path: Path, capsys) -> None:
     assert main(["--db", str(db_path), "--profile", str(PROFILE), "score", "--job-id", "999999"]) == EXIT_OK
     captured = capsys.readouterr()
     assert "not found" in captured.err
+
+
+def _senior_job_id(db_path: Path, capsys) -> int:
+    """Return the fixture's clearly senior offer id (kept out of score runs)."""
+    assert main(["--db", str(db_path), "list", "--json"]) == EXIT_OK
+    listing = json.loads(capsys.readouterr().out)
+    return next(
+        item["job"]["id"]
+        for item in listing["jobs"]
+        if item["job"]["title"] == "Senior Backend Engineer"
+    )
+
+
+def test_score_skips_senior_offers_before_the_limit(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    senior_id = _senior_job_id(db_path, capsys)
+
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "--profile",
+                str(PROFILE),
+                "score",
+                "--all",
+                "--limit",
+                "1",
+                "--scorer",
+                "heuristic",
+                "--json",
+            ]
+        )
+        == EXIT_OK
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    # The filtered offer is removed before --limit, so it never takes the slot.
+    assert payload["evaluated"] == 1
+    assert payload["skipped_seniority"] == 1
+    assert payload["evaluations"][0]["job_id"] != senior_id
+
+
+def test_score_reports_skipped_seniority_in_text(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "--profile",
+                str(PROFILE),
+                "score",
+                "--all",
+                "--limit",
+                "1",
+                "--scorer",
+                "heuristic",
+            ]
+        )
+        == EXIT_OK
+    )
+    assert "skipped 1 offer(s) filtered by seniority" in capsys.readouterr().out
+
+
+def test_score_rescore_skips_senior_offers_before_the_limit(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    senior_id = _senior_job_id(db_path, capsys)
+
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "--profile",
+                str(PROFILE),
+                "score",
+                "--all",
+                "--rescore",
+                "--limit",
+                "2",
+                "--scorer",
+                "heuristic",
+                "--json",
+            ]
+        )
+        == EXIT_OK
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["evaluated"] == 2
+    assert payload["skipped_seniority"] == 1
+    assert senior_id not in {item["job_id"] for item in payload["evaluations"]}
+
+
+def test_score_job_id_forces_a_filtered_senior_offer(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    senior_id = _senior_job_id(db_path, capsys)
+
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "--profile",
+                str(PROFILE),
+                "score",
+                "--job-id",
+                str(senior_id),
+                "--scorer",
+                "heuristic",
+                "--json",
+            ]
+        )
+        == EXIT_OK
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    # An explicit --job-id is the owner's override: it is scored even when filtered.
+    assert payload["evaluated"] == 1
+    assert payload["skipped_seniority"] == 0
+    assert payload["evaluations"][0]["job_id"] == senior_id
 
 
 def test_score_with_llm_without_configuration_fails_cleanly(db_path: Path, capsys, monkeypatch) -> None:
@@ -256,7 +383,7 @@ def test_score_with_opencode_scorer_uses_mocked_subprocess(
     output = capsys.readouterr().out
     assert exit_code == EXIT_OK
     assert "scorer=opencode" in output
-    assert "scored 4 job(s)" in output
+    assert "scored 3 job(s)" in output
     # The default runner was used: an argument array with no shell.
     assert created and created[0].kwargs.get("shell") is False
 
@@ -349,14 +476,14 @@ def test_score_switches_to_fallback_and_keeps_it_for_the_rest_of_the_run(
     payload = json.loads(captured.out)
     assert exit_code == EXIT_OK
     assert payload["fallback_model"] == FALLBACK_MODEL
-    assert payload["succeeded"] == 4
+    assert payload["succeeded"] == 3
     assert "primary model opencode-go/deepseek-v4.1-flash failed" in captured.err
     assert f"using fallback {FALLBACK_MODEL} for the rest of this run" in captured.err
     # The primary is attempted exactly once; every later offer (including the
     # failed one, re-evaluated) uses the fallback model.
     primary_calls = [model for _, model in calls if model == "opencode-go/deepseek-v4.1-flash#low"]
     assert len(primary_calls) == 1
-    assert [model for _, model in calls].count(FALLBACK_MODEL) == 4
+    assert [model for _, model in calls].count(FALLBACK_MODEL) == 3
 
 
 def test_fallback_skips_offers_already_scored_with_the_fallback_input(
