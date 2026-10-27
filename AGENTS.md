@@ -65,8 +65,9 @@ The full offline suite is the acceptance gate for any change.
 ## Outside this repository (part of the system, not versioned here)
 
 - `~/.hermes/scripts/jobscout_sweep.py` — Hermes' scheduler runs the full cycle every three
-  days at 07:00: LinkedIn details → searches (skipping `retired_for` pairs from
-  `keyword-plan --json`) → Tecnoempleo/GetManfred details → `score --all` (capped at 180
+  days at 07:00: LinkedIn details → searches (LinkedIn per catalog query, skipping
+  `retired_for` pairs; Tecnoempleo runs the function browse and its text queries from the
+  `tecnoempleo` block of `keyword-plan --json`) → Tecnoempleo/GetManfred details → `score --all` (capped at 180
   offers) → dashboard → DB backup. Delivery is `local`: the owner wants no Telegram
   notification. It writes `reports/sweep-YYYY-MM-DD.log`; read that log first when
   something "stopped working".

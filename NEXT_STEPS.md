@@ -25,6 +25,16 @@ working MVP.
   24–30; the "Junior …" queries 58–62; GetManfred 55.
 - **"Discard" means hide, never delete** (project contract): filtered offers
   keep their rows and history and can be shown again.
+- **Done 2026-10-27:** item 1, seniority pre-filter (`d1b0de2`, card
+  `odd/tasks/done/seniority-prefilter.md`; reverses CP-10 by owner decision:
+  165 of 758 active offers filtered, none scored >= 50 or apply/consider).
+  Item 2, Tecnoempleo function browse (`1bd1732`, card
+  `odd/tasks/done/tecnoempleo-function-browse.md`); the Hermes sweep script now
+  reads the `tecnoempleo` block of `keyword-plan --json` (browse 5 pages +
+  "prácticas"), and its `--smoke` check uses the browse. Live check, run #424
+  (1 page): completed, 30 offers, 26 new (6 of them seniority-filtered); their
+  details and scores come with the 2026-10-29 sweep. Initial backfill
+  (`--max-pages 10 --max-items 250`) not run yet.
 - **Next (owner, 2026-10-27; replaces the 2026-10-23 list below):**
   1. **Seniority pre-filter** (spec: item 2 of the 2026-10-23 list). Filtered
      offers are not sent to the model, which also saves Go calls.
