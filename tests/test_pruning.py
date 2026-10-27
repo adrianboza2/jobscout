@@ -519,20 +519,27 @@ def test_prune_keeps_held_tecnoempleo_literal_when_no_good_offer(tmp_path):
     conn = connect(path)
     try:
         init_db(conn)
-        # "Cloud Security Engineer" is kept (held) on Tecnoempleo, not retired:
-        # when its unique offers are all low-scoring it stays a candidate.
-        assert retired_search("tecnoempleo", "Cloud Security Engineer") is None
+        # "Identity and Access Management Engineer" is still active on
+        # Tecnoempleo (the function browse did not retire it): when its unique
+        # offers are all low-scoring it stays a candidate.
+        assert retired_search("tecnoempleo", "Identity and Access Management Engineer") is None
         for index, score in enumerate([1.0, 40.0, 60.0, 80.0]):
             _seed_keyword_series(
                 conn,
                 provider="tecnoempleo",
-                query="Cloud Security Engineer" if index == 0 else f"tecno-{index}",
+                query=(
+                    "Identity and Access Management Engineer"
+                    if index == 0
+                    else f"tecno-{index}"
+                ),
                 scores=[score],
             )
         plan = build_plan(conn)
     finally:
         conn.close()
-    assert [item["query"] for item in plan.keyword_candidates] == ["Cloud Security Engineer"]
+    assert [item["query"] for item in plan.keyword_candidates] == [
+        "Identity and Access Management Engineer"
+    ]
     assert plan.keyword_candidates[0]["provider"] == "tecnoempleo"
 
 

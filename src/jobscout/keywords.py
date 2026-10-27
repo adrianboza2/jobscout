@@ -174,9 +174,12 @@ class RetiredSearch:
 #: Owner rule (2026-09-30): a pair is only retired when cutting it would cost no
 #: good offer (``latest_evaluations.overall_score >= 45``). ``Cloud Security
 #: Engineer|linkedin`` and ``Platform Engineer|linkedin`` were restored because
-#: they cost zero unique offers and four good offers respectively; ``Cloud
-#: Security Engineer|tecnoempleo`` and ``Identity and Access Management
-#: Engineer|tecnoempleo`` stay active for the same reason (two good offers each).
+#: they cost zero unique offers and four good offers respectively; ``Identity
+#: and Access Management Engineer|tecnoempleo`` stays active for the same reason
+#: (two good offers). On 2026-10-27 the owner retired the remaining
+#: Tecnoempleo text searches in favour of one function browse: the browse found
+#: 12 of the 13 known-good offers, and the 13th is the ``prácticas`` internship
+#: case, which stays as the only Tecnoempleo text query.
 RETIRED_SEARCHES: tuple[RetiredSearch, ...] = (
     RetiredSearch(
         provider="tecnoempleo",
@@ -240,6 +243,48 @@ RETIRED_SEARCHES: tuple[RetiredSearch, ...] = (
             "unique-offer audit: 2 unique active offers, none good "
             "(score >= 45), so cutting it costs no good offer"
         ),
+    ),
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="Junior Cloud Engineer",
+        retired_on="2026-10-27",
+        reason="replaced by the Tecnoempleo function browse",
+    ),
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="Junior DevOps Engineer",
+        retired_on="2026-10-27",
+        reason="replaced by the Tecnoempleo function browse",
+    ),
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="Cloud Security Engineer",
+        retired_on="2026-10-27",
+        reason="replaced by the Tecnoempleo function browse",
+    ),
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="DevSecOps Engineer",
+        retired_on="2026-10-27",
+        reason="replaced by the Tecnoempleo function browse",
+    ),
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="Junior DevSecOps Engineer",
+        retired_on="2026-10-27",
+        reason="replaced by the Tecnoempleo function browse",
+    ),
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="Azure Cloud Security",
+        retired_on="2026-10-27",
+        reason="replaced by the Tecnoempleo function browse",
+    ),
+    RetiredSearch(
+        provider="tecnoempleo",
+        query="Azure DevSecOps",
+        retired_on="2026-10-27",
+        reason="replaced by the Tecnoempleo function browse",
     ),
 )
 

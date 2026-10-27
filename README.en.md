@@ -415,7 +415,7 @@ subcommand), and `--version`.
 | `ingest-fixture PATH [--source S] [--label L]` | Normalize, deduplicate, and store a JSON fixture (offline). |
 | `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Bounded public search. Disabled without `--confirm-network`. |
 | `search-getmanfred [--keywords K] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Public GetManfred sitemap inventory. `--keywords` applies a **local** title/slug filter (no fan-out, no private endpoint). No ranking. Disabled without `--confirm-network`. |
-| `search-tecnoempleo --keywords K [--location L] [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Bounded Tecnoempleo public server-rendered search. Enforces `robots.txt` at run time. Disabled without `--confirm-network`. |
+| `search-tecnoempleo (--keywords K [--location L] \| --browse) [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Bounded Tecnoempleo public server-rendered search. `--browse` walks Madrid offers by professional function; it is mutually exclusive with `--keywords` and `--location`. Enforces `robots.txt` at run time. Disabled without `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | List the keyword families and the exact command per query (no network, no database). |
 | `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich LinkedIn jobs with the full description. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence. |
 | `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enrich Tecnoempleo offers from their public detail page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
@@ -447,6 +447,8 @@ python -m jobscout search-getmanfred --max-items 40 --confirm-network
 python -m jobscout search-getmanfred --keywords "Platform Engineer" --max-items 40 --confirm-network  # local filter
 python -m jobscout search-tecnoempleo --keywords "cloud security" --location madrid --dry-run
 python -m jobscout search-tecnoempleo --keywords "cloud security" --max-pages 2 --confirm-network
+python -m jobscout search-tecnoempleo --browse --dry-run                 # function browse, Madrid
+python -m jobscout search-tecnoempleo --browse --max-pages 5 --max-items 150 --confirm-network
 ```
 
 `search-getmanfred` is an **inventory**, not a search: it does no fan-out, and
@@ -482,12 +484,17 @@ first request: if that policy changes, the run fails closed instead of relying
 only on today's permission.
 
 `search-tecnoempleo` uses only the public server-rendered search under
-`/ofertas-trabajo/`. It builds the URL with the keyword as the `te` query
-parameter, the location as a path segment, and `pagina` only from the second
-page onward. It re-reads `robots.txt` before the first request and fails
-closed when the path is disallowed. It uses no login, cookies, private RSS, or
-unauthorized API. The URL shape was verified against live site pages; the parser
-remains conservative and fails closed when the HTML is not recognizable.
+`/ofertas-trabajo/`. In text mode it builds the URL with the keyword as the `te`
+query parameter, the location as a path segment, and `pagina` only from the
+second page onward. In `--browse` mode it walks Madrid offers by professional
+function (`pr=,263,&es=,34,43,40,39,8,45,19,`: DevOps, Técnico de Sistemas,
+Ciberseguridad, Redes, Soporte Técnico, Administrador, and Helpdesk), with the
+commas literal because that is how the live URL was verified; the provenance
+label stored as `query` is `función: sistemas, devops y seguridad (Madrid)`. It
+re-reads `robots.txt` before the first request and fails closed when the path is
+disallowed. It uses no login, cookies, private RSS, or unauthorized API. The URL
+shape was verified against live site pages; the parser remains conservative and
+fails closed when the HTML is not recognizable.
 
 Provenance convention: `provider` (platform), `query` (keyword), `cycle_id`
 (comparable search cycle), and `position_kind` (`search_rank` = real search
@@ -790,6 +797,12 @@ python -m jobscout keyword-plan --json                   # machine-readable repo
 providers that retired that query (`[]` when none did). In text output those
 queries are marked as `- Platform Engineer (retired for: tecnoempleo)`.
 
+`keyword-plan --json` also publishes the Tecnoempleo sweep block under the
+top-level `tecnoempleo` key: `browse` with `label`, `url`, `max_pages` (5), and
+`max_items` (150), plus `text_queries` (`["prácticas"]`). The Hermes sweep reads
+that block instead of hard-coding the URL. In text output the same two lines are
+printed under the plan header. Tecnoempleo text mode (`--keywords`) is unchanged.
+
 Every printed line is a `--dry-run` preview command. Turning one into a real
 search means replacing `--dry-run` with `--confirm-network`, always an explicit
 human action. `JOBSCOUT_KEYWORD_FAMILIES` chooses which families are listed when
@@ -799,21 +812,28 @@ human action. `JOBSCOUT_KEYWORD_FAMILIES` chooses which families are listed when
 
 A `(provider, query)` pair is retired only when cutting it would cost **no good
 offer**. The cost is the active offers that no other query of the same provider
-surfaced; a cost offer is *good* when it scores at least `45`. Seven pairs meet
-that test and can no longer be planned or run, not even in `--dry-run`:
+surfaced; a cost offer is *good* when it scores at least `45`. Fourteen pairs are
+retired and can no longer be planned or run, not even in `--dry-run`:
 
 | Provider | Retired queries |
 |----------|-----------------|
-| Tecnoempleo | `Platform Engineer`, `Azure Security Engineer`, `IAM Engineer`, `Junior Cloud Security Engineer`, `Security Infrastructure Engineer` |
+| Tecnoempleo | `Platform Engineer`, `Azure Security Engineer`, `IAM Engineer`, `Junior Cloud Security Engineer`, `Security Infrastructure Engineer`, `Junior Cloud Engineer`, `Junior DevOps Engineer`, `Cloud Security Engineer`, `DevSecOps Engineer`, `Junior DevSecOps Engineer`, `Azure Cloud Security`, `Azure DevSecOps` |
 | LinkedIn | `Identity and Access Management Engineer`, `IAM Engineer` |
 
 - **Restored.** `Cloud Security Engineer|linkedin` (0 unique offers) and
   `Platform Engineer|linkedin` (30 unique, 4 good) are active again; the audit
   showed retiring `Platform Engineer` would cost good offers.
-- **Kept active.** `Cloud Security Engineer|tecnoempleo` (7 unique, 2 good),
-  `Identity and Access Management Engineer|tecnoempleo` (8 unique, 2 good), and
-  `devops|tecnoempleo` (18 unique, 2 good) are **not** retired: each would cost
-  good offers.
+- **Retired for the function browse (2026-10-27).** The seven text searches that
+  were still active on Tecnoempleo (`Junior Cloud Engineer`, `Junior DevOps
+  Engineer`, `Cloud Security Engineer`, `DevSecOps Engineer`, `Junior DevSecOps
+  Engineer`, `Azure Cloud Security`, `Azure DevSecOps`) are replaced by the
+  function browse: it found 12 of the 13 known-good offers and the 13th is the
+  `prácticas` case, which stays as the only Tecnoempleo text query. LinkedIn
+  keeps all those queries. The CP-8 rule still holds: no query that cost a good
+  offer was retired.
+- **Kept active.** `Identity and Access Management Engineer|tecnoempleo`
+  (8 unique, 2 good) and `devops|tecnoempleo` (18 unique, 2 good) are **not**
+  retired: each would cost good offers.
 - The durable registry lives in `RETIRED_SEARCHES` (`src/jobscout/keywords.py`)
   with provider, query, date, and reason, and each provider's search-config
   constructor enforces it (direct callers, CLI, and `--dry-run`).
@@ -992,9 +1012,11 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
 - The dashboard embeds every active offer by default; `--top N` bounds the report
   to the best `N`, but keyword analytics are computed over the whole database.
   Deactivated offers stay saved but are not shown.
-- `keyword-plan` does not run searches: it prints the bounded plan and one command
-  per query. There is no batch mode that fires several live searches at once; each
-  query is an explicit `search-linkedin` run with `--confirm-network`.
+- `keyword-plan` does not run searches: it prints the bounded plan, the
+  Tecnoempleo block (`browse` + `prácticas`), and one command per query. There is
+  no batch mode that fires several live searches at once; each query is an
+  explicit `search-linkedin` run with `--confirm-network`, and Tecnoempleo runs
+  as either the browse or an explicit text query.
 - The dashboard's human metrics (approval rate) require importing the feedback
   export; until then they read *sin dato*. The comparison between the model
   recommendation and the human decision is available through `calibrate`

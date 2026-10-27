@@ -82,6 +82,23 @@ PROVIDER = "tecnoempleo"
 DEFAULT_PAGE_PARAM = "pagina"
 _RF_ID_RE = re.compile(r"(rf-[0-9a-zA-Z]+)")
 
+#: Browse the Madrid offers by professional function instead of running one text
+#: query per keyword. ``es`` selects DevOps, Técnico de Sistemas, Ciberseguridad,
+#: Redes, Soporte Técnico, Administrador and Helpdesk; ``pr=263`` is Madrid.
+#: Commas stay literal because this is the exact URL verified live.
+TECNOEMPLEO_BROWSE_QUERY = "pr=,263,&es=,34,43,40,39,8,45,19,"
+TECNOEMPLEO_BROWSE_LABEL = "función: sistemas, devops y seguridad (Madrid)"
+
+#: The one text query that stays for Tecnoempleo: internship programmes are
+#: filed under other functions, so the browse does not surface them.
+TECNOEMPLEO_TEXT_QUERIES: tuple[str, ...] = ("prácticas",)
+
+#: Sweep budget published in ``keyword-plan`` for the function browse: five
+#: pages of 30 cards. The hard caps stay untouched; a first backfill is run by
+#: hand with ``--max-pages 10 --max-items 250``.
+BROWSE_PLAN_MAX_PAGES = 5
+BROWSE_PLAN_MAX_ITEMS = 150
+
 
 @dataclass
 class TecnoempleoSearchConfig:
@@ -95,6 +112,7 @@ class TecnoempleoSearchConfig:
     page_param: str = DEFAULT_PAGE_PARAM
     max_pages: int = 2
     max_items: int = 40
+    browse: bool = False
 
     def __post_init__(self) -> None:
         if not self.keywords or not self.keywords.strip():
@@ -137,14 +155,24 @@ class TecnoempleoSearchConfig:
 def build_search_url(config: TecnoempleoSearchConfig, *, page: int = 1) -> str:
     """Build one bounded server-rendered search URL.
 
+    Text mode builds
     ``https://www.tecnoempleo.com/ofertas-trabajo/<location>/?te=<keyword>``, or
     ``https://www.tecnoempleo.com/ofertas-trabajo/?te=<keyword>`` when no
     location is configured, with ``&<page_param>=N`` appended for pages after
     the first. The location is kept as a path segment (the base keeps its
     trailing slash so ``robots.txt`` prefixes stay meaningful); the keyword is
     URL encoded as the ``te`` query parameter via :func:`urllib.parse.urlencode`.
+
+    Browse mode keeps the function filter and Madrid province literal: the live
+    URL was verified with those commas, so encoding them would change the
+    request the owner approved.
     """
     base = config.search_url.rstrip("/")
+    if config.browse:
+        query = TECNOEMPLEO_BROWSE_QUERY
+        if page > 1:
+            query = f"{query}&{config.page_param}={int(page)}"
+        return f"{base}/?{query}"
     if config.location and config.location.strip():
         path = f"{base}/{quote(config.location.strip(), safe='')}/"
     else:
@@ -158,6 +186,21 @@ def build_search_url(config: TecnoempleoSearchConfig, *, page: int = 1) -> str:
 def plan_search_urls(config: TecnoempleoSearchConfig) -> list[str]:
     """Return the URLs a live run would request (used by ``--dry-run``)."""
     return [build_search_url(config, page=page) for page in range(1, config.max_pages + 1)]
+
+
+def browse_plan(search_url: str = DEFAULT_TECNOEMPLEO_SEARCH_URL) -> dict[str, Any]:
+    """The ``keyword-plan`` block for the Tecnoempleo function browse."""
+    config = TecnoempleoSearchConfig(
+        keywords=TECNOEMPLEO_BROWSE_LABEL,
+        search_url=search_url,
+        browse=True,
+    )
+    return {
+        "label": TECNOEMPLEO_BROWSE_LABEL,
+        "url": build_search_url(config),
+        "max_pages": BROWSE_PLAN_MAX_PAGES,
+        "max_items": BROWSE_PLAN_MAX_ITEMS,
+    }
 
 
 # ---------------------------------------------------------------------------

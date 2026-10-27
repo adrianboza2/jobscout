@@ -11,11 +11,13 @@ import pytest
 
 from conftest import FakeHttpClient, FIXTURES, fixture_text, no_network, response
 
-from jobscout.cli import EXIT_ERROR, main
+from jobscout.cli import EXIT_ERROR, EXIT_OK, main
 from jobscout.collectors.base import CollectorDisabledError
 from jobscout.collectors.tecnoempleo import (
     CARD_DESCRIPTION_MAX_CHARS,
+    TECNOEMPLEO_BROWSE_LABEL,
     TecnoempleoSearchConfig,
+    browse_plan,
     build_search_url,
     extract_tecnoempleo_job_id,
     parse_offer_cards,
@@ -47,6 +49,36 @@ def test_build_search_url_encodes_keyword_location_and_page() -> None:
     ]
 
 
+def test_build_browse_url_is_exact_and_keeps_literal_commas() -> None:
+    config = TecnoempleoSearchConfig(
+        keywords=TECNOEMPLEO_BROWSE_LABEL, browse=True, max_pages=3
+    )
+    assert build_search_url(config) == (
+        "https://www.tecnoempleo.com/ofertas-trabajo/"
+        "?pr=,263,&es=,34,43,40,39,8,45,19,"
+    )
+    assert build_search_url(config, page=2) == (
+        "https://www.tecnoempleo.com/ofertas-trabajo/"
+        "?pr=,263,&es=,34,43,40,39,8,45,19,&pagina=2"
+    )
+    assert "%2C" not in build_search_url(config, page=2)
+    assert plan_search_urls(config) == [
+        build_search_url(config, page=page) for page in (1, 2, 3)
+    ]
+
+
+def test_browse_plan_matches_the_owner_sweep_budget() -> None:
+    assert browse_plan() == {
+        "label": "función: sistemas, devops y seguridad (Madrid)",
+        "url": (
+            "https://www.tecnoempleo.com/ofertas-trabajo/"
+            "?pr=,263,&es=,34,43,40,39,8,45,19,"
+        ),
+        "max_pages": 5,
+        "max_items": 150,
+    }
+
+
 def test_config_requires_keywords_and_validates_host_and_caps() -> None:
     with pytest.raises(ValueError):
         TecnoempleoSearchConfig(keywords="  ")
@@ -62,11 +94,28 @@ RETIRED_TECNO_QUERIES = (
     "IAM Engineer",
     "Junior Cloud Security Engineer",
     "Security Infrastructure Engineer",
+    "Junior Cloud Engineer",
+    "Junior DevOps Engineer",
+    "Cloud Security Engineer",
+    "DevSecOps Engineer",
+    "Junior DevSecOps Engineer",
+    "Azure Cloud Security",
+    "Azure DevSecOps",
 )
 #: The CP-8 additions carry the 2026-09-30 decision date.
 CP8_RETIRED_TECNO_QUERIES = (
     "Junior Cloud Security Engineer",
     "Security Infrastructure Engineer",
+)
+#: The function-browse replacement carries the 2026-10-27 decision date.
+BROWSE_RETIRED_TECNO_QUERIES = (
+    "Junior Cloud Engineer",
+    "Junior DevOps Engineer",
+    "Cloud Security Engineer",
+    "DevSecOps Engineer",
+    "Junior DevSecOps Engineer",
+    "Azure Cloud Security",
+    "Azure DevSecOps",
 )
 
 
@@ -77,7 +126,12 @@ def test_retired_tecno_queries_fail_closed_at_the_config_choke_point() -> None:
         message = str(excinfo.value)
         assert query in message
         assert "retired" in message.lower()
-        expected_on = "2026-09-30" if query in CP8_RETIRED_TECNO_QUERIES else "2026-09-29"
+        if query in BROWSE_RETIRED_TECNO_QUERIES:
+            expected_on = "2026-10-27"
+        elif query in CP8_RETIRED_TECNO_QUERIES:
+            expected_on = "2026-09-30"
+        else:
+            expected_on = "2026-09-29"
         assert expected_on in message
     # Normalization folds case/whitespace before the equality check.
     with pytest.raises(ValueError):
@@ -88,10 +142,11 @@ def test_retirement_allows_longer_and_other_provider_queries() -> None:
     # A longer query that merely contains a retired literal is still allowed.
     assert TecnoempleoSearchConfig(keywords="Senior Platform Engineer").keywords
     assert TecnoempleoSearchConfig(keywords="Platform Engineering").keywords
-    # CP-8 kept these Tecnoempleo literals active: each costs a good offer.
-    assert TecnoempleoSearchConfig(keywords="Cloud Security Engineer").keywords
+    # Identity/IAM coverage remains active for Tecnoempleo, and so does the one
+    # text query the browse does not replace.
     assert TecnoempleoSearchConfig(keywords="Identity and Access Management Engineer").keywords
     assert TecnoempleoSearchConfig(keywords="devops").keywords
+    assert TecnoempleoSearchConfig(keywords="prácticas").keywords
 
 
 def test_retired_tecno_query_fails_a_dry_run_with_a_clear_message(
@@ -289,7 +344,7 @@ def test_live_search_completes_for_the_site_no_results_marker(settings) -> None:
     )
     result = search_tecnoempleo(
         TecnoempleoSearchConfig(
-            keywords="Junior DevSecOps Engineer", location="madrid", max_pages=1
+            keywords="backend", location="madrid", max_pages=1
         ),
         settings=settings,
         network_enabled=True,
@@ -345,6 +400,98 @@ def test_live_search_completes_when_a_later_page_is_404(settings) -> None:
     assert len(result.postings) == 3
     assert result.notes is not None and "pagination ended at page 2: 404" in result.notes
     assert client.call_count == 2
+
+
+def test_browse_run_uses_the_label_and_exact_urls(conn, settings) -> None:
+    # The browse reuses the search-results markup; page 2 ending in 404 is a
+    # normal end of pagination. The run query stays the provenance label while
+    # ``planned_urls`` carries the real browse URLs.
+    client = FakeHttpClient(
+        [
+            response(
+                200,
+                fixture_text("tecnoempleo_search_page_three_cards.html"),
+                headers={"content-type": "text/html"},
+            ),
+            response(404, "not found"),
+        ]
+    )
+    config = TecnoempleoSearchConfig(
+        keywords=TECNOEMPLEO_BROWSE_LABEL, browse=True, max_pages=2, max_items=10
+    )
+    result = search_tecnoempleo(
+        config,
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_ALLOW,
+    )
+    assert result.status is SearchRunStatus.COMPLETED
+    assert len(result.postings) == 3
+    assert result.notes is not None and "pagination ended at page 2: 404" in result.notes
+    assert result.planned_urls == [
+        "https://www.tecnoempleo.com/ofertas-trabajo/"
+        "?pr=,263,&es=,34,43,40,39,8,45,19,",
+        "https://www.tecnoempleo.com/ofertas-trabajo/"
+        "?pr=,263,&es=,34,43,40,39,8,45,19,&pagina=2",
+    ]
+
+    outcome = ingest_collector_result(conn, result, config=config, settings=settings)
+    run = get_search_run(conn, outcome.run_id)
+    assert run is not None
+    assert run.query == TECNOEMPLEO_BROWSE_LABEL
+    assert run.params["keywords"] == TECNOEMPLEO_BROWSE_LABEL
+    assert run.params["planned_urls"] == result.planned_urls
+
+
+def test_cli_browse_dry_run_lists_the_two_urls(tmp_path, capsys, monkeypatch) -> None:
+    no_network(monkeypatch)
+    assert (
+        main(
+            [
+                "--db",
+                str(tmp_path / "browse.sqlite3"),
+                "search-tecnoempleo",
+                "--browse",
+                "--max-pages",
+                "2",
+                "--dry-run",
+            ]
+        )
+        == EXIT_OK
+    )
+    out = capsys.readouterr().out
+    assert (
+        "https://www.tecnoempleo.com/ofertas-trabajo/"
+        "?pr=,263,&es=,34,43,40,39,8,45,19,"
+    ) in out
+    assert out.count("https://www.tecnoempleo.com/ofertas-trabajo/") == 2
+    assert "&pagina=2" in out
+    assert not (tmp_path / "browse.sqlite3").exists()
+
+
+def test_cli_browse_rejects_keywords_and_location_without_network(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    no_network(monkeypatch)
+    for extra in (["--keywords", "python"], ["--location", "madrid"]):
+        assert (
+            main(
+                [
+                    "--db",
+                    str(tmp_path / "browse.sqlite3"),
+                    "search-tecnoempleo",
+                    "--browse",
+                    *extra,
+                    "--dry-run",
+                ]
+            )
+            == EXIT_ERROR
+        )
+        err = capsys.readouterr().err
+        assert "cannot be combined" in err
+    assert not (tmp_path / "browse.sqlite3").exists()
 
 
 def test_first_page_404_fails_with_no_postings(settings) -> None:

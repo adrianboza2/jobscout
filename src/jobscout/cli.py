@@ -55,7 +55,10 @@ from .collectors.linkedin_details import (
     plan_detail_targets,
 )
 from .collectors.tecnoempleo import (
+    TECNOEMPLEO_BROWSE_LABEL,
+    TECNOEMPLEO_TEXT_QUERIES,
     TecnoempleoSearchConfig,
+    browse_plan,
     plan_search_urls as plan_tecnoempleo_urls,
     search_tecnoempleo,
 )
@@ -409,7 +412,17 @@ def build_parser() -> argparse.ArgumentParser:
             ),
         )
     )
-    tecnoempleo_parser.add_argument("--keywords", required=True, help="search keywords")
+    tecnoempleo_parser.add_argument(
+        "--browse",
+        action="store_true",
+        help=(
+            "browse offers by professional function in Madrid; mutually "
+            "exclusive with --keywords and --location"
+        ),
+    )
+    tecnoempleo_parser.add_argument(
+        "--keywords", default=None, help="search keywords (text mode)"
+    )
     tecnoempleo_parser.add_argument("--location", default=None, help="province slug filter")
     tecnoempleo_parser.add_argument(
         "--max-pages", type=int, default=None, help="page cap (bounded)"
@@ -945,11 +958,18 @@ def cmd_search_getmanfred(args: argparse.Namespace, settings: Settings) -> int:
 
 
 def cmd_search_tecnoempleo(args: argparse.Namespace, settings: Settings) -> int:
-    """Run the bounded Tecnoempleo public keyword search."""
+    """Run the bounded Tecnoempleo public search (text query or function browse)."""
+    if args.browse and (args.keywords is not None or args.location is not None):
+        _write_line(
+            "usage error: --browse cannot be combined with --keywords or --location",
+            stream=sys.stderr,
+        )
+        return EXIT_ERROR
+
     try:
         config = TecnoempleoSearchConfig(
-            keywords=args.keywords,
-            location=args.location,
+            keywords=TECNOEMPLEO_BROWSE_LABEL if args.browse else args.keywords,
+            location=None if args.browse else args.location,
             search_url=settings.tecnoempleo_search_url,
             robots_url=settings.tecnoempleo_robots_url,
             offer_path_marker=settings.tecnoempleo_offer_path_marker,
@@ -963,6 +983,7 @@ def cmd_search_tecnoempleo(args: argparse.Namespace, settings: Settings) -> int:
                 if args.max_items is not None
                 else settings.tecnoempleo_max_items
             ),
+            browse=args.browse,
         )
     except (ConfigError, ValueError) as exc:
         _write_line(f"invalid Tecnoempleo options: {exc}", stream=sys.stderr)
@@ -1748,9 +1769,17 @@ def cmd_keyword_plan(args: argparse.Namespace, settings: Settings) -> int:
         location=args.location,
         remote=args.remote,
     )
+    tecnoempleo = {
+        "browse": browse_plan(settings.tecnoempleo_search_url),
+        "text_queries": list(TECNOEMPLEO_TEXT_QUERIES),
+    }
+    browse = tecnoempleo["browse"]
     lines = [
         f"keyword plan: {len(families)} family(ies), {len(planned)} bounded query(ies); "
-        "no request was performed"
+        "no request was performed",
+        f"tecnoempleo browse: {browse['label']} -> {browse['url']} "
+        f"(max {browse['max_pages']} page(s), {browse['max_items']} item(s))",
+        f"tecnoempleo text queries: {', '.join(tecnoempleo['text_queries'])}",
     ]
     retired_for_by_query = {item["query"]: item["retired_for"] for item in planned}
     for family in families:
@@ -1773,6 +1802,7 @@ def cmd_keyword_plan(args: argparse.Namespace, settings: Settings) -> int:
             "planned": planned,
             "family_count": len(families),
             "query_count": len(planned),
+            "tecnoempleo": tecnoempleo,
         },
         as_json=getattr(args, "as_json", False),
         text="\n".join(lines),

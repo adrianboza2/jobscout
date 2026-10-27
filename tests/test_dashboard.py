@@ -258,15 +258,23 @@ def _seed_dashboard_db(path: Path) -> dict[str, int]:
     return {"job1": int(job1.id), "job2": int(job2.id), "job3": int(job3.id)}
 
 
-#: The pairs the owner retired (2026-09-29 decision plus the CP-8 additions),
-#: provider-keyed. Kept local to the test module on purpose: the dashboard tests
-#: must fail if the production registry changes, not silently follow it.
+#: The pairs the owner retired (2026-09-29 decision, the CP-8 additions, and
+#: the 2026-10-27 function-browse replacement), provider-keyed. Kept local to
+#: the test module on purpose: the dashboard tests must fail if the production
+#: registry changes, not silently follow it.
 RETIRED_KEYWORD_PAIRS: tuple[tuple[str, str], ...] = (
     ("tecnoempleo", "Platform Engineer"),
     ("tecnoempleo", "Azure Security Engineer"),
     ("tecnoempleo", "IAM Engineer"),
     ("tecnoempleo", "Junior Cloud Security Engineer"),
     ("tecnoempleo", "Security Infrastructure Engineer"),
+    ("tecnoempleo", "Junior Cloud Engineer"),
+    ("tecnoempleo", "Junior DevOps Engineer"),
+    ("tecnoempleo", "Cloud Security Engineer"),
+    ("tecnoempleo", "DevSecOps Engineer"),
+    ("tecnoempleo", "Junior DevSecOps Engineer"),
+    ("tecnoempleo", "Azure Cloud Security"),
+    ("tecnoempleo", "Azure DevSecOps"),
     ("linkedin", "Identity and Access Management Engineer"),
     ("linkedin", "IAM Engineer"),
 )
@@ -3654,7 +3662,7 @@ def test_dashboard_retired_flag_is_provider_scoped_and_normalized(tmp_path: Path
         _seed_keyword_series(conn, provider="tecnoempleo", keyword="AZURE SECURITY ENGINEER")
         # Retired on Tecnoempleo only: stays active on LinkedIn.
         _seed_keyword_series(conn, provider="linkedin", keyword="Azure Security Engineer")
-        # CP-8 kept these Tecnoempleo literals active (they cost good offers).
+        # The function browse retired this Tecnoempleo literal; LinkedIn keeps it.
         _seed_keyword_series(conn, provider="tecnoempleo", keyword="Cloud Security Engineer")
         # CP-8 restored this LinkedIn literal.
         _seed_keyword_series(conn, provider="linkedin", keyword="Cloud Security Engineer")
@@ -3669,7 +3677,7 @@ def test_dashboard_retired_flag_is_provider_scoped_and_normalized(tmp_path: Path
     assert ("tecnoempleo", "Identity and Access Management Engineer") in active
     assert ("tecnoempleo", "AZURE SECURITY ENGINEER") in retired
     assert ("linkedin", "Azure Security Engineer") in active
-    assert ("tecnoempleo", "Cloud Security Engineer") in active
+    assert ("tecnoempleo", "Cloud Security Engineer") in retired
     assert ("linkedin", "Cloud Security Engineer") in active
 
 

@@ -422,7 +422,7 @@ subcomando) y `--version`.
 | `ingest-fixture PATH [--source S] [--label L]` | Normaliza, deduplica y guarda un fixture JSON (sin red). |
 | `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Búsqueda pública acotada. Deshabilitada sin `--confirm-network`. |
 | `search-getmanfred [--keywords K] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Inventario del sitemap público de GetManfred. `--keywords` aplica un filtro **local** (título/slug), sin fan-out ni endpoint privado. Sin ranking. Deshabilitado sin `--confirm-network`. |
-| `search-tecnoempleo --keywords K [--location L] [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Búsqueda pública server-rendered de Tecnoempleo. Respeta `robots.txt` en tiempo de ejecución. Deshabilitada sin `--confirm-network`. |
+| `search-tecnoempleo (--keywords K [--location L] \| --browse) [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Búsqueda pública server-rendered de Tecnoempleo. `--browse` recorre las ofertas de Madrid por función profesional; es mutuamente excluyente con `--keywords` y `--location`. Respeta `robots.txt` en tiempo de ejecución. Deshabilitada sin `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | Lista las familias de palabras clave y el comando exacto por consulta (sin red, sin base de datos). |
 | `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas de LinkedIn con la descripción completa. Por defecto, las que aún no están enriquecidas; `--refresh` vuelve sobre las ya consultadas con evidencia obsoleta o reintentable. |
 | `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enriquece ofertas de Tecnoempleo desde su página de detalle pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
@@ -454,6 +454,8 @@ python -m jobscout search-getmanfred --max-items 40 --confirm-network
 python -m jobscout search-getmanfred --keywords "Platform Engineer" --max-items 40 --confirm-network  # filtro local
 python -m jobscout search-tecnoempleo --keywords "cloud security" --location madrid --dry-run
 python -m jobscout search-tecnoempleo --keywords "cloud security" --max-pages 2 --confirm-network
+python -m jobscout search-tecnoempleo --browse --dry-run                 # browse por función, Madrid
+python -m jobscout search-tecnoempleo --browse --max-pages 5 --max-items 150 --confirm-network
 ```
 
 `search-getmanfred` es un **inventario**, no una búsqueda: no genera fan-out y
@@ -492,12 +494,17 @@ adaptador sigue releyendo `robots.txt` antes del primer request: si esa polític
 cambia, la corrida falla cerrado en lugar de confiar solo en el permiso de hoy.
 
 `search-tecnoempleo` usa solo la búsqueda pública server-rendered bajo
-`/ofertas-trabajo/`. Construye la URL con la keyword como query param `te`, la
-ubicación como segmento de path y `pagina` solo desde la segunda página. Antes
-del primer request vuelve a leer `robots.txt` y falla
-cerrado si la ruta está deshabilitada. No usa login, cookies, RSS privado ni API
-no autorizada. La forma de la URL fue verificada contra páginas reales del sitio;
-el parser sigue siendo conservador y falla cerrado ante HTML no reconocible.
+`/ofertas-trabajo/`. En modo texto construye la URL con la keyword como query
+param `te`, la ubicación como segmento de path y `pagina` solo desde la segunda
+página. En modo `--browse` recorre las ofertas de Madrid por función profesional
+(`pr=,263,&es=,34,43,40,39,8,45,19,`: DevOps, Técnico de Sistemas,
+Ciberseguridad, Redes, Soporte Técnico, Administrador y Helpdesk), con las comas
+literales porque así se verificó la URL en vivo; la etiqueta de procedencia
+guardada como `query` es `función: sistemas, devops y seguridad (Madrid)`. Antes
+del primer request vuelve a leer `robots.txt` y falla cerrado si la ruta está
+deshabilitada. No usa login, cookies, RSS privado ni API no autorizada. La forma
+de la URL fue verificada contra páginas reales del sitio; el parser sigue siendo
+conservador y falla cerrado ante HTML no reconocible.
 
 Convención de procedencia: `provider` (plataforma), `query` (palabra clave),
 `cycle_id` (ciclo de búsqueda comparable) y `position_kind`
@@ -810,6 +817,13 @@ python -m jobscout keyword-plan --json                   # informe legible por m
 ordenada de proveedores que retiraron esa consulta (`[]` si ninguno). En el texto,
 esas consultas se marcan como `- Platform Engineer (retired for: tecnoempleo)`.
 
+`keyword-plan --json` también publica el bloque de barrido de Tecnoempleo en la
+clave superior `tecnoempleo`: `browse` con `label`, `url`, `max_pages` (5) y
+`max_items` (150), más `text_queries` (`["prácticas"]`). El barrido de Hermes lee
+ese bloque en lugar de llevar la URL fija. En texto se imprimen las mismas dos
+líneas bajo la cabecera del plan. El modo texto (`--keywords`) de Tecnoempleo
+sigue igual.
+
 Cada línea impresa es un comando de vista previa (`--dry-run`). Convertirlo en una
 búsqueda real es reemplazar `--dry-run` por `--confirm-network`, siempre una
 acción humana explícita. `JOBSCOUT_KEYWORD_FAMILIES` fija qué familias se listan
@@ -820,21 +834,28 @@ cuando no pasas `--family`; un id desconocido falla al iniciar.
 Un par `(proveedor, consulta)` se retira solo cuando cortarlo no costaría **ninguna
 buena oferta**. El costo son las ofertas activas que ninguna otra consulta del
 mismo proveedor trajo; una oferta del costo es *buena* cuando puntúa al menos `45`.
-Siete pares cumplen esa prueba y ya no se pueden planificar ni ejecutar, ni
+Catorce pares están retirados y ya no se pueden planificar ni ejecutar, ni
 siquiera en `--dry-run`:
 
 | Proveedor | Consultas retiradas |
 |-----------|---------------------|
-| Tecnoempleo | `Platform Engineer`, `Azure Security Engineer`, `IAM Engineer`, `Junior Cloud Security Engineer`, `Security Infrastructure Engineer` |
+| Tecnoempleo | `Platform Engineer`, `Azure Security Engineer`, `IAM Engineer`, `Junior Cloud Security Engineer`, `Security Infrastructure Engineer`, `Junior Cloud Engineer`, `Junior DevOps Engineer`, `Cloud Security Engineer`, `DevSecOps Engineer`, `Junior DevSecOps Engineer`, `Azure Cloud Security`, `Azure DevSecOps` |
 | LinkedIn | `Identity and Access Management Engineer`, `IAM Engineer` |
 
 - **Restauradas.** `Cloud Security Engineer|linkedin` (0 ofertas únicas) y
   `Platform Engineer|linkedin` (30 únicas, 4 buenas) vuelven a estar activas; la
   auditoría mostró que retirar `Platform Engineer` costaría buenas ofertas.
-- **Se mantienen activas.** `Cloud Security Engineer|tecnoempleo` (7 únicas, 2
-  buenas), `Identity and Access Management Engineer|tecnoempleo` (8 únicas, 2
-  buenas) y `devops|tecnoempleo` (18 únicas, 2 buenas) **no** se retiran: cada uno
-  costaría buenas ofertas.
+- **Retiradas por la función (2026-10-27).** Las siete búsquedas de texto que
+  seguían activas en Tecnoempleo (`Junior Cloud Engineer`, `Junior DevOps
+  Engineer`, `Cloud Security Engineer`, `DevSecOps Engineer`, `Junior DevSecOps
+  Engineer`, `Azure Cloud Security`, `Azure DevSecOps`) se sustituyen por el
+  browse por función: encontró 12 de las 13 ofertas buenas conocidas y la 13 es
+  el caso de `prácticas`, que sigue como única consulta de texto de Tecnoempleo.
+  LinkedIn conserva todas esas consultas. La regla CP-8 se mantiene: no se retiró
+  ninguna consulta que costara una buena oferta.
+- **Se mantienen activas.** `Identity and Access Management Engineer|tecnoempleo`
+  (8 únicas, 2 buenas) y `devops|tecnoempleo` (18 únicas, 2 buenas) **no** se
+  retiran: cada uno costaría buenas ofertas.
 - El registro durable vive en `RETIRED_SEARCHES` (`src/jobscout/keywords.py`) con
   proveedor, consulta, fecha y motivo, y el mismo par queda bloqueado en el
   constructor de la búsqueda de cada collector (llamadores directos, CLI y
@@ -1020,9 +1041,11 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
 - El tablero embebe por defecto todas las ofertas activas; `--top N` limita el
   informe a las `N` mejores, pero la analítica de palabras clave se calcula sobre
   toda la base. Las ofertas desactivadas siguen guardadas pero no se muestran.
-- `keyword-plan` no ejecuta búsquedas: imprime el plan acotado y el comando por
-  consulta. No existe una corrida por lote que dispare varias búsquedas en vivo;
-  cada query es un `search-linkedin` explícito con `--confirm-network`.
+- `keyword-plan` no ejecuta búsquedas: imprime el plan acotado, el bloque de
+  Tecnoempleo (`browse` + `prácticas`) y el comando por consulta. No existe una
+  corrida por lote que dispare varias búsquedas en vivo; cada query es un
+  `search-linkedin` explícito con `--confirm-network`, y Tecnoempleo se ejecuta
+  como browse o como consulta de texto explícita.
 - Las métricas humanas del tablero (frecuencia de aprobación) requieren importar
   la exportación de feedback; mientras no se importe, quedan en *sin dato*. La
   comparación entre recomendación del modelo y decisión humana está disponible con

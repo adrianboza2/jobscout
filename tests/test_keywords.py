@@ -140,8 +140,8 @@ def test_planned_queries_report_retired_providers() -> None:
     planned = {item["query"]: item for item in planned_queries()}
     assert planned["Platform Engineer"]["retired_for"] == ["tecnoempleo"]
     assert planned["Junior Cloud Security Engineer"]["retired_for"] == ["tecnoempleo"]
-    assert planned["Junior Cloud Engineer"]["retired_for"] == []
-    assert all("retired_for" in item for item in planned.values())
+    # The function browse replaced every per-keyword Tecnoempleo search.
+    assert all(item["retired_for"] == ["tecnoempleo"] for item in planned.values())
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +155,13 @@ RETIRED_TECNO_QUERIES = (
     "IAM Engineer",
     "Junior Cloud Security Engineer",
     "Security Infrastructure Engineer",
+    "Junior Cloud Engineer",
+    "Junior DevOps Engineer",
+    "Cloud Security Engineer",
+    "DevSecOps Engineer",
+    "Junior DevSecOps Engineer",
+    "Azure Cloud Security",
+    "Azure DevSecOps",
 )
 RETIRED_LINKEDIN_QUERIES = (
     "Identity and Access Management Engineer",
@@ -170,16 +177,32 @@ CP8_RETIRED_PAIRS = (
     ("tecnoempleo", "Junior Cloud Security Engineer"),
     ("tecnoempleo", "Security Infrastructure Engineer"),
 )
+#: The function-browse replacement carries the 2026-10-27 decision date.
+BROWSE_RETIRED_PAIRS = (
+    ("tecnoempleo", "Junior Cloud Engineer"),
+    ("tecnoempleo", "Junior DevOps Engineer"),
+    ("tecnoempleo", "Cloud Security Engineer"),
+    ("tecnoempleo", "DevSecOps Engineer"),
+    ("tecnoempleo", "Junior DevSecOps Engineer"),
+    ("tecnoempleo", "Azure Cloud Security"),
+    ("tecnoempleo", "Azure DevSecOps"),
+)
 
 
 def test_retirement_registry_records_provider_query_date_and_reason() -> None:
-    assert len(RETIRED_SEARCHES) == 7
+    assert len(RETIRED_SEARCHES) == 14
     observed = {(entry.provider, entry.query) for entry in RETIRED_SEARCHES}
     assert observed == set(RETIRED_PAIRS)
     for entry in RETIRED_SEARCHES:
         assert entry.reason.strip()
         assert entry.provider in {"tecnoempleo", "linkedin"}
-        expected_on = "2026-09-30" if (entry.provider, entry.query) in CP8_RETIRED_PAIRS else "2026-09-29"
+        if (entry.provider, entry.query) in BROWSE_RETIRED_PAIRS:
+            expected_on = "2026-10-27"
+            assert entry.reason == "replaced by the Tecnoempleo function browse"
+        elif (entry.provider, entry.query) in CP8_RETIRED_PAIRS:
+            expected_on = "2026-09-30"
+        else:
+            expected_on = "2026-09-29"
         assert entry.retired_on == expected_on
 
 
@@ -217,8 +240,8 @@ def test_retired_search_is_provider_scoped() -> None:
     # Provider-exclusive retirements do not leak to the other listed provider.
     assert retired_search("linkedin", "Azure Security Engineer") is None
     assert retired_search("linkedin", "Junior Cloud Security Engineer") is None
-    # CP-8 kept these Tecnoempleo literals active (they cost good offers).
-    assert retired_search("tecnoempleo", "Cloud Security Engineer") is None
+    assert retired_search("linkedin", "Cloud Security Engineer") is None
+    # Identity/IAM coverage stays active for Tecnoempleo.
     assert retired_search("tecnoempleo", "Identity and Access Management Engineer") is None
 
 
@@ -331,7 +354,8 @@ def test_keyword_plan_json_reports_retired_providers(capsys, monkeypatch) -> Non
     payload = json.loads(capsys.readouterr().out)
     retired = {item["query"]: item["retired_for"] for item in payload["planned"]}
     assert retired["Platform Engineer"] == ["tecnoempleo"]
-    assert retired["Junior Cloud Engineer"] == []
+    # Every catalog query is retired for Tecnoempleo since the function browse.
+    assert retired["Junior Cloud Engineer"] == ["tecnoempleo"]
     assert all("retired_for" in item for item in payload["planned"])
 
 
@@ -343,8 +367,32 @@ def test_keyword_plan_text_marks_retired_queries(capsys, monkeypatch) -> None:
     output = capsys.readouterr().out
     assert "- Platform Engineer (retired for: tecnoempleo)" in output
     assert "- Junior Cloud Security Engineer (retired for: tecnoempleo)" in output
-    assert "- Junior Cloud Engineer" in output
-    assert "- Junior Cloud Engineer (retired for:" not in output
+    assert "- Junior Cloud Engineer (retired for: tecnoempleo)" in output
+
+
+def test_keyword_plan_publishes_the_tecnoempleo_function_browse(capsys, monkeypatch) -> None:
+    no_network(monkeypatch)
+
+    assert main(["keyword-plan", "--json"]) == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["tecnoempleo"] == {
+        "browse": {
+            "label": "función: sistemas, devops y seguridad (Madrid)",
+            "url": (
+                "https://www.tecnoempleo.com/ofertas-trabajo/"
+                "?pr=,263,&es=,34,43,40,39,8,45,19,"
+            ),
+            "max_pages": 5,
+            "max_items": 150,
+        },
+        "text_queries": ["prácticas"],
+    }
+
+    assert main(["keyword-plan"]) == EXIT_OK
+    output = capsys.readouterr().out
+    assert "tecnoempleo browse: función: sistemas, devops y seguridad (Madrid)" in output
+    assert "?pr=,263,&es=,34,43,40,39,8,45,19," in output
+    assert "tecnoempleo text queries: prácticas" in output
 
 
 def test_keyword_plan_uses_the_configured_families(capsys, monkeypatch) -> None:
