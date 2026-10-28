@@ -3,6 +3,59 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-28 — query review, full re-score with OpenCode Go
+
+- **Item 3, residual query review (owner, 2026-10-28): no LinkedIn query is
+  retired.** Measured over active, non-seniority-filtered offers, every
+  candidate still costs at least one unique good offer (CP-8, score >= 45):
+  "Azure Cloud Security" 1, "Azure Security Engineer" 3, "Cloud Security
+  Engineer" 4, "Security Infrastructure Engineer" 6, "Platform Engineer" 23.
+  "Platform Engineer" is not residual at all (median 54, 34 of its 39 offers come
+  from no other query). Re-measured after the Go re-score (below): 3, 1, 4, 3
+  and 19, so CP-8 still blocks every retirement. No code change.
+- **Item 4, full re-score with `opencode-go/deepseek-v4.1-flash`:** manual
+  `score --all` on 2026-10-28, 00:14–02:46, hard stop at 06:30 so it could not
+  overlap the 07:00 sweep; DB copy `data/jobscout.sqlite3.pre-rescore-2026-10-28`;
+  log `reports/rescore-2026-10-28.log`. 584 offers, 579 ok, 5 isolated
+  `ECONNRESET` (#1035, #518, #31, #1038, #20), all ok on one retry with
+  `--job-id`; 162 skipped by the seniority filter. ~15 s per call. Dashboard
+  regenerated. All 613 active, non-filtered offers now carry a Go score. The 20
+  new non-filtered offers from Tecnoempleo run #424 were scored on listing text
+  only (no details yet); the sweep re-scores them once their details are
+  fetched, because the description is part of the input fingerprint.
+- **Go vs the previous model mix (564 offers that changed model):** rank
+  correlation ~0.85, mean change -1.4 (longcat -2.4, minimax -2.0,
+  deepseek-free +0.6); 274 moved <= 5 points, 65 moved >= 15. Go is stricter on
+  "apply": 27 -> 16 (13 apply -> consider, 2 consider -> apply);
+  consider -> skip 51, skip -> consider 24.
+- **Percentiles, before (4 models) -> after (Go only), seniority-filtered
+  excluded:** offers 593 -> 613; median 48 -> 46; deciles
+  20/25/30/40/48/55/58/60/66 -> 18/24/30/37/46/54/58/60/63; >= 50: 288 -> 283.
+  Bottom half (<= median) 305 -> 307: skip 220 -> 256, consider 85 -> 51.
+  Reasons in the bottom half (keyword match on rationale/blockers/gaps, not the
+  same classifier as 2026-10-27): seniority/experience 179 -> 198,
+  stack/role mismatch 92 -> 79, location 19 -> 8, language 13 -> 7, clearance
+  2 -> 1. Titles with senior/architect/lead in the bottom half: 0 (the filter
+  removed the 118/19/12 of 2026-10-27). For reference, 2026-10-27 counted
+  "below" as <= median (383 at <= 35; 374 at < 35).
+- **By source (after):** LinkedIn median 50 (54 before), GetManfred 55 (52),
+  Tecnoempleo 28 (25.5). **By LinkedIn query (after):** "Junior …" 52–62, rest
+  34–56 (plus "Cloud Infrastructure Engineer" 62.5 on 4 offers); lowest "Security Infrastructure Engineer" 34 (31 of 47 below the
+  median), "Azure Security Engineer" 40, "Cloud Operations Engineer" 42, "Azure
+  Cloud Security" 44 (36.5 before); the retired IAM queries' 35 leftovers
+  18–24. The Tecnoempleo function browse shows median 42 on 24 offers versus
+  19–32 for the old text queries, but 20 of those were scored without details.
+- **Corrections to the 2026-10-27 entry:** the sweep runs on 2026-10-28 (cron
+  `0 7 */3 * *`), not 2026-10-29; `score --all` orders candidates by
+  `last_seen_at DESC, id DESC`, not by `id`, so a sweep's own offers go first.
+- **Known risk:** the sweep's `SCORE_CAP = 180` was sized for ~10 s per offer;
+  Go takes ~15 s, so 180 offers need ~45 min against a 3000 s global budget.
+  Harmless while only new offers need scoring; after any future model, prompt or
+  profile change the scoring phase would be cut by the budget and leave the
+  dashboard and backup a few seconds. Part of item 5.
+- **Next:** items 5 (scoring queue) and 6 (application-drafts plan) are
+  proposals for the owner; nothing implemented.
+
 ## Session 2026-10-27 — scorer on OpenCode Go, bottom-half analysis, cleanup plan
 
 - **Scorer model (owner, permanent):** `.env` now uses
