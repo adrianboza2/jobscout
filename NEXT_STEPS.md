@@ -3,7 +3,7 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
-## Session 2026-10-28 — query review, full re-score with OpenCode Go
+## Session 2026-10-28 — query review, full re-score with OpenCode Go, scoring queue plan
 
 - **Item 3, residual query review (owner, 2026-10-28): no LinkedIn query is
   retired.** Measured over active, non-seniority-filtered offers, every
@@ -48,13 +48,59 @@ working MVP.
 - **Corrections to the 2026-10-27 entry:** the sweep runs on 2026-10-28 (cron
   `0 7 */3 * *`), not 2026-10-29; `score --all` orders candidates by
   `last_seen_at DESC, id DESC`, not by `id`, so a sweep's own offers go first.
-- **Known risk:** the sweep's `SCORE_CAP = 180` was sized for ~10 s per offer;
-  Go takes ~15 s, so 180 offers need ~45 min against a 3000 s global budget.
-  Harmless while only new offers need scoring; after any future model, prompt or
-  profile change the scoring phase would be cut by the budget and leave the
-  dashboard and backup a few seconds. Part of item 5.
-- **Next:** items 5 (scoring queue) and 6 (application-drafts plan) are
-  proposals for the owner; nothing implemented.
+- **Sweep 2026-10-28** (first with the Tecnoempleo browse, after the
+  re-score): 143 new offers; scoring 07:10–07:38, 124 offers, 122 ok, 2
+  isolated `ECONNRESET` (#1338, #1212; the next sweep retries them). 99 of the
+  122 were scored without details (89 Tecnoempleo, 10 LinkedIn), so they will be
+  paid again when their details arrive. Pending details after the sweep:
+  Tecnoempleo 139, LinkedIn 163. Not cut by the budget, but the margin is thin:
+  the phases before scoring took ~10 min and Go takes ~13–15 s per offer, so a
+  full 180-offer batch would end near the 3000 s limit and leave the dashboard
+  and backup a few seconds (`SCORE_CAP = 180` was sized for ~10 s per offer).
+- **Card-only scores:** 79 of 378 active LinkedIn offers were scored from the
+  search card alone; 74 of them are "consider", mean confidence 0.38 (0.79 with
+  details). `score` never checks for a description (`cli.py:1597-1620`).
+- **Next (owner, 2026-10-28; replaces the 2026-10-27 list):**
+  1. **Scoring queue** (owner reviews the spec before implementation):
+     a. **No scoring without details**, with the predicate of
+        `jobs_needing_details` (`db.py:1382`: `content_status != 'ok'` or an
+        empty description). Exceptions: after 2 failed detail attempts (not a
+        404) the offer is scored with what there is, so it never stays in limbo;
+        `--job-id` forces it. The dashboard lists these offers at the end as
+        pending details. Why: card-only scores are uninformative and paid twice.
+        Cost: a new offer gets its score once its details arrive (1.5–3 days in
+        steady state, ~6 days while today's backlog drains).
+     b. **Never-scored offers first, then re-scores**, each group by
+        `last_seen_at DESC, id DESC` as today, so a model, prompt or profile
+        change never pushes a sweep's new offers behind ~600 re-scores.
+        Ordering by the heuristic score (2026-10-23 idea) is dropped: the cap
+        already fits all new offers of a sweep.
+     c. **Stop after 3 consecutive provider errors** (`status=error`) and
+        report how far the run got; today the loop never stops
+        (`cli.py:1630-1694`), so an exhausted Go 5-hour window would write an
+        error row for every remaining offer. The 2026-10-28 re-score had 5
+        isolated `ECONNRESET` in 584 calls, never two in a row.
+     d. **Hermes sweep script** (outside the repo, changed once after merging):
+        score cap from the time left, `min(180, (left - 180 s) / 16 s)`, keeping
+        ~3 min for the dashboard and backup; the 19:00 mid-cycle job also
+        fetches Tecnoempleo details (required with a., otherwise the
+        Tecnoempleo backlog waits ~12 days). `DETAIL_CAP` and pacing unchanged.
+     a–c go in the repo with new ordering tests (none exist today;
+     `tests/test_db.py:707-791` cover the selection only) and README ES/EN;
+     d after merging.
+  2. **Longer term: application-drafts plan.** Start with a company-dossier
+     pilot: an on-demand `jobscout dossier --job-id N` using OpenCode Go with
+     `webfetch` (websearch is denied, HTTP 402), one Markdown file per company
+     under `data/` with sector, size, stack, remote policy, junior hiring and
+     dated source URLs; never LinkedIn pages; linked from the dashboard. Pilot
+     on the current "apply" offers (16), then score them with and without the
+     dossier on a DB copy; the scorer reads dossiers only if the owner judges
+     the scores better. Then tailored CV and cover letter in Markdown for
+     "apply" offers only (the structure Manfred's CV Analyzer accepts), reading
+     `~/vault/cv.md` at run time, claiming nothing the CV does not say, never
+     sending phone or email to the model, draft-only; then interview prep;
+     LaTeX when applications start (May–June 2027). Open question: how much
+     the model finds with `webfetch` alone.
 
 ## Session 2026-10-27 — scorer on OpenCode Go, bottom-half analysis, cleanup plan
 
