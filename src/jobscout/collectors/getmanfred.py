@@ -18,6 +18,11 @@ Scope and ethics (enforced by construction, not by documentation alone):
   are kept. One bounded sitemap fetch yields the whole catalog; there is no
   query fan-out and no second request per keyword. A run with no keyword is a
   plain inventory of the whole sitemap.
+* **Recency cut.** The sitemap keeps offers from years back, so an optional
+  ``max_age_days`` window drops entries whose ``lastmod`` is older than that
+  many days before the run. Same single fetch; an entry with no ``lastmod`` or
+  an unparseable one is kept, because an unknown age is not evidence of a stale
+  offer.
 * **Inventory, not search.** Every observed position is recorded as
   ``position_kind = none`` with rank 0, because a sitemap has no result order.
   The offer title is derived from the public URL slug and the company is left
@@ -42,13 +47,16 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 from xml.etree import ElementTree
 
 from ..config import (
+    DEFAULT_GETMANFRED_MAX_AGE_DAYS,
     DEFAULT_GETMANFRED_OFFER_PATH_PREFIX,
     DEFAULT_GETMANFRED_SITEMAP_URL,
+    HARD_MAX_GETMANFRED_AGE_DAYS,
     HARD_MAX_ITEMS,
     HARD_MAX_PAGES,
     Settings,
@@ -64,7 +72,7 @@ from ..models import (
     SearchRunStatus,
 )
 from ..normalize import normalize_job_posting
-from ..timeutil import utcnow_iso
+from ..timeutil import age_days, utcnow, utcnow_iso
 from ..url_policy import is_getmanfred_host, validate_getmanfred_url
 from .keyword_match import matching_keywords
 from .base import (
@@ -88,6 +96,16 @@ SITEMAP_KIND_UNKNOWN = "unknown"
 
 _OFFER_ID_RE = re.compile(r"/ofertas-empleo/(\d+)(?:/|$)")
 
+#: Short GetManfred-specific terms for the local sitemap filter. Slugs are short
+#: (``fcm-sre-devops-engineer-jul26``), while a catalog query such as "Junior
+#: Cloud Engineer" must match every one of its tokens, so the long queries miss
+#: most real offers. Any single term here is enough to keep an offer.
+GETMANFRED_TERMS: tuple[str, ...] = (
+    "devops", "devsecops", "sre", "cloud", "azure", "aws", "platform",
+    "infrastructure", "infraestructura", "sysadmin", "sistemas", "systems",
+    "security", "seguridad", "cybersecurity", "ciberseguridad", "kubernetes", "iam",
+)
+
 
 @dataclass
 class GetManfredSitemapConfig:
@@ -97,11 +115,15 @@ class GetManfredSitemapConfig:
     sitemap (no fan-out, no private endpoint): only offers whose normalized
     title/slug matches it are kept, and the matched keyword is stored as
     provenance on each posting.
+
+    ``max_age_days`` drops offers whose ``lastmod`` is older than that many days
+    (``0`` disables the cut). The sitemap keeps offers from years ago.
     """
 
     sitemap_url: str = DEFAULT_GETMANFRED_SITEMAP_URL
     offer_path_prefix: str = DEFAULT_GETMANFRED_OFFER_PATH_PREFIX
     keywords: str | None = None
+    max_age_days: int = DEFAULT_GETMANFRED_MAX_AGE_DAYS
     max_documents: int = 1
     max_items: int = 40
 
@@ -111,6 +133,12 @@ class GetManfredSitemapConfig:
             raise ValueError("offer_path_prefix must start with '/'")
         if self.keywords is not None:
             self.keywords = str(self.keywords).strip() or None
+        validate_bounded_int(
+            self.max_age_days,
+            name="max_age_days",
+            hard_max=HARD_MAX_GETMANFRED_AGE_DAYS,
+            minimum=0,
+        )
         validate_bounded_int(
             self.max_documents, name="max_documents", hard_max=HARD_MAX_PAGES
         )
@@ -130,6 +158,7 @@ class GetManfredSitemapConfig:
             "sitemap_url": self.sitemap_url,
             "offer_path_prefix": self.offer_path_prefix,
             "keywords": self.keywords,
+            "max_age_days": self.max_age_days,
             "max_documents": self.max_documents,
             "max_items": self.max_items,
             "planned_urls": list(result.planned_urls),
@@ -251,6 +280,8 @@ def postings_from_sitemap(
     keywords: str | None = None,
     fetched_at: str | None = None,
     max_items: int = 40,
+    max_age_days: int = 0,
+    now: datetime | None = None,
 ) -> list[JobPosting]:
     """Normalize offer entries from a sitemap into partial postings.
 
@@ -262,13 +293,23 @@ def postings_from_sitemap(
     keyword are kept, and ``extra['matched_keywords']`` records the keyword(s)
     that matched, so an offer observed under a keyword is distinguishable from a
     plain inventory row. The filter is local: the sitemap is still fetched once.
+
+    When ``max_age_days`` is positive, offers whose ``lastmod`` is older than that
+    many days before ``now`` (default: now) are skipped before ``max_items`` is
+    counted. An offer with no ``lastmod`` or an unparseable one is kept: an
+    unknown age is not evidence of a stale offer.
     """
     resolved_at = fetched_at or utcnow_iso()
+    reference = now or utcnow()
     postings: list[JobPosting] = []
     for entry in parse_url_entries(xml_text):
         loc = str(entry.get("loc") or "")
         if not is_offer_url(loc, offer_path_prefix=offer_path_prefix):
             continue
+        if max_age_days > 0:
+            age = age_days(entry.get("lastmod"), now=reference)
+            if age is not None and age > max_age_days:
+                continue
         job_id = extract_getmanfred_job_id(loc)
         title = title_from_offer_slug(loc)
         matched = matching_keywords(keywords, f"{title} {loc}") if keywords else []
@@ -410,6 +451,7 @@ def search_getmanfred(
                 keywords=config.keywords,
                 fetched_at=response.fetched_at,
                 max_items=config.max_items,
+                max_age_days=config.max_age_days,
             )
             _extend_unique(result.postings, postings, limit=config.max_items)
         elif kind == SITEMAP_KIND_INDEX:
@@ -433,7 +475,12 @@ def search_getmanfred(
             if config.keywords
             else " from the public sitemap"
         )
-        result.notes = f"{result.items_found} offer(s) discovered{scope}"
+        recency = (
+            f" (lastmod within {config.max_age_days} days)"
+            if config.max_age_days > 0
+            else ""
+        )
+        result.notes = f"{result.items_found} offer(s) discovered{scope}{recency}"
     return result
 
 
@@ -496,6 +543,7 @@ def _record_response(
 
 
 __all__ = [
+    "GETMANFRED_TERMS",
     "GetManfredSitemapConfig",
     "PROVIDER",
     "SITEMAP_KIND_INDEX",

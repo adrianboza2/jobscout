@@ -485,7 +485,7 @@ and day 1 run 24 h apart) is accepted; no Telegram notification from the sweep.
 
 Pending, owner to decide (not started):
 
-1. **GetManfred inventory filter is effectively dead.** Eight sweeps in a row
+1. **GetManfred inventory filter is effectively dead.** (done 2026-10-29, FU-01: short terms from the `getmanfred` block of `keyword-plan --json`, used by the sweep, plus a 120-day `lastmod` cut; on the 2026-10-28 sitemap that keeps 13 current offers instead of 23 mostly stale ones.) Eight sweeps in a row
    (2026-09-29 → 10-19) returned the same 23 matches and 0 new, while the
    sitemap gained ~22 offers. The filter requires every token of a query in the
    URL slug, so only `Platform Engineer` ever matches (the others carry

@@ -6,6 +6,8 @@ and the sitemap bodies are local fixtures copied from the public format.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
 
 from conftest import FakeHttpClient, FIXTURES, fixture_text, no_network, response
@@ -13,6 +15,7 @@ from conftest import FakeHttpClient, FIXTURES, fixture_text, no_network, respons
 from jobscout.collectors.base import CollectorDisabledError
 from jobscout.collectors.base import TRUNCATION_HEADER
 from jobscout.collectors.getmanfred import (
+    GETMANFRED_TERMS,
     SITEMAP_KIND_INDEX,
     SITEMAP_KIND_UNKNOWN,
     SITEMAP_KIND_URLSET,
@@ -31,6 +34,18 @@ from jobscout.collectors.keyword_match import keyword_matches, matching_keywords
 from jobscout.db import count_jobs, get_search_run, list_search_runs
 from jobscout.models import ContentStatus, PositionKind, SearchRunStatus
 from jobscout.pipeline import ingest_collector_result
+
+import jobscout.collectors.getmanfred as getmanfred_module
+
+PINNED_NOW = datetime(2026, 10, 29, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _pin_clock(monkeypatch) -> None:
+    # The default 120-day lastmod cut would start dropping the fixed fixture
+    # dates as the real clock moves on; pin "now" so these tests never expire.
+    monkeypatch.setattr(getmanfred_module, "utcnow", lambda: PINNED_NOW)
+
 
 SITEMAP_FIXTURE = FIXTURES / "getmanfred_sitemap_offers.xml"
 INDEX_FIXTURE = FIXTURES / "getmanfred_sitemap_index.xml"
@@ -250,6 +265,13 @@ def test_config_validates_host_and_caps() -> None:
         GetManfredSitemapConfig(max_items=0)
     with pytest.raises(ValueError):
         GetManfredSitemapConfig(offer_path_prefix="ofertas/")
+    # The recency cut allows 0 (no cut) but rejects impossible windows.
+    assert GetManfredSitemapConfig(max_age_days=0).max_age_days == 0
+    assert GetManfredSitemapConfig().max_age_days == 120
+    with pytest.raises(ValueError):
+        GetManfredSitemapConfig(max_age_days=-1)
+    with pytest.raises(ValueError):
+        GetManfredSitemapConfig(max_age_days=3651)
 
 
 def test_dry_run_makes_no_request(settings, monkeypatch) -> None:
@@ -428,3 +450,152 @@ def test_inventory_reingest_is_idempotent(conn, settings) -> None:
     assert second.new_jobs == 0
     assert count_jobs(conn) == 3
     assert [run.provider for run in list_search_runs(conn)] == ["getmanfred", "getmanfred"]
+
+
+# ---------------------------------------------------------------------------
+# GetManfred-specific short terms and the sitemap lastmod recency cut
+# ---------------------------------------------------------------------------
+
+# Real slugs and lastmod values captured from the live sitemap on 2026-10-28.
+# The catalog queries need every token, so they miss the short slugs; the short
+# GetManfred terms catch them instead.
+RECENT_SITEMAP = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>https://www.getmanfred.com/ofertas-empleo/8493/experticket-project-manager-oct26</loc><lastmod>2026-10-27T12:15:51.136Z</lastmod></url>
+<url><loc>https://www.getmanfred.com/ofertas-empleo/8513/innovamat-srfrontend-engineer-oct26</loc><lastmod>2026-10-23T14:31:29.486Z</lastmod></url>
+<url><loc>https://www.getmanfred.com/ofertas-empleo/8500/industex-senior-sysadmin-oct26</loc><lastmod>2026-10-06T05:39:13.021Z</lastmod></url>
+<url><loc>https://www.getmanfred.com/ofertas-empleo/8499/signicat-senior-ai-platform-engineer-oct26</loc><lastmod>2026-10-26T08:13:14.035Z</lastmod></url>
+<url><loc>https://www.getmanfred.com/ofertas-empleo/8420/todo-en-cloud-sre-devops-ago26</loc><lastmod>2026-10-05T07:49:09.839Z</lastmod></url>
+<url><loc>https://www.getmanfred.com/ofertas-empleo/8404/fcm-sre-devops-engineer-jul26</loc><lastmod>2026-07-16T07:18:40.502Z</lastmod></url>
+<url><loc>https://www.getmanfred.com/ofertas-empleo/8385/valsea-technologies-devops-engineer-jun26</loc><lastmod>2026-08-12T13:52:56.122Z</lastmod></url>
+<url><loc>https://www.getmanfred.com/ofertas-empleo/8164/plexigrid-security-lead-and-reliability-engineer-oct25</loc><lastmod>2025-11-03T12:53:18.305Z</lastmod></url>
+<url><loc>https://www.getmanfred.com/ofertas-empleo/5274/tymit-platform-engineer-mar25</loc><lastmod>2025-04-08T15:16:32.951Z</lastmod></url>
+</urlset>
+"""
+
+NOW = datetime(2026, 10, 29, tzinfo=timezone.utc)
+SHORT_TERMS = ",".join(GETMANFRED_TERMS)
+CATALOG_QUERIES = ",".join(
+    (
+        "Junior Cloud Engineer",
+        "Junior DevOps Engineer",
+        "Platform Engineer",
+        "DevSecOps Engineer",
+    )
+)
+
+
+def _recent_ids(**kwargs) -> list[str]:
+    postings = postings_from_sitemap(
+        RECENT_SITEMAP, offer_path_prefix=OFFER_PREFIX, now=NOW, **kwargs
+    )
+    return [posting.source_job_id for posting in postings]
+
+
+def test_catalog_queries_miss_short_slugs_but_short_terms_catch_them() -> None:
+    # The bug this fixes: every token of a catalog query must appear in the
+    # slug, so "Junior DevOps Engineer" never matches fcm-sre-devops-engineer.
+    catalog_ids = _recent_ids(keywords=CATALOG_QUERIES, max_age_days=0)
+    assert "8499" in catalog_ids  # "Platform Engineer" does match this slug
+    assert not {"8420", "8404", "8385"} & set(catalog_ids)
+    assert _recent_ids(keywords=SHORT_TERMS, max_age_days=0) == [
+        "8500",
+        "8499",
+        "8420",
+        "8404",
+        "8385",
+        "8164",
+        "5274",
+    ]
+
+
+def test_recency_cut_drops_stale_offers_and_keeps_recent_ones() -> None:
+    assert _recent_ids(keywords=SHORT_TERMS, max_age_days=120) == [
+        "8500",
+        "8499",
+        "8420",
+        "8404",
+        "8385",
+    ]
+    # Zero disables the cut: the sitemap keeps offers from years ago.
+    assert "8164" in _recent_ids(keywords=SHORT_TERMS, max_age_days=0)
+
+
+def test_entry_without_or_with_unparseable_lastmod_is_kept() -> None:
+    # Unknown age is not evidence of a stale offer.
+    xml = (
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<url><loc>https://www.getmanfred.com/ofertas-empleo/9007/acme-devops-oct26"
+        "</loc></url>"
+        "<url><loc>https://www.getmanfred.com/ofertas-empleo/9008/acme-devops-oct26"
+        "</loc><lastmod>not-a-date</lastmod></url>"
+        "</urlset>"
+    )
+    postings = postings_from_sitemap(
+        xml, offer_path_prefix=OFFER_PREFIX, max_age_days=1, now=NOW
+    )
+    assert [posting.source_job_id for posting in postings] == ["9007", "9008"]
+
+
+def test_recency_cut_is_applied_before_max_items() -> None:
+    # Two stale matching entries come first in the document; max_items must
+    # count recent entries, not spend its budget on stale ones.
+    stale_first = (
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        '<url><loc>https://www.getmanfred.com/ofertas-empleo/8164/plexigrid-security-oct25</loc>'
+        "<lastmod>2025-11-03T12:53:18.305Z</lastmod></url>"
+        '<url><loc>https://www.getmanfred.com/ofertas-empleo/5274/tymit-platform-mar25</loc>'
+        "<lastmod>2025-04-08T15:16:32.951Z</lastmod></url>"
+        '<url><loc>https://www.getmanfred.com/ofertas-empleo/8500/industex-senior-sysadmin-oct26</loc>'
+        "<lastmod>2026-10-06T05:39:13.021Z</lastmod></url>"
+        '<url><loc>https://www.getmanfred.com/ofertas-empleo/8499/signicat-ai-platform-oct26</loc>'
+        "<lastmod>2026-10-26T08:13:14.035Z</lastmod></url>"
+        "</urlset>"
+    )
+    postings = postings_from_sitemap(
+        stale_first,
+        offer_path_prefix=OFFER_PREFIX,
+        keywords=SHORT_TERMS,
+        max_age_days=120,
+        max_items=2,
+        now=NOW,
+    )
+    assert [posting.source_job_id for posting in postings] == ["8500", "8499"]
+
+
+def test_matched_keywords_provenance_follows_the_terms_order() -> None:
+    postings = postings_from_sitemap(
+        RECENT_SITEMAP,
+        offer_path_prefix=OFFER_PREFIX,
+        keywords=SHORT_TERMS,
+        max_age_days=0,
+        now=NOW,
+    )
+    by_id = {posting.source_job_id: posting for posting in postings}
+    assert by_id["8420"].extra["matched_keywords"] == ["devops", "sre", "cloud"]
+    assert by_id["8404"].extra["matched_keywords"] == ["devops", "sre"]
+    assert by_id["8500"].extra["matched_keywords"] == ["sysadmin"]
+
+
+def test_search_getmanfred_passes_max_age_days_with_single_request(settings) -> None:
+    client = FakeHttpClient(
+        [response(200, RECENT_SITEMAP, headers={"content-type": "application/xml"})]
+    )
+    config = GetManfredSitemapConfig(keywords=SHORT_TERMS, max_items=10)
+    assert config.max_age_days == 120
+    result = search_getmanfred(
+        config, settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    assert result.status is SearchRunStatus.COMPLETED
+    assert client.call_count == 1  # one sitemap fetch, no fan-out
+    assert [p.source_job_id for p in result.postings] == [
+        "8500",
+        "8499",
+        "8420",
+        "8404",
+        "8385",
+    ]
+    assert result.notes.endswith(
+        f"offer(s) discovered matching {SHORT_TERMS!r} in the public sitemap "
+        "(lastmod within 120 days)"
+    )

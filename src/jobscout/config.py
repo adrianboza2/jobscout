@@ -50,6 +50,11 @@ DEFAULT_GETMANFRED_DETAIL_MAX_ITEMS = 20
 # limit used by every other collector.
 DEFAULT_GETMANFRED_MAX_BYTES = 1_048_576
 HARD_MAX_GETMANFRED_BYTES = 1_048_576
+#: Default recency window for the sitemap inventory. GetManfred's sitemap keeps
+#: offers from years ago, so entries whose ``lastmod`` is older are skipped;
+#: ``0`` disables the cut.
+DEFAULT_GETMANFRED_MAX_AGE_DAYS = 120
+HARD_MAX_GETMANFRED_AGE_DAYS = 3650
 #: Tecnoempleo's public, server-rendered keyword search lives under this path.
 #: Its ``robots.txt`` allows it (it only disallows private/API/feed paths such
 #: as ``/alertas-empleo-rss.php`` and ``/profesionales/``), which the collector
@@ -456,6 +461,9 @@ class Settings:
     getmanfred_max_documents: int = 1
     getmanfred_max_items: int = 40
     getmanfred_detail_max_items: int = DEFAULT_GETMANFRED_DETAIL_MAX_ITEMS
+    #: Skip sitemap offers whose ``lastmod`` is older than this many days
+    #: (``0`` = no cut); the sitemap keeps offers from years ago.
+    getmanfred_max_age_days: int = DEFAULT_GETMANFRED_MAX_AGE_DAYS
 
     # Tecnoempleo public keyword search (opt-in, disabled by default).
     tecnoempleo_search_url: str = DEFAULT_TECNOEMPLEO_SEARCH_URL
@@ -533,6 +541,12 @@ class Settings:
             self.getmanfred_max_bytes,
             name="getmanfred_max_bytes",
             hard_max=HARD_MAX_GETMANFRED_BYTES,
+        )
+        validate_bounded_int(
+            self.getmanfred_max_age_days,
+            name="getmanfred_max_age_days",
+            hard_max=HARD_MAX_GETMANFRED_AGE_DAYS,
+            minimum=0,
         )
         validate_bounded_int(
             self.tecnoempleo_max_items, name="tecnoempleo_max_items", hard_max=HARD_MAX_ITEMS
@@ -683,6 +697,9 @@ class Settings:
             getmanfred_max_items=_env_int(merged, "GETMANFRED_MAX_ITEMS", 40),
             getmanfred_detail_max_items=_env_int(
                 merged, "GETMANFRED_DETAIL_MAX_ITEMS", DEFAULT_GETMANFRED_DETAIL_MAX_ITEMS
+            ),
+            getmanfred_max_age_days=_env_int(
+                merged, "GETMANFRED_MAX_AGE_DAYS", DEFAULT_GETMANFRED_MAX_AGE_DAYS
             ),
             tecnoempleo_search_url=_env_str(
                 merged, "TECNOEMPLEO_SEARCH_URL", DEFAULT_TECNOEMPLEO_SEARCH_URL

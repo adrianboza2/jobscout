@@ -395,6 +395,28 @@ def test_keyword_plan_publishes_the_tecnoempleo_function_browse(capsys, monkeypa
     assert "tecnoempleo text queries: prácticas" in output
 
 
+def test_keyword_plan_publishes_the_getmanfred_short_terms(capsys, monkeypatch) -> None:
+    # The sweep passes these short terms to `search-getmanfred --keywords`
+    # because catalog queries require every token and miss short slugs.
+    no_network(monkeypatch)
+
+    assert main(["keyword-plan", "--json"]) == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["getmanfred"] == {
+        "keywords": (
+            "devops,devsecops,sre,cloud,azure,aws,platform,infrastructure,"
+            "infraestructura,sysadmin,sistemas,systems,security,seguridad,"
+            "cybersecurity,ciberseguridad,kubernetes,iam"
+        ),
+        "max_age_days": 120,
+    }
+
+    assert main(["keyword-plan"]) == EXIT_OK
+    output = capsys.readouterr().out
+    assert "getmanfred terms: devops, devsecops, sre, cloud," in output
+    assert "(lastmod within 120 days)" in output
+
+
 def test_keyword_plan_uses_the_configured_families(capsys, monkeypatch) -> None:
     no_network(monkeypatch)
     monkeypatch.setenv("JOBSCOUT_KEYWORD_FAMILIES", "cloud-security")

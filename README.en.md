@@ -432,7 +432,7 @@ subcommand), and `--version`.
 | `init-db` | Create or verify the schema. Idempotent. |
 | `ingest-fixture PATH [--source S] [--label L]` | Normalize, deduplicate, and store a JSON fixture (offline). |
 | `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Bounded public search. Disabled without `--confirm-network`. |
-| `search-getmanfred [--keywords K] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Public GetManfred sitemap inventory. `--keywords` applies a **local** title/slug filter (no fan-out, no private endpoint). No ranking. Disabled without `--confirm-network`. |
+| `search-getmanfred [--keywords K] [--max-age-days N] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Public GetManfred sitemap inventory. `--keywords` applies a **local** title/slug filter (no fan-out, no private endpoint). `--max-age-days` skips entries whose `lastmod` is older than N days (default 120; `0` = no cut). No ranking. Disabled without `--confirm-network`. |
 | `search-tecnoempleo (--keywords K [--location L] \| --browse) [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Bounded Tecnoempleo public server-rendered search. `--browse` walks Madrid offers by professional function; it is mutually exclusive with `--keywords` and `--location`. Enforces `robots.txt` at run time. Disabled without `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | List the keyword families and the exact command per query (no network, no database). |
 | `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich LinkedIn jobs with the full description. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence. |
@@ -490,6 +490,16 @@ The candidate variants observed in the sitemap are **DevOps, DevSecOps, Cloud
 Engineer, Cloud Security, Azure**, and possibly **SRE**; adding them to the
 approved catalog is a **separate decision** (a human catalog review), not
 automatic behavior of this adapter.
+
+The sweep does not send the catalog queries to GetManfred: it uses the provider's
+own short terms, published by `keyword-plan --json` in the `getmanfred` block
+(`devops`, `devsecops`, `sre`, `cloud`, …). Sitemap slugs are short
+(`fcm-sre-devops-engineer-jul26`) and a catalog query requires **every** one of
+its tokens, so it almost never matches; with those terms any single one keeps the
+offer. The sitemap also keeps offers from years ago, so `--max-age-days` (default
+120; `0` = no cut) drops entries whose `lastmod` is older than that before
+`--max-items` is counted. An entry with no `lastmod` or an unparseable one is
+kept: an unknown age is not evidence of a stale offer.
 
 GetManfred is no longer a **title-only inventory**: prior written permission from
 Manfred covers automated requests and the storage of offer descriptions in this

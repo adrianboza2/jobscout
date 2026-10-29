@@ -303,6 +303,30 @@ def test_getmanfred_byte_limit_is_provider_specific_and_configurable() -> None:
         Settings.from_env(env={"JOBSCOUT_GETMANFRED_MAX_BYTES": "1048577"}, dotenv_path=None)
 
 
+def test_getmanfred_max_age_days_is_configurable_and_bounded() -> None:
+    assert Settings.from_env(env={}, dotenv_path=None).getmanfred_max_age_days == 120
+    assert (
+        Settings.from_env(
+            env={"JOBSCOUT_GETMANFRED_MAX_AGE_DAYS": "0"}, dotenv_path=None
+        ).getmanfred_max_age_days
+        == 0
+    )
+    assert (
+        Settings.from_env(
+            env={"JOBSCOUT_GETMANFRED_MAX_AGE_DAYS": "3650"}, dotenv_path=None
+        ).getmanfred_max_age_days
+        == 3650
+    )
+    with pytest.raises(ConfigError):
+        Settings.from_env(
+            env={"JOBSCOUT_GETMANFRED_MAX_AGE_DAYS": "-1"}, dotenv_path=None
+        )
+    with pytest.raises(ConfigError):
+        Settings.from_env(
+            env={"JOBSCOUT_GETMANFRED_MAX_AGE_DAYS": "3651"}, dotenv_path=None
+        )
+
+
 def test_with_overrides_cannot_bypass_the_hard_caps() -> None:
     settings = Settings.from_env(env={}, dotenv_path=None)
     with pytest.raises(ConfigError):

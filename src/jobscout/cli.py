@@ -40,6 +40,7 @@ from .calibration import CalibrationError, build_report
 from .collectors.base import CollectorDisabledError, CollectorError
 from .collectors.fixtures import FixtureDetailTransport, load_detail_fixture
 from .collectors.getmanfred import (
+    GETMANFRED_TERMS,
     GetManfredSitemapConfig,
     plan_sitemap_urls as plan_getmanfred_urls,
     search_getmanfred,
@@ -392,6 +393,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     getmanfred_parser.add_argument(
         "--max-items", type=int, default=None, help="item cap (bounded)"
+    )
+    getmanfred_parser.add_argument(
+        "--max-age-days",
+        type=int,
+        default=None,
+        help=(
+            "skip offers whose sitemap lastmod is older than this many days "
+            "(0 = no cut; default: settings value)"
+        ),
     )
     getmanfred_parser.add_argument(
         "--cycle-id",
@@ -940,6 +950,11 @@ def cmd_search_getmanfred(args: argparse.Namespace, settings: Settings) -> int:
                 args.max_items
                 if args.max_items is not None
                 else settings.getmanfred_max_items
+            ),
+            max_age_days=(
+                args.max_age_days
+                if args.max_age_days is not None
+                else settings.getmanfred_max_age_days
             ),
         )
     except (ConfigError, ValueError) as exc:
@@ -1825,6 +1840,10 @@ def cmd_keyword_plan(args: argparse.Namespace, settings: Settings) -> int:
         "browse": browse_plan(settings.tecnoempleo_search_url),
         "text_queries": list(TECNOEMPLEO_TEXT_QUERIES),
     }
+    getmanfred = {
+        "keywords": ",".join(GETMANFRED_TERMS),
+        "max_age_days": settings.getmanfred_max_age_days,
+    }
     browse = tecnoempleo["browse"]
     lines = [
         f"keyword plan: {len(families)} family(ies), {len(planned)} bounded query(ies); "
@@ -1832,6 +1851,8 @@ def cmd_keyword_plan(args: argparse.Namespace, settings: Settings) -> int:
         f"tecnoempleo browse: {browse['label']} -> {browse['url']} "
         f"(max {browse['max_pages']} page(s), {browse['max_items']} item(s))",
         f"tecnoempleo text queries: {', '.join(tecnoempleo['text_queries'])}",
+        f"getmanfred terms: {', '.join(GETMANFRED_TERMS)} "
+        f"(lastmod within {getmanfred['max_age_days']} days)",
     ]
     retired_for_by_query = {item["query"]: item["retired_for"] for item in planned}
     for family in families:
@@ -1855,6 +1876,7 @@ def cmd_keyword_plan(args: argparse.Namespace, settings: Settings) -> int:
             "family_count": len(families),
             "query_count": len(planned),
             "tecnoempleo": tecnoempleo,
+            "getmanfred": getmanfred,
         },
         as_json=getattr(args, "as_json", False),
         text="\n".join(lines),
