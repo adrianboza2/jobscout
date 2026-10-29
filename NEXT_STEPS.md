@@ -3,6 +3,16 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-29 — sweep detail cap aligned with the commands (SC-06)
+
+- `jobscout_sweep.py` (outside the repo): `DETAIL_CAP` default 40 -> 20, the
+  default `--max-items` of `fetch-details`, `fetch-tecnoempleo-details` and
+  `fetch-getmanfred-details`. The script used to pass 40 ids and the LinkedIn
+  command fetched 20 and logged "20 selected job(s) omitted by --max-items";
+  requests per run are unchanged. Backup: `jobscout_sweep.py.bak-sc06`.
+- **To check:** the 2026-10-31 sweep log has no "omitted by --max-items" line
+  under `fetch-details`.
+
 ## Session 2026-10-29 — sweep scores for up to ~2 h (SC-05)
 
 - **Owner decision (2026-10-29): the sweep may spend ~120 min scoring instead of
@@ -488,7 +498,7 @@ Pending, owner to decide (not started):
    platform…) plus a `lastmod` recency cut; still one request. Side effect to
    keep in mind: the run's `query` is the whole comma-joined list, so
    dashboard/prune see one `getmanfred|a,b,c` series, not per-keyword series.
-2. **Detail cap mismatch in the sweep.** The script passes up to 40 ids
+2. **Detail cap mismatch in the sweep** (done 2026-10-29, SC-06). The script passed up to 40 ids
    (`JOBSCOUT_SWEEP_DETAIL_CAP`) but `fetch-details` processes 20
    (`detail_max_items`) and drops the rest ("20 selected job(s) omitted by
    --max-items"). Harmless but misleading; align the script cap with the
