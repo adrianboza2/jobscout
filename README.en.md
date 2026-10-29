@@ -139,6 +139,15 @@ Cycle notes:
   in `--json`; `--job-id` forces scoring anyway. The dashboard marks them as
   "Pendiente de detalles". The exception avoids limbo: after two failed detail
   attempts that are not a 404/410, the offer is scored on its card.
+- **It stops when the provider is down:** `score` ends the batch after 3
+  consecutive provider errors, counted on each offer's final status (after the
+  fallback retry when `JOBSCOUT_OPENCODE_FALLBACK_MODEL` is configured). A
+  `parse_error` is the model's output, not the provider's, so it resets the
+  streak. The failed offers keep their rows and the rest are not attempted: the
+  next run picks them up. It prints `stopped after 3 consecutive provider
+  errors: A of S offer(s) attempted, R left for the next run`, exposes
+  `stopped_early` and `not_attempted` in `--json`, and exits with code 1 even
+  when some offers were scored, so the sweep log shows a failed `score` run.
 - Every evaluation is versioned: it stores the scorer's `prompt_version` and the
   profile `input_fingerprint`, so a policy change is distinguishable without
   rewriting history. For the OpenCode scorer the `prompt_version` also carries
@@ -721,6 +730,14 @@ description and have detail attempts left. It prints
 in `--json`; `--job-id` forces scoring anyway. After two failed detail attempts
 that are not a 404/410 the offer is scored on its card, so it never stays in
 limbo.
+
+The batch also stops when the provider is down: after 3 consecutive provider
+errors (each offer's final status, after the fallback retry) it prints
+`stopped after 3 consecutive provider errors: A of S offer(s) attempted, R left
+for the next run`, exposes `stopped_early` and `not_attempted` in `--json`, and
+exits with code 1 even when some offers were scored. The error rows already
+written stay, and the remaining offers are left for the next run. A
+`parse_error` does not count: it is the model's output, not the provider's.
 
 | Scorer | When to use it | Requirements |
 |--------|----------------|--------------|

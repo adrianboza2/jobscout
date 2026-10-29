@@ -387,6 +387,61 @@ def _record_detail_attempt(db_path: Path, job_id: int, *, status: str, http_stat
         conn.close()
 
 
+def _insert_extra_offer(db_path: Path, index: int) -> int:
+    """Insert one more scoreable offer, oldest in the selection order."""
+    conn = connect(db_path)
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO jobs (
+                    fingerprint, dedupe_key, source, title, company, location,
+                    description, first_seen_at, last_seen_at, content_status,
+                    content_hash, is_active
+                ) VALUES (?, ?, 'linkedin', ?, 'Extra Co', 'Remote',
+                          'Build and test Python services.',
+                          '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'ok', '', 1)
+                """,
+                (f"fp-extra-{index}", f"dk-extra-{index}", f"Python Developer {index}"),
+            )
+            return int(cursor.lastrowid)
+    finally:
+        conn.close()
+
+
+def _fake_status_sequence(statuses: list[str]):
+    """Build a fake ``evaluate_job`` returning *statuses* in call order.
+
+    Like the real scorer, every attempt is persisted, so a test can check which
+    offers ended up with an evaluation row.
+    """
+    calls: list[int] = []
+
+    def fake_evaluate_job(conn, job, profile, *, scorer_name, settings, **kwargs):
+        if len(calls) >= len(statuses):
+            raise AssertionError("unexpected extra scoring attempt")
+        calls.append(int(job.id))
+        status = statuses[len(calls) - 1]
+        succeeded = status == EvaluationStatus.OK.value
+        evaluation = Evaluation(
+            job_id=int(job.id),
+            scorer=scorer_name,
+            status=status,
+            overall_score=70.0 if succeeded else None,
+            recommendation=(
+                Recommendation.APPLY if succeeded else Recommendation.NEED_MORE_INFO
+            ),
+            confidence=0.7 if succeeded else 0.0,
+            error="provider.no-route" if status == EvaluationStatus.ERROR.value else None,
+            model=settings.opencode_model,
+            input_fingerprint=f"fake-{status}-{job.id}",
+        )
+        insert_evaluation(conn, evaluation)
+        return evaluation
+
+    return fake_evaluate_job, calls
+
+
 def _score_all(db_path: Path, capsys, *extra: str) -> dict:
     assert (
         main(
@@ -547,6 +602,169 @@ def test_score_json_reports_zero_skipped_pending_details(db_path: Path, capsys) 
 
     # Always present, so a consumer never has to guess.
     assert payload["skipped_pending_details"] == 0
+
+
+def _score_opencode(db_path: Path, capsys, *extra: str) -> tuple[int, dict]:
+    exit_code = main(
+        [
+            "--db",
+            str(db_path),
+            "--profile",
+            str(PROFILE),
+            "score",
+            "--all",
+            "--scorer",
+            "opencode",
+            "--json",
+            *extra,
+        ]
+    )
+    return exit_code, json.loads(capsys.readouterr().out)
+
+
+def test_score_stops_after_three_consecutive_provider_errors(
+    db_path: Path, capsys, monkeypatch
+) -> None:
+    import jobscout.cli as cli
+
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    untouched_id = _insert_extra_offer(db_path, 1)
+
+    fake_evaluate_job, calls = _fake_status_sequence(["error", "error", "error"])
+    monkeypatch.setattr(cli, "evaluate_job", fake_evaluate_job)
+
+    exit_code, payload = _score_opencode(db_path, capsys)
+
+    # Four offers are selected; the provider is down after the third attempt.
+    assert exit_code == EXIT_ERROR
+    assert payload["stopped_early"] is True
+    assert payload["not_attempted"] == 1
+    assert payload["evaluated"] == 3
+    assert [item["status"] for item in payload["evaluations"]] == ["error"] * 3
+    assert calls == [item["job_id"] for item in payload["evaluations"]]
+    assert untouched_id not in calls
+
+    # The three attempts keep their rows; the offer left for the next run has
+    # none, so the next score run picks it up untouched.
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT job_id FROM evaluations WHERE job_id = ?", (untouched_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+    assert rows == []
+
+
+def test_score_does_not_stop_when_errors_are_not_consecutive(
+    db_path: Path, capsys, monkeypatch
+) -> None:
+    import jobscout.cli as cli
+
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    _insert_extra_offer(db_path, 1)
+
+    fake_evaluate_job, calls = _fake_status_sequence(["error", "ok", "error", "error"])
+    monkeypatch.setattr(cli, "evaluate_job", fake_evaluate_job)
+
+    exit_code, payload = _score_opencode(db_path, capsys)
+
+    # A success breaks the streak, so the batch runs to the end.
+    assert exit_code == EXIT_OK
+    assert payload["evaluated"] == 4
+    assert payload["succeeded"] == 1
+    assert payload["stopped_early"] is False
+    assert payload["not_attempted"] == 0
+    assert len(calls) == 4
+
+
+def test_score_parse_error_resets_the_consecutive_error_counter(
+    db_path: Path, capsys, monkeypatch
+) -> None:
+    import jobscout.cli as cli
+
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    _insert_extra_offer(db_path, 1)
+    _insert_extra_offer(db_path, 2)
+
+    # A parse_error is the model's output, not the provider: it breaks the
+    # streak. Counting it would stop the run after the third offer.
+    fake_evaluate_job, calls = _fake_status_sequence(
+        ["error", "error", "parse_error", "error", "error"]
+    )
+    monkeypatch.setattr(cli, "evaluate_job", fake_evaluate_job)
+
+    exit_code, payload = _score_opencode(db_path, capsys)
+
+    assert exit_code == EXIT_ERROR  # nothing succeeded: the usual exit code
+    assert payload["evaluated"] == 5
+    assert payload["stopped_early"] is False
+    assert payload["not_attempted"] == 0
+    assert payload["evaluations"][2]["status"] == "parse_error"
+    assert len(calls) == 5
+
+
+def test_score_does_not_count_a_primary_error_rescued_by_the_fallback(
+    db_path: Path, capsys, monkeypatch
+) -> None:
+    import jobscout.cli as cli
+
+    monkeypatch.setenv("JOBSCOUT_OPENCODE_FALLBACK_MODEL", FALLBACK_MODEL)
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    _insert_extra_offer(db_path, 1)
+
+    # Every offer fails on the primary model and is retried with the fallback,
+    # which succeeds: the final status is ok, so the streak never grows.
+    fake_evaluate_job, calls = _fake_opencode_evaluate()
+    monkeypatch.setattr(cli, "evaluate_job", fake_evaluate_job)
+
+    exit_code, payload = _score_opencode(db_path, capsys)
+
+    assert exit_code == EXIT_OK
+    assert payload["evaluated"] == 4
+    assert payload["succeeded"] == 4
+    assert payload["stopped_early"] is False
+    assert payload["not_attempted"] == 0
+    # The switch is sticky: the first offer is tried on the primary, retried on
+    # the fallback, and the rest never touch the primary at all.
+    primary_calls = [model for _, model in calls if model == "opencode-go/deepseek-v4.1-flash#low"]
+    assert len(primary_calls) == 1
+    assert len(calls) == 5
+
+
+def test_score_text_reports_the_stopped_run(db_path: Path, capsys, monkeypatch) -> None:
+    import jobscout.cli as cli
+
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    _insert_extra_offer(db_path, 1)
+
+    fake_evaluate_job, _calls = _fake_status_sequence(["error", "error", "error"])
+    monkeypatch.setattr(cli, "evaluate_job", fake_evaluate_job)
+
+    exit_code = main(
+        [
+            "--db",
+            str(db_path),
+            "--profile",
+            str(PROFILE),
+            "score",
+            "--all",
+            "--scorer",
+            "opencode",
+        ]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == EXIT_ERROR
+    assert (
+        "stopped after 3 consecutive provider errors: 3 of 4 offer(s) attempted, "
+        "1 left for the next run"
+    ) in output
 
 
 def test_score_with_llm_without_configuration_fails_cleanly(db_path: Path, capsys, monkeypatch) -> None:

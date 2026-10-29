@@ -99,13 +99,13 @@ returns only never-scored offers and is not touched.
   Tests: offer without description skipped; with 2 failed (non-404) attempts scored;
   `skipped` and 404 rows do not count; `--job-id` forces; gate applied before `--limit`;
   `--rescore` also gated; dashboard payload flag.
-- [ ] SC-03: two-group ordering. Tests: never-scored offer seen earlier goes ahead of a
+- [x] SC-03: two-group ordering. Tests: never-scored offer seen earlier goes ahead of a
   stale offer seen later; error-only offer counts as never scored; `--limit` keeps the
   first group whole.
-- [ ] SC-04: consecutive-error stop. Tests: 3 errors in a row stop the run with exit 1
+- [x] SC-04: consecutive-error stop. Tests: 3 errors in a row stop the run with exit 1
   and the right counts; error, ok, error, error does not stop; parse_error resets;
   with a fallback, a primary error rescued by the fallback does not count.
-- [ ] README ES/EN.
+- [x] README ES/EN.
 
 ## Success command
     .venv/bin/python -m pytest -q

@@ -136,6 +136,11 @@ DEFAULT_REFRESH_STALE_DAYS = 0
 
 SCORER_CHOICES = tuple(SCORERS)
 
+#: ``score`` stops the batch after this many consecutive provider errors.
+#: The provider is down, so the next attempts would fail the same way; the
+#: remaining offers are left for the next run without an evaluation row.
+MAX_CONSECUTIVE_PROVIDER_ERRORS = 3
+
 
 # ---------------------------------------------------------------------------
 # Output helpers
@@ -1631,13 +1636,16 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
 
         ok_count = 0
         failed: list[dict[str, Any]] = []
+        consecutive_provider_errors = 0
+        stopped_early = False
+        not_attempted = 0
         fallback_settings: Settings | None = None
         fallback_model: str | None = None
         allow_fallback = (
             args.scorer == ScorerName.OPENCODE.value
             and bool(settings.opencode_fallback_model)
         )
-        for job in jobs:
+        for index, job in enumerate(jobs):
             active_settings = fallback_settings or settings
             if fallback_settings is not None:
                 # Once on the fallback, an offer already scored with the
@@ -1702,6 +1710,21 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
             if not as_json:
                 _print_evaluation(evaluation, preference)
                 _write_line()
+            # Rule 3: stop a batch whose provider is clearly down. The counter
+            # reads the final status (after the fallback retry), so a rescued
+            # offer resets it; ``parse_error`` is the model's output, not the
+            # provider, and resets it too. The error rows already written stay.
+            if str(evaluation.status) == EvaluationStatus.ERROR.value:
+                consecutive_provider_errors += 1
+            else:
+                consecutive_provider_errors = 0
+            if consecutive_provider_errors >= MAX_CONSECUTIVE_PROVIDER_ERRORS:
+                # Only a run with selected offers still ahead is "stopped
+                # early"; reaching the threshold on the last offer is just a
+                # finished run and keeps the usual exit code.
+                stopped_early = index + 1 < len(jobs)
+                not_attempted = len(jobs) - (index + 1)
+                break
     finally:
         conn.close()
 
@@ -1715,6 +1738,8 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
             "fallback_model": fallback_model,
             "skipped_seniority": skipped_seniority,
             "skipped_pending_details": skipped_pending_details,
+            "stopped_early": stopped_early,
+            "not_attempted": not_attempted,
             "evaluations": results,
         },
         as_json=as_json,
@@ -1730,8 +1755,19 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
                 if skipped_pending_details
                 else ""
             )
+            + (
+                f"\nstopped after {MAX_CONSECUTIVE_PROVIDER_ERRORS} consecutive provider "
+                f"errors: {len(results)} of {len(jobs)} offer(s) attempted, "
+                f"{not_attempted} left for the next run"
+                if stopped_early
+                else ""
+            )
         ),
     )
+    if stopped_early:
+        # The sweep records a non-zero exit as a failed score run, so a cut
+        # batch cannot pass silently even when its first offers succeeded.
+        return EXIT_ERROR
     if results and ok_count == 0:
         return EXIT_ERROR
     return EXIT_OK

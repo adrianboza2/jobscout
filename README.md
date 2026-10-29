@@ -137,6 +137,15 @@ Notas del ciclo:
   `--json`; `--job-id` fuerza el puntaje igual. El tablero las marca como
   «Pendiente de detalles». La excepción evita el limbo: tras dos intentos de
   detalle fallidos que no sean 404/410, la oferta se puntúa con su tarjeta.
+- **Se detiene si el proveedor está caído:** `score` corta la tanda tras 3
+  errores de proveedor seguidos, contando el estado final de cada oferta (ya con
+  el reintento de reserva si tienes configurado `JOBSCOUT_OPENCODE_FALLBACK_MODEL`).
+  Un `parse_error` es salida del modelo, no del proveedor, y reinicia la racha.
+  Las ofertas falladas conservan su fila y el resto no se intenta: la próxima
+  corrida las recoge. Imprime `stopped after 3 consecutive provider errors: A of
+  S offer(s) attempted, R left for the next run`, expone `stopped_early` y
+  `not_attempted` en `--json`, y sale con código 1 aunque alguna oferta se haya
+  puntuado, para que el log del sweep lo muestre como fallo.
 - Cada evaluación queda versionada: guarda el `prompt_version` del puntuador y el
   `input_fingerprint` del perfil, así que un cambio de política es distinguible
   sin reescribir el historial. Para el puntuador de OpenCode, el `prompt_version`
@@ -739,6 +748,14 @@ Imprime `skipped N offer(s) waiting for details` y expone
 `skipped_pending_details` en `--json`; `--job-id` fuerza el puntaje igual. Tras
 dos intentos de detalle fallidos que no sean 404/410 la oferta se puntúa con su
 tarjeta, para que nunca quede en el limbo.
+
+La tanda también se detiene cuando el proveedor está caído: tras 3 errores de
+proveedor seguidos (estado final de cada oferta, después del reintento de
+reserva), imprime `stopped after 3 consecutive provider errors: A of S offer(s)
+attempted, R left for the next run`, expone `stopped_early` y `not_attempted` en
+`--json`, y sale con código 1 aunque alguna oferta se haya puntuado. Las filas
+de error ya escritas se conservan y las ofertas restantes quedan para la próxima
+corrida. Un `parse_error` no cuenta: es salida del modelo, no del proveedor.
 
 | Puntuador | Cuándo usarlo | Requisitos |
 |-----------|---------------|------------|
