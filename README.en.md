@@ -150,7 +150,10 @@ Cycle notes:
 - Re-evaluation **does look at the input fingerprint**: `score --all` re-evaluates
   an offer when its fingerprint changes (posting, profile, prompt, or model) and
   skips the ones that already have a successful evaluation with the current
-  fingerprint. Use `--rescore` to force a fresh pass over every active offer.
+  fingerprint. Offers that never had a successful evaluation come first, then
+  the ones that only need a re-score, each group newest first; so a model,
+  prompt or profile change cannot push a sweep's new offers past the `--limit`
+  cap. Use `--rescore` to force a fresh pass over every active offer.
 
 ### Seniority and technology criterion (prompt v5)
 

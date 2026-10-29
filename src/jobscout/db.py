@@ -1314,7 +1314,9 @@ def jobs_needing_evaluation(
     model, prompt/policy, or rewritten description from being masked by an older
     success — the older row simply stops matching. Historical rows with an empty
     fingerprint also stop matching, so unknown provenance is re-evaluated rather
-    than trusted. ``--rescore`` intentionally bypasses this function.
+    than trusted. Offers with no successful evaluation from ``scorer`` come first,
+    then the stale ones; each group is newest first. ``--rescore`` intentionally
+    bypasses this function.
 
     Without ``fingerprint_for`` the legacy behaviour is preserved: a job is
     returned when it has no successful evaluation from ``scorer`` at all.
@@ -1352,14 +1354,21 @@ def jobs_needing_evaluation(
     ).fetchall():
         successful.setdefault(int(row["job_id"]), set()).add(row["input_fingerprint"] or "")
 
-    selected: list[Job] = []
+    # Never-scored offers go first so a model/prompt/profile change, which makes
+    # every old success stale at once, cannot push a sweep's new offers behind
+    # hundreds of re-scores. Each group keeps the recency order.
+    never_scored: list[Job] = []
+    rescores: list[Job] = []
     for job in candidates:
-        expected = fingerprint_for(job)
-        if expected in successful.get(int(job.id or 0), set()):
-            continue
-        selected.append(job)
-        if limit is not None and len(selected) >= int(limit):
-            break
+        previous = successful.get(int(job.id or 0))
+        if previous is None:
+            never_scored.append(job)
+        elif fingerprint_for(job) not in previous:
+            rescores.append(job)
+
+    selected = never_scored + rescores
+    if limit is not None:
+        selected = selected[: int(limit)]
     return selected
 
 

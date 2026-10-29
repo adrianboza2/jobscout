@@ -748,6 +748,88 @@ def test_jobs_needing_evaluation_is_input_aware(conn, stored_job) -> None:
     ] == [stored_job.id]
 
 
+def _store_seen_at(conn, job_number: int, seen_at: str):
+    job, _ = store_posting(
+        conn,
+        _posting(
+            source_job_id=str(job_number),
+            url=f"https://www.linkedin.com/jobs/view/{job_number}/",
+            title=f"Backend Engineer {job_number}",
+        ),
+        now=seen_at,
+    )
+    return job
+
+
+def _score(conn, job, fingerprint: str) -> None:
+    insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=job.id,
+            scorer=ScorerName.HEURISTIC,
+            overall_score=50,
+            recommendation=Recommendation.CONSIDER,
+            input_fingerprint=fingerprint,
+        ),
+    )
+
+
+def test_never_scored_offers_come_before_rescores(conn) -> None:
+    # The stale offers are the most recent ones on purpose: recency alone would
+    # put them first.
+    stale_newest = _store_seen_at(conn, 1001, "2026-10-28T10:00:00Z")
+    stale_older = _store_seen_at(conn, 1002, "2026-10-27T10:00:00Z")
+    new_newer = _store_seen_at(conn, 1003, "2026-10-26T10:00:00Z")
+    new_older = _store_seen_at(conn, 1004, "2026-10-25T10:00:00Z")
+    current = _store_seen_at(conn, 1005, "2026-10-29T10:00:00Z")
+    _score(conn, stale_newest, "old-model")
+    _score(conn, stale_older, "old-model")
+    _score(conn, current, "new-model")
+
+    selected = jobs_needing_evaluation(
+        conn, scorer="heuristic", fingerprint_for=lambda job: "new-model"
+    )
+
+    assert [job.id for job in selected] == [
+        new_newer.id,
+        new_older.id,
+        stale_newest.id,
+        stale_older.id,
+    ]
+
+
+def test_never_scored_order_breaks_ties_by_newest_id(conn) -> None:
+    first = _store_seen_at(conn, 2001, "2026-10-28T10:00:00Z")
+    second = _store_seen_at(conn, 2002, "2026-10-28T10:00:00Z")
+
+    selected = jobs_needing_evaluation(
+        conn, scorer="heuristic", fingerprint_for=lambda job: "new-model"
+    )
+
+    assert [job.id for job in selected] == [second.id, first.id]
+
+
+def test_limit_fills_with_never_scored_offers_first(conn) -> None:
+    stale = _store_seen_at(conn, 3001, "2026-10-28T10:00:00Z")
+    new_newer = _store_seen_at(conn, 3002, "2026-10-26T10:00:00Z")
+    new_older = _store_seen_at(conn, 3003, "2026-10-25T10:00:00Z")
+    _score(conn, stale, "old-model")
+
+    def selected_ids(limit: int) -> list[int]:
+        return [
+            job.id
+            for job in jobs_needing_evaluation(
+                conn,
+                scorer="heuristic",
+                limit=limit,
+                fingerprint_for=lambda job: "new-model",
+            )
+        ]
+
+    assert selected_ids(2) == [new_newer.id, new_older.id]
+    assert selected_ids(3) == [new_newer.id, new_older.id, stale.id]
+
+
 def test_changed_input_is_not_masked_by_an_older_success(conn, stored_job) -> None:
     from jobscout.models import EvaluationStatus
 

@@ -148,8 +148,11 @@ Notas del ciclo:
 - La reevaluación **sí mira la huella de entrada**: `score --all` vuelve a
   evaluar una oferta cuando cambia su huella (publicación, perfil, prompt o
   modelo) y omite las que ya tienen una evaluación exitosa con la huella
-  actual. Usa `--rescore` para forzar una corrida nueva sobre todas las ofertas
-  activas.
+  actual. Primero puntúa las ofertas que nunca tuvieron una evaluación exitosa
+  y después las que solo necesitan re-score, cada grupo de la más reciente a la
+  más antigua; así un cambio de modelo, prompt o perfil no deja las ofertas
+  nuevas de un sweep detrás del tope de `--limit`. Usa `--rescore` para forzar
+  una corrida nueva sobre todas las ofertas activas.
 
 ### Criterio de seniority y tecnologías (prompt v5)
 
