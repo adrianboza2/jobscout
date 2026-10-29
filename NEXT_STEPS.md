@@ -3,6 +3,24 @@
 This document records the next improvements for `jobscout` after the first
 working MVP.
 
+## Session 2026-10-29 — sweep scores for up to ~2 h (SC-05)
+
+- **Owner decision (2026-10-29): the sweep may spend ~120 min scoring instead of
+  ~35.** Changed outside the repo (Hermes), after SC-02..SC-04:
+  - `~/.hermes/config.yaml`: `cron.script_timeout_seconds: 9000` (default 3600
+    killed any script past one hour).
+  - `jobscout_sweep.py`: `BUDGET` 3000 -> 8400 s; the fixed `SCORE_CAP = 180`
+    is gone, the scoring `--limit` is `(remaining - 180 s) / 16 s` and is
+    written to the sweep log and the summary. If Go runs out, `score` stops after
+    3 consecutive provider errors and the rest waits for the next sweep.
+  - The 19:00 mid-cycle job now fetches Tecnoempleo details too (same
+    `DETAIL_CAP` and pacing), so offers skipped by `score` for lack of details
+    do not wait ~12 days.
+  - Backups of both files: `*.bak-sc05` next to them.
+- **To check:** the 2026-10-31 sweep log shows `[scoring: ... cap N]` and still
+  ends with dashboard and backup; the 2026-11-02 19:00 run lists
+  `pendientes tecnoempleo: A -> B`.
+
 ## Session 2026-10-28 — query review, full re-score with OpenCode Go, scoring queue plan
 
 - **Item 3, residual query review (owner, 2026-10-28): no LinkedIn query is

@@ -67,14 +67,18 @@ The full offline suite is the acceptance gate for any change.
 - `~/.hermes/scripts/jobscout_sweep.py` — Hermes' scheduler runs the full cycle every three
   days at 07:00: LinkedIn details → searches (LinkedIn per catalog query, skipping
   `retired_for` pairs; Tecnoempleo runs the function browse and its text queries from the
-  `tecnoempleo` block of `keyword-plan --json`) → Tecnoempleo/GetManfred details → `score --all` (capped at 180
-  offers) → dashboard → DB backup. Delivery is `local`: the owner wants no Telegram
-  notification. It writes `reports/sweep-YYYY-MM-DD.log`; read that log first when
-  something "stopped working".
+  `tecnoempleo` block of `keyword-plan --json`) → Tecnoempleo/GetManfred details → `score --all` →
+  dashboard → DB backup. The sweep budget is 8400 s and scoring takes what is left: its
+  `--limit` is `(remaining - 180 s) / 16 s` (about 450 offers), logged as `[scoring: ... cap N]`
+  (owner, 2026-10-29). Hermes kills cron scripts after `cron.script_timeout_seconds`
+  (`~/.hermes/config.yaml`, raised from the 3600 s default to 9000), so the budget must stay
+  below it. Delivery is `local`: the owner wants no Telegram notification. It writes
+  `reports/sweep-YYYY-MM-DD.log`; read that log first when something "stopped working".
 - `~/.hermes/scripts/jobscout_linkedin_details.py` — Hermes job `jobscout-linkedin-details`
-  (`0 19 2-31/3 * *`, ~36 h after each sweep, delivery `local`): runs only the LinkedIn
-  detail batch (`jobscout_sweep.py --linkedin-details`) so the backlog drains without
-  stacking more requests on the sweep's searches. Pacing stays at 8 s (owner, 2026-10-20).
+  (`0 19 2-31/3 * *`, ~36 h after each sweep, delivery `local`): runs the LinkedIn and
+  Tecnoempleo detail batches (`jobscout_sweep.py --linkedin-details`) so the backlogs drain
+  without stacking more requests on the sweep's searches; `score` skips offers still waiting
+  for details. Pacing stays at 8 s (owner, 2026-10-20).
 - `~/.config/systemd/user/jobscout-dashboard.service` — serves `reports/` over Tailscale on
   port 8080.
 - OpenCode (`~/.local/bin/opencode`) is updated outside this repo. A CLI update broke scoring
