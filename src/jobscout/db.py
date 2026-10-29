@@ -1379,8 +1379,43 @@ def all_active_jobs(
     return [_row_to_job(row) for row in conn.execute(sql, params).fetchall()]
 
 
-def _jobs_needing_details_predicate() -> str:
-    return "(content_status != 'ok' OR description IS NULL OR TRIM(description) = '')"
+#: Failed detail attempts after which an offer may be scored on its card anyway.
+#: Without the exception, an offer whose provider keeps refusing would never be
+#: scored; a 404/410 is definitive and never counts (it deactivates the offer).
+DETAIL_ATTEMPTS_BEFORE_SCORING = 2
+
+
+def _jobs_needing_details_predicate(prefix: str = "") -> str:
+    column = f"{prefix}." if prefix else ""
+    return (
+        f"({column}content_status != 'ok' OR {column}description IS NULL"
+        f" OR TRIM({column}description) = '')"
+    )
+
+
+def jobs_awaiting_details(conn: sqlite3.Connection) -> set[int]:
+    """Active offers that still need details and have attempts left to get them.
+
+    ``score`` skips these so the model never pays to score a search card, and the
+    dashboard marks them so the reader knows why an offer has no score yet. A
+    ``skipped`` detail row means the request was never made and does not count;
+    only real failures (``failed``/``partial``) do.
+    """
+    sql = f"""
+        SELECT j.id AS id
+        FROM jobs j
+        WHERE j.is_active = 1
+          AND {_jobs_needing_details_predicate("j")}
+          AND (
+              SELECT COUNT(*)
+              FROM job_detail_fetches f
+              WHERE f.job_id = j.id
+                AND f.status IN ('failed', 'partial')
+                AND COALESCE(f.http_status, 0) NOT IN (404, 410)
+          ) < ?
+    """
+    rows = conn.execute(sql, (DETAIL_ATTEMPTS_BEFORE_SCORING,)).fetchall()
+    return {int(row["id"]) for row in rows}
 
 
 def jobs_needing_details(

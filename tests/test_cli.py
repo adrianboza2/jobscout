@@ -17,11 +17,19 @@ from conftest import FIXTURES, no_network
 
 from jobscout.cli import EXIT_ERROR, EXIT_FAIL_CLOSED, EXIT_OK, main
 from jobscout.config import HARD_MAX_ITEMS, HARD_MAX_PAGES, Settings
-from jobscout.db import all_active_jobs, connect, insert_evaluation, upsert_feedback
+from jobscout.db import (
+    all_active_jobs,
+    connect,
+    insert_detail_fetch,
+    insert_evaluation,
+    upsert_feedback,
+)
 from jobscout.models import (
+    DetailFetchStatus,
     Evaluation,
     EvaluationStatus,
     FeedbackDecision,
+    JobDetailFetch,
     JobFeedback,
     Recommendation,
 )
@@ -336,6 +344,209 @@ def test_score_job_id_forces_a_filtered_senior_offer(db_path: Path, capsys) -> N
     assert payload["evaluated"] == 1
     assert payload["skipped_seniority"] == 0
     assert payload["evaluations"][0]["job_id"] == senior_id
+
+
+def _job_id_by_title(db_path: Path, capsys, title: str) -> int:
+    assert main(["--db", str(db_path), "list", "--json"]) == EXIT_OK
+    listing = json.loads(capsys.readouterr().out)
+    return next(
+        item["job"]["id"]
+        for item in listing["jobs"]
+        if item["job"]["title"] == title
+    )
+
+
+def _mark_pending_details(db_path: Path, job_id: int) -> None:
+    """Turn an offer into a search card: no description, partial content."""
+    conn = connect(db_path)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE jobs SET content_status = 'partial', description = NULL "
+                "WHERE id = ?",
+                (job_id,),
+            )
+    finally:
+        conn.close()
+
+
+def _record_detail_attempt(db_path: Path, job_id: int, *, status: str, http_status) -> None:
+    conn = connect(db_path)
+    try:
+        insert_detail_fetch(
+            conn,
+            JobDetailFetch(
+                job_id=job_id,
+                source="linkedin",
+                status=status,
+                http_status=http_status,
+                stored_at="2026-09-15T12:00:00Z",
+            ),
+        )
+    finally:
+        conn.close()
+
+
+def _score_all(db_path: Path, capsys, *extra: str) -> dict:
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "--profile",
+                str(PROFILE),
+                "score",
+                "--all",
+                "--scorer",
+                "heuristic",
+                "--json",
+                *extra,
+            ]
+        )
+        == EXIT_OK
+    )
+    return json.loads(capsys.readouterr().out)
+
+
+def test_score_all_skips_offers_without_details(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    pending_id = _job_id_by_title(db_path, capsys, "Platform Engineer")
+    _mark_pending_details(db_path, pending_id)
+
+    payload = _score_all(db_path, capsys)
+
+    assert payload["skipped_pending_details"] == 1
+    assert payload["evaluated"] == 2
+    assert pending_id not in {item["job_id"] for item in payload["evaluations"]}
+
+
+def test_score_all_scores_an_offer_after_two_failed_detail_attempts(
+    db_path: Path, capsys
+) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    pending_id = _job_id_by_title(db_path, capsys, "Platform Engineer")
+    _mark_pending_details(db_path, pending_id)
+    _record_detail_attempt(db_path, pending_id, status="failed", http_status=403)
+    _record_detail_attempt(db_path, pending_id, status="failed", http_status=None)
+
+    payload = _score_all(db_path, capsys)
+
+    # Two real failures are the safety net: the offer is scored on its card.
+    assert payload["skipped_pending_details"] == 0
+    assert pending_id in {item["job_id"] for item in payload["evaluations"]}
+
+
+def test_score_skipped_and_404_detail_rows_do_not_count_as_attempts(
+    db_path: Path, capsys
+) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    pending_id = _job_id_by_title(db_path, capsys, "Platform Engineer")
+    _mark_pending_details(db_path, pending_id)
+    _record_detail_attempt(db_path, pending_id, status="skipped", http_status=None)
+    _record_detail_attempt(db_path, pending_id, status="skipped", http_status=None)
+    _record_detail_attempt(db_path, pending_id, status="failed", http_status=404)
+    _record_detail_attempt(db_path, pending_id, status="failed", http_status=410)
+
+    payload = _score_all(db_path, capsys)
+
+    assert payload["skipped_pending_details"] == 1
+    assert pending_id not in {item["job_id"] for item in payload["evaluations"]}
+
+
+def test_score_job_id_forces_an_offer_waiting_for_details(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    pending_id = _job_id_by_title(db_path, capsys, "Platform Engineer")
+    _mark_pending_details(db_path, pending_id)
+
+    # Like seniority, the explicit --job-id is the owner's override: the offer is
+    # attempted even without details. The heuristic cannot score a card, so the
+    # run reports its usual "nothing succeeded" exit code.
+    exit_code = main(
+        [
+            "--db",
+            str(db_path),
+            "--profile",
+            str(PROFILE),
+            "score",
+            "--job-id",
+            str(pending_id),
+            "--scorer",
+            "heuristic",
+            "--json",
+        ]
+    )
+    assert exit_code == EXIT_ERROR
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["evaluated"] == 1
+    assert payload["skipped_pending_details"] == 0
+    assert payload["evaluations"][0]["job_id"] == pending_id
+
+
+def test_score_pending_details_gate_runs_before_the_limit(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    # id 4 is the newest offer, so it is first in the selection order.
+    newest_id = _job_id_by_title(db_path, capsys, "Junior Frontend Developer")
+    _mark_pending_details(db_path, newest_id)
+
+    payload = _score_all(db_path, capsys, "--limit", "1")
+
+    # The pending offer is removed before --limit, so it never takes the slot.
+    assert payload["evaluated"] == 1
+    assert payload["skipped_pending_details"] == 1
+    assert payload["evaluations"][0]["job_id"] != newest_id
+
+
+def test_score_rescore_is_also_gated_by_pending_details(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    pending_id = _job_id_by_title(db_path, capsys, "Platform Engineer")
+    _mark_pending_details(db_path, pending_id)
+
+    payload = _score_all(db_path, capsys, "--rescore")
+
+    assert payload["skipped_pending_details"] == 1
+    assert pending_id not in {item["job_id"] for item in payload["evaluations"]}
+
+
+def test_score_reports_skipped_pending_details_in_text(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    pending_id = _job_id_by_title(db_path, capsys, "Platform Engineer")
+    _mark_pending_details(db_path, pending_id)
+
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "--profile",
+                str(PROFILE),
+                "score",
+                "--all",
+                "--scorer",
+                "heuristic",
+            ]
+        )
+        == EXIT_OK
+    )
+    output = capsys.readouterr().out
+    assert "skipped 1 offer(s) waiting for details" in output
+
+
+def test_score_json_reports_zero_skipped_pending_details(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+
+    payload = _score_all(db_path, capsys)
+
+    # Always present, so a consumer never has to guess.
+    assert payload["skipped_pending_details"] == 0
 
 
 def test_score_with_llm_without_configuration_fails_cleanly(db_path: Path, capsys, monkeypatch) -> None:

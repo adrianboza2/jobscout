@@ -49,6 +49,7 @@ from typing import Any, Sequence
 from .db import (
     connect_readonly,
     count_variants_needing_details,
+    jobs_awaiting_details,
     latest_detail_fetches_for_jobs,
 )
 from .keywords import retired_search
@@ -916,6 +917,11 @@ def _summary(
     # The title filter is read-time only, so the count comes from the offers
     # themselves and never from a stored column.
     seniority_filtered = sum(1 for offer in offers if offer.get("seniority_filter"))
+    # Only scoreless offers are counted: an offer with a card-only score keeps it
+    # and is displayed like any other scored offer, even if its details are late.
+    pending_details = sum(
+        1 for offer in offers if offer["score"] is None and offer.get("pending_details")
+    )
     total = int(conn.execute("SELECT COUNT(*) FROM jobs WHERE is_active = 1").fetchone()[0])
     human_reviewed_jobs = int(conn.execute("SELECT COUNT(*) FROM job_feedback").fetchone()[0])
     return {
@@ -928,6 +934,9 @@ def _summary(
         # Offers hidden by the read-time title filter; the payload still carries
         # every active offer, so ``jobs_shown`` stays the full count.
         "seniority_filtered": seniority_filtered,
+        # Unscored offers already waiting for a description are broken out of the
+        # general unscored count, because their reason is expected and temporary.
+        "pending_details_unscored": pending_details,
         # Preference verdicts are recomputed from the stored posting text and are
         # deliberately separate from the model recommendation above.
         "preferences": preference_counts,
@@ -954,10 +963,18 @@ def _warnings(summary: dict[str, Any], *, keyword_count: int) -> list[str]:
             "(agregue --rescore para reevaluar) antes de leer los puntajes"
         )
     if summary["unscored"]:
-        warnings.append(
-            f"{summary['unscored']} oferta(s) seleccionada(s) no tienen puntaje exitoso "
-            "y se listan al final"
-        )
+        pending = summary["pending_details_unscored"]
+        if pending:
+            warnings.append(
+                f"{summary['unscored']} oferta(s) seleccionada(s) no tienen puntaje "
+                f"exitoso ({summary['unscored'] - pending} sin puntuar, "
+                f"{pending} pendientes de detalles) y se listan al final"
+            )
+        else:
+            warnings.append(
+                f"{summary['unscored']} oferta(s) seleccionada(s) no tienen puntaje exitoso "
+                "y se listan al final"
+            )
     if not keyword_count:
         warnings.append(
             "no hay procedencia de palabras clave registrada; los ítems de búsqueda "
@@ -998,6 +1015,9 @@ def build_payload(
     # The imported decision read does not consult ``cycle_id``; the latest sweep
     # is dated from it separately, so the two concerns stay independent.
     imported_decisions = _fetch_imported_feedback(conn, job_ids)
+    # Same helper as ``score``, so the report and the scorer never disagree on
+    # which offers are still waiting for a description.
+    awaiting_details = jobs_awaiting_details(conn)
     last_sweep_cycle, last_sweep_at = _last_sweep(conn)
 
     offers: list[dict[str, Any]] = []
@@ -1064,6 +1084,10 @@ def build_payload(
                 # ``None`` when the title is acceptable; a reason string (for
                 # example ``title: senior``) when the client hides it by default.
                 "seniority_filter": seniority_filter,
+                # The scorer skips these offers until their description arrives
+                # (or their detail attempts run out), so the row shows a reason
+                # instead of a score. Only an unscored offer is rendered with it.
+                "pending_details": job_id in awaiting_details,
                 # Only what the row and the text filter read; the schema tag and
                 # rule ids stay in ``PreferenceAssessment.to_dict``.
                 "preference": {
@@ -2169,7 +2193,12 @@ _SCRIPT = r"""
       track.appendChild(fill);
       scoreNode.appendChild(track);
     } else {
-      scoreNode = el("div", "score score-state", scoreStateText(offer.evaluation_status));
+      // A scoreless offer waiting for its description says so instead of the
+      // generic "sin evaluar": the state will change on its own after the next
+      // detail batch, and no score was ever skipped by mistake.
+      scoreNode = el("div", "score score-state", offer.pending_details
+        ? "Pendiente de detalles"
+        : scoreStateText(offer.evaluation_status));
     }
     summary.appendChild(scoreNode);
 

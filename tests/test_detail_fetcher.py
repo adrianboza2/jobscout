@@ -33,6 +33,7 @@ from jobscout.collectors.linkedin_details import (
 )
 from jobscout.config import HARD_MAX_ITEMS, HARD_MAX_PAGES
 from jobscout.db import (
+    DETAIL_ATTEMPTS_BEFORE_SCORING,
     all_active_jobs,
     connect,
     count_jobs_needing_refresh,
@@ -44,6 +45,7 @@ from jobscout.db import (
     insert_evaluation,
     insert_raw_document,
     job_detail_fetch_count,
+    jobs_awaiting_details,
     jobs_needing_details,
     jobs_needing_refresh,
     latest_detail_fetch,
@@ -388,6 +390,41 @@ def test_jobs_needing_details_selects_only_un_enriched(conn) -> None:
     assert [job.id for job in jobs_needing_details(conn, limit=1)] == [card.id]
     assert [job.id for job in jobs_needing_details(conn, job_ids=[rich.id])] == []
     assert [job.id for job in all_active_jobs(conn)] == [rich.id, card.id]
+
+
+def test_jobs_awaiting_details_waits_until_attempts_run_out(conn) -> None:
+    """A card is held back until its real failures reach the threshold."""
+    card = _store_card(conn, "3912222222")
+    assert jobs_awaiting_details(conn) == {int(card.id)}
+
+    # ``skipped`` rows mean the request never happened, so they never count.
+    _insert_fetch(conn, card, status=DetailFetchStatus.SKIPPED)
+    _insert_fetch(conn, card, status=DetailFetchStatus.SKIPPED)
+    assert jobs_awaiting_details(conn) == {int(card.id)}
+
+    # A 404/410 is definitive (it deactivates the offer), not a retryable failure.
+    _insert_fetch(conn, card, status=DetailFetchStatus.FAILED, http_status=404)
+    _insert_fetch(conn, card, status=DetailFetchStatus.FAILED, http_status=410)
+    assert jobs_awaiting_details(conn) == {int(card.id)}
+
+    # Two real failures (including a NULL status, as a timeout writes) release it.
+    for _ in range(DETAIL_ATTEMPTS_BEFORE_SCORING):
+        _insert_fetch(conn, card, status=DetailFetchStatus.FAILED, http_status=403)
+    assert jobs_awaiting_details(conn) == set()
+
+
+def test_jobs_awaiting_details_uses_a_null_http_status_as_a_failure(conn) -> None:
+    """A 403/429/timeout stores ``failed`` with no status; it must still count."""
+    card = _store_card(conn, "3913333333")
+    for _ in range(DETAIL_ATTEMPTS_BEFORE_SCORING):
+        _insert_fetch(conn, card, status=DetailFetchStatus.FAILED)
+    assert jobs_awaiting_details(conn) == set()
+
+
+def test_jobs_awaiting_details_ignores_offers_with_description(conn) -> None:
+    rich = _store_card(conn, "3914444444", description="Already complete description.")
+    assert jobs_awaiting_details(conn) == set()
+    assert rich.id not in jobs_awaiting_details(conn)
 
 
 # ---------------------------------------------------------------------------

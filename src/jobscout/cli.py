@@ -89,6 +89,7 @@ from .db import (
     has_successful_evaluation_with_fingerprint,
     init_db,
     job_detail_fetch_count,
+    jobs_awaiting_details,
     jobs_needing_evaluation,
     list_jobs,
     list_search_runs,
@@ -1587,6 +1588,7 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
     as_json = getattr(args, "as_json", False)
     results: list[dict[str, Any]] = []
     skipped_seniority = 0
+    skipped_pending_details = 0
     try:
         init_db(conn)
         if args.job_id:
@@ -1608,10 +1610,18 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
                     scorer=args.scorer,
                     fingerprint_for=fingerprint_resolver(args.scorer, settings, profile),
                 )
+            # Rule 1: no scoring without details. The offer waits for its
+            # description instead of paying for a card-only score; the query
+            # releases it after enough failed attempts. Like seniority, this
+            # runs before ``--limit`` and ``--job-id`` bypasses it.
+            awaiting_details = jobs_awaiting_details(conn)
             # The seniority filter runs before ``--limit`` so hidden offers do not
             # consume the Hermes sweep's cap. ``--job-id`` deliberately bypasses it.
             jobs = []
             for job in candidates:
+                if int(job.id) in awaiting_details:
+                    skipped_pending_details += 1
+                    continue
                 if seniority_filter_reason(job.title) is not None:
                     skipped_seniority += 1
                     continue
@@ -1704,6 +1714,7 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
             "failed": failed,
             "fallback_model": fallback_model,
             "skipped_seniority": skipped_seniority,
+            "skipped_pending_details": skipped_pending_details,
             "evaluations": results,
         },
         as_json=as_json,
@@ -1712,6 +1723,11 @@ def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
             + (
                 f"\nskipped {skipped_seniority} offer(s) filtered by seniority"
                 if skipped_seniority
+                else ""
+            )
+            + (
+                f"\nskipped {skipped_pending_details} offer(s) waiting for details"
+                if skipped_pending_details
                 else ""
             )
         ),

@@ -127,11 +127,18 @@ Cycle notes:
 - **It never applies automatically.** There is also no scheduler; local
   notifications are opt-in and manual (`jobscout notify`), and every run is one
   you invoke.
-- `--rescore` **is not a daily step**: it re-evaluates offers that already have a
-  score and is only needed when you change the profile or the prompt. For new
-  offers, the normal cycle is `score --all --scorer opencode`, which evaluates
-  exactly the offers that have no score yet.
+- `--rescore` **is not a daily step**: it re-evaluates every active offer even
+  when its input has not changed. For new offers, the normal cycle is
+  `score --all --scorer opencode`, which evaluates exactly the offers that have
+  no score yet.
 - `fetch-details` does not re-score on its own; stage 3 closes the enrichment.
+- **No scoring without details:** `score --all` (with or without
+  `--rescore`) drops, before `--limit`, active offers that still lack a full
+  description and have detail attempts left. It prints
+  `skipped N offer(s) waiting for details` and exposes `skipped_pending_details`
+  in `--json`; `--job-id` forces scoring anyway. The dashboard marks them as
+  "Pendiente de detalles". The exception avoids limbo: after two failed detail
+  attempts that are not a 404/410, the offer is scored on its card.
 - Every evaluation is versioned: it stores the scorer's `prompt_version` and the
   profile `input_fingerprint`, so a policy change is distinguishable without
   rewriting history. For the OpenCode scorer the `prompt_version` also carries
@@ -139,12 +146,11 @@ Cycle notes:
   `+low`), so a `low` pass and a `max` pass are distinguishable after
   the fact. An explicitly empty `JOBSCOUT_OPENCODE_VARIANT=` keeps the bare
   historical string. The model is part of the input fingerprint, so changing it
-  re-scores offers gradually (with `--rescore`).
-- Re-evaluation is **not input-aware yet**: `score --all` skips any offer that
-  already has a successful evaluation from that scorer, even when the profile or
-  the description changed. Use `--rescore` to force a fresh pass over every
-  active offer; skipping unchanged-input re-evaluation remains a documented,
-  deliberate follow-up rather than current behaviour.
+  re-scores offers gradually.
+- Re-evaluation **does look at the input fingerprint**: `score --all` re-evaluates
+  an offer when its fingerprint changes (posting, profile, prompt, or model) and
+  skips the ones that already have a successful evaluation with the current
+  fingerprint. Use `--rescore` to force a fresh pass over every active offer.
 
 ### Seniority and technology criterion (prompt v5)
 
@@ -422,7 +428,7 @@ subcommand), and `--version`.
 | `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enrich GetManfred offers from the recognized `JobPosting` JSON-LD on their public page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score. |
 | `rank [--top N] [--min-score S]` | Jobs with a successful score, best first. |
-| `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evaluate jobs and print the explainable result. |
+| `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evaluate jobs and print the explainable result. `--all` skips senior titles and offers waiting for details before `--limit`; `--job-id` forces both. |
 | `runs [--limit N]` | Recent search runs and stored counts. |
 | `dashboard [--output PATH] [--top N]` | Write a self-contained local HTML report (read-only, offline). |
 | `import-feedback PATH [--project-id ID]` | Store a dashboard feedback export in SQLite (offline, idempotent). |
@@ -704,6 +710,14 @@ seniority pre-filter: `score --all` drops them before applying `--limit`, prints
 `skipped N offer(s) filtered by seniority`, and exposes `skipped_seniority` in
 `--json`. `--job-id` scores them anyway, and existing evaluations of filtered
 offers stay untouched.
+
+A search card is never scored on its own: `score --all` (with or without
+`--rescore`) also drops, before `--limit`, active offers that still lack a full
+description and have detail attempts left. It prints
+`skipped N offer(s) waiting for details` and exposes `skipped_pending_details`
+in `--json`; `--job-id` forces scoring anyway. After two failed detail attempts
+that are not a 404/410 the offer is scored on its card, so it never stays in
+limbo.
 
 | Scorer | When to use it | Requirements |
 |--------|----------------|--------------|

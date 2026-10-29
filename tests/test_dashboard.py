@@ -1194,6 +1194,67 @@ def test_pending_details_lists_every_active_variant_source(dr1_db: Path) -> None
     }
 
 
+def test_offer_payload_marks_offers_waiting_for_details(db_file: Path) -> None:
+    """Rule 1: a scoreless offer without a description says so in the payload."""
+    conn = connect(db_file)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE jobs SET content_status = 'partial', description = NULL "
+                "WHERE title = 'Platform Engineer'"
+            )
+    finally:
+        conn.close()
+
+    payload = _payload(db_file)
+    offers = {offer["title"]: offer for offer in payload["offers"]}
+
+    assert offers["Platform Engineer"]["pending_details"] is True
+    assert offers["Senior Backend Engineer"]["pending_details"] is False
+    # The notice counts pending-details offers apart from the rest.
+    assert payload["summary"]["pending_details_unscored"] == 1
+    assert any("pendientes de detalles" in item for item in payload["warnings"])
+    assert "Pendiente de detalles" in render_dashboard_html(payload)
+
+
+def test_offer_payload_clears_pending_details_after_failed_attempts(
+    db_file: Path,
+) -> None:
+    """The scorer's exception is visible in the report, so both agree."""
+    conn = connect(db_file)
+    try:
+        conn.execute(
+            "UPDATE jobs SET content_status = 'partial', description = NULL "
+            "WHERE title = 'Platform Engineer'"
+        )
+        job_id = int(
+            conn.execute(
+                "SELECT id FROM jobs WHERE title = 'Platform Engineer'"
+            ).fetchone()[0]
+        )
+        for http_status in (403, None):
+            insert_detail_fetch(
+                conn,
+                JobDetailFetch(
+                    job_id=job_id,
+                    source="linkedin",
+                    status=DetailFetchStatus.FAILED,
+                    http_status=http_status,
+                    stored_at="2026-09-15T12:00:00Z",
+                ),
+            )
+    finally:
+        conn.close()
+
+    payload = _payload(db_file)
+    offer = next(
+        item for item in payload["offers"] if item["title"] == "Platform Engineer"
+    )
+
+    assert offer["pending_details"] is False
+    assert payload["summary"]["pending_details_unscored"] == 0
+
+
 def test_status_without_any_sweep_cycle_reports_nothing_new(db_file: Path) -> None:
     """Behaviour 6: no dated cycle means no latest sweep and no new offers."""
     payload = _payload(db_file)

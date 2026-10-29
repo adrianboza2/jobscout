@@ -124,12 +124,19 @@ Notas del ciclo:
 - **Nunca se postula automáticamente.** Tampoco hay programador de tareas; las
   notificaciones locales son opt-in y manuales (`jobscout notify`), y cada
   corrida la invocas tú.
-- `--rescore` **no es un paso diario**: re-evalúa ofertas ya puntuadas y solo hace
-  falta cuando cambias el perfil o el prompt. Para las ofertas nuevas, el ciclo
-  normal es `score --all --scorer opencode`, que evalúa justo las que todavía no
+- `--rescore` **no es un paso diario**: re-evalúa todas las ofertas activas
+  aunque su entrada no haya cambiado. Para las ofertas nuevas, el ciclo normal
+  es `score --all --scorer opencode`, que evalúa justo las que todavía no
   tienen puntaje.
 - `fetch-details` no vuelve a puntuar por sí solo; el paso 3 cierra el
   enriquecimiento.
+- **Sin detalles no hay puntaje:** `score --all` (con o sin
+  `--rescore`) descarta antes de `--limit` las ofertas activas que todavía no
+  tienen descripción completa y aún les quedan intentos de detalle. Imprime
+  `skipped N offer(s) waiting for details` y expone `skipped_pending_details` en
+  `--json`; `--job-id` fuerza el puntaje igual. El tablero las marca como
+  «Pendiente de detalles». La excepción evita el limbo: tras dos intentos de
+  detalle fallidos que no sean 404/410, la oferta se puntúa con su tarjeta.
 - Cada evaluación queda versionada: guarda el `prompt_version` del puntuador y el
   `input_fingerprint` del perfil, así que un cambio de política es distinguible
   sin reescribir el historial. Para el puntuador de OpenCode, el `prompt_version`
@@ -137,14 +144,12 @@ Notas del ciclo:
   `<version>+<variant>` (por defecto `+low`), así que una corrida `low` y una
   `max` se distinguen después. Un `JOBSCOUT_OPENCODE_VARIANT=` explícitamente
   vacío conserva el string histórico sin sufijo. El modelo forma parte de la
-  huella de entrada, así que cambiarlo re-puntúa las ofertas poco a poco (con
-  `--rescore`).
-- La reevaluación **todavía no mira si la entrada cambió**: `score --all` omite
-  cualquier oferta que ya tenga una evaluación exitosa de ese puntuador, aunque
-  el perfil o la descripción hayan cambiado. Usa `--rescore` para forzar una
-  corrida nueva sobre todas las ofertas activas; omitir la reevaluación cuando la
-  entrada no cambió sigue siendo un pendiente documentado, no el comportamiento
-  actual.
+  huella de entrada, así que cambiarlo re-puntúa las ofertas poco a poco.
+- La reevaluación **sí mira la huella de entrada**: `score --all` vuelve a
+  evaluar una oferta cuando cambia su huella (publicación, perfil, prompt o
+  modelo) y omite las que ya tienen una evaluación exitosa con la huella
+  actual. Usa `--rescore` para forzar una corrida nueva sobre todas las ofertas
+  activas.
 
 ### Criterio de seniority y tecnologías (prompt v5)
 
@@ -429,7 +434,7 @@ subcomando) y `--version`.
 | `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enriquece ofertas de GetManfred desde el JSON-LD `JobPosting` reconocido de su página pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje. |
 | `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero. |
-| `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. |
+| `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. `--all` omite, antes de `--limit`, las de título senior y las que esperan detalles; `--job-id` fuerza ambas. |
 | `runs [--limit N]` | Ejecuciones de búsqueda recientes y conteos almacenados. |
 | `dashboard [--output PATH] [--top N]` | Escribe un informe HTML local autocontenido (solo lectura, sin red). |
 | `import-feedback PATH [--project-id ID]` | Guarda una exportación de feedback del tablero en SQLite (sin red, idempotente). |
@@ -723,6 +728,14 @@ el filtro de seniority por título: `score --all` las descarta antes de aplicar
 `--limit`, imprime `skipped N offer(s) filtered by seniority` y expone
 `skipped_seniority` en `--json`. `--job-id` las puntúa igual, y las evaluaciones
 existentes de ofertas filtradas no se tocan.
+
+Sin detalles no se puntúa una tarjeta de búsqueda: `score --all` (con o sin
+`--rescore`) descarta también, antes de `--limit`, las ofertas activas que
+siguen sin descripción completa y a las que les quedan intentos de detalle.
+Imprime `skipped N offer(s) waiting for details` y expone
+`skipped_pending_details` en `--json`; `--job-id` fuerza el puntaje igual. Tras
+dos intentos de detalle fallidos que no sean 404/410 la oferta se puntúa con su
+tarjeta, para que nunca quede en el limbo.
 
 | Puntuador | Cuándo usarlo | Requisitos |
 |-----------|---------------|------------|
