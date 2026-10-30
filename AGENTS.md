@@ -109,9 +109,13 @@ The full offline suite is the acceptance gate for any change.
 
 ## Planning files
 
-- `NEXT_STEPS.md` — session log and backlog, newest first.
-- `odd/tasks/<topic>.md` — open work orders; `odd/tasks/done/` — closed ones, kept for
-  history.
+- `kanvas.json` — the Kanvas board, the **only** list of pending work (owner, 2026-10-31).
+  Change it only through `.agents/skills/kanvas/kanvas.py` (the `kanvas` skill); new work is
+  proposed there, never added to `NEXT_STEPS.md`.
+- `NEXT_STEPS.md` — session log only, newest first: what was done and why. Its old
+  "Pending"/"Next" lists are history; what is still open is on the board.
+- `odd/tasks/<topic>.md` — detailed work orders a board card may point to; `odd/tasks/done/` —
+  closed ones, kept for history.
 
 ## Windows / Codex notes (second machine)
 

@@ -1,7 +1,9 @@
 # Next Steps
 
-This document records the next improvements for `jobscout` after the first
-working MVP.
+Session log, newest first: what each session did and why. **Pending work lives
+only on the Kanvas board (`kanvas.json`)** since 2026-10-31; the "Pending",
+"Next" and "Priority" lists below are history, and anything still open from
+them is a card on the board. Do not add new pending items here.
 
 ## Session 2026-10-29 — sweep detail cap aligned with the commands (SC-06)
 

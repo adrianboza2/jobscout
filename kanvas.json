@@ -1,0 +1,425 @@
+{
+  "kanvas": 1,
+  "title": "jobscout",
+  "groups": [
+    {
+      "id": "SC",
+      "name": "Cola de scoring"
+    },
+    {
+      "id": "BR",
+      "name": "Borradores (plan propio)"
+    },
+    {
+      "id": "AJ",
+      "name": "ai-job-search"
+    },
+    {
+      "id": "FU",
+      "name": "Fuentes"
+    },
+    {
+      "id": "DB",
+      "name": "Dashboard"
+    },
+    {
+      "id": "KW",
+      "name": "Keywords"
+    },
+    {
+      "id": "WF",
+      "name": "CLI y flujo"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "SC-01",
+      "title": "Spec de la cola de scoring",
+      "state": "done",
+      "group": "SC",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] El dueño revisa la spec antes de implementar (NEXT_STEPS.md:64). Cubre SC-02, SC-03 y SC-04: predicado de 'sin detalles', excepción tras 2 fallos de detalle que no sean 404, `--job-id` para forzar, orden en dos grupos y corte tras 3 errores seguidos.\nHecho: spec en odd/tasks/scoring-queue.md, aprobada por el dueño.",
+      "notes": [
+        {
+          "at": "2026-10-29T11:42:43Z",
+          "by": "claude-code",
+          "text": "Plan: mapear cómo elige y ordena ofertas hoy 'score --all' y cómo se registran los fallos de detalle; escribir la spec en odd/tasks/scoring-queue.md y pedir tu aprobación."
+        },
+        {
+          "at": "2026-10-29T11:48:22Z",
+          "by": "claude-code",
+          "text": "Spec lista para revisar: odd/tasks/scoring-queue.md. Recoge las tres reglas tal como las decidiste el 28-oct y concreta los detalles que quedaban abiertos.\n\nDecisiones que tomé yo; confírmalas o cámbialas:\n- \"Intento fallido de detalle\" = fila de job_detail_fetches con status failed/partial que no sea 404/410. Las filas \"skipped\" (lote abortado por 403/429) no cuentan. Hoy solo 1 de las 238 ofertas sin detalles tiene un intento fallido, así que la excepción es solo una red de seguridad.\n- Si una oferta ya tiene un score hecho solo con la tarjeta, lo conserva y no se re-puntúa con la tarjeta: espera a tener los detalles.\n- Una oferta que solo tiene errores cuenta como \"nunca puntuada\" y va en el primer grupo.\n- El corte por errores mira el resultado final de cada oferta (después del fallback). Un parse_error reinicia la cuenta. Si la corrida se corta, sale con código 1: el log del sweep lo marca como fallo, y el dashboard y la copia de la BD se hacen igual.\n- Las reglas 1 y 3 también se aplican con --rescore; el orden de --rescore no cambia.\n- Sin cambio de esquema: todo se calcula con las tablas que ya existen.\n\nQué mirar: las secciones \"Rule 1/2/3\" y \"Dashboard\" de la spec."
+        },
+        {
+          "at": "2026-10-29T15:02:39Z",
+          "by": "claude-code",
+          "text": "El dueño no quiere revisar specs (2026-10-29). La spec queda como documento interno de trabajo; no hace falta leerla. Se puede marcar como done sin revisarla."
+        }
+      ]
+    },
+    {
+      "id": "SC-02",
+      "title": "No puntuar ofertas sin detalles",
+      "state": "done",
+      "group": "SC",
+      "deps": ["SC-01"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "Saltar las ofertas que cumplen el predicado de `jobs_needing_details` (`db.py:1382`: `content_status != 'ok'` o descripción vacía). Excepciones: tras 2 intentos de detalle fallidos (no 404) se puntúa con lo que haya, para que nada se quede en el limbo; `--job-id` lo fuerza. El dashboard las lista al final como pendientes de detalle.\nPor qué: 74 de los 79 scores de LinkedIn hechos solo con la tarjeta de búsqueda son 'consider' con confianza 0.38, y se pagan dos veces (NEXT_STEPS.md:60-72).\nHecho: tests nuevos + README ES/EN, suite offline en verde.",
+      "notes": [
+        {
+          "at": "2026-10-29T15:10:46Z",
+          "by": "claude-code",
+          "text": "Plan: helper jobs_awaiting_details en db.py, filtro en score --all (también --rescore) antes de --limit, campos de salida, flag pending_details en el dashboard con estado 'Pendiente de detalles', tests y README ES/EN. Implementa DeepSeek (ejecutor); reviso el diff y paso la suite."
+        },
+        {
+          "at": "2026-10-29T15:34:34Z",
+          "by": "claude-code",
+          "text": "`score --all` ya no puntúa ofertas sin descripción: las salta (también con --rescore) antes de aplicar --limit, así que no gastan el cupo de 180 del sweep.\n- Salida: `skipped N offer(s) waiting for details`; en --json, `skipped_pending_details`.\n- Excepción: tras 2 intentos de detalle fallidos (los 404/410 y los \"skipped\" no cuentan) se puntúa con la tarjeta. `--job-id` siempre fuerza.\n- Dashboard: las ofertas sin puntaje que esperan detalles muestran \"Pendiente de detalles\", y el aviso del final las cuenta aparte.\n- Las ofertas que ya tienen un puntaje hecho solo con la tarjeta lo conservan hasta que lleguen sus detalles.\n- README ES/EN actualizados; también corregí el párrafo antiguo que decía que la re-evaluación ignora los cambios de entrada.\nVerificado: suite offline 1211 passed. Sin commit todavía.\nQué mirar: en el próximo sweep, la línea \"skipped N offer(s) waiting for details\" del log (hoy debería rondar las ~238 ofertas sin detalles)."
+        }
+      ]
+    },
+    {
+      "id": "SC-03",
+      "title": "Primero las nunca puntuadas, luego los re-scores",
+      "state": "done",
+      "group": "SC",
+      "deps": ["SC-01", "SC-02"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "`score --all` en dos grupos: primero las ofertas sin score y después los re-scores, cada grupo por `last_seen_at DESC, id DESC` como hoy. Así un cambio de modelo, prompt o perfil no deja las ofertas nuevas de un sweep detrás de ~600 re-scores. Se descarta ordenar por el score heurístico (NEXT_STEPS.md:73-77).\nHecho: tests de orden (hoy no hay ninguno; `tests/test_db.py:707-791` solo cubre la selección) + README ES/EN, suite en verde.",
+      "notes": [
+        {
+          "at": "2026-10-29T16:49:10Z",
+          "by": "claude-code",
+          "text": "Plan: ordenar la selección de score --all en dos grupos (sin score primero, luego re-scores), tests de orden, README ES/EN."
+        },
+        {
+          "at": "2026-10-29T16:52:32Z",
+          "by": "claude-code",
+          "text": "`score --all` puntúa ahora primero las ofertas que nunca tuvieron un score y después los re-scores, cada grupo de la más reciente a la más antigua. Con el tope de 180 del sweep, un cambio de modelo/prompt/perfil ya no deja las ofertas nuevas detrás de los re-scores.\n- \"Nunca puntuada\" = sin ninguna evaluación exitosa de ese scorer (opencode), con cualquier huella.\n- `--rescore` no cambia: sigue recorriendo todas las activas por id.\n- Verificado: 3 tests de orden nuevos (2 fallan con el código anterior), suite completa 1214 passed. README ES/EN actualizados. Sin commit.\n- Para comprobarlo en vivo: en el próximo sweep, las primeras ofertas puntuadas deberían ser las nuevas."
+        }
+      ]
+    },
+    {
+      "id": "SC-04",
+      "title": "Parar tras 3 errores seguidos del proveedor",
+      "state": "done",
+      "group": "SC",
+      "deps": ["SC-01", "SC-03"],
+      "yolo": true,
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "Cortar el run tras 3 `status=error` consecutivos e informar de hasta dónde llegó. Hoy el bucle no para nunca (`cli.py:1630-1694`): con la ventana de 5 h de Go agotada escribiría una fila de error por cada oferta restante. El re-score del 2026-10-28 tuvo 5 ECONNRESET aislados en 584 llamadas, nunca dos seguidos (NEXT_STEPS.md:78-82).\nHecho: tests + README ES/EN, suite en verde.",
+      "notes": [
+        {
+          "at": "2026-10-29T16:57:02Z",
+          "by": "claude-code",
+          "text": "Plan: contar errores finales seguidos en el bucle de score --all, cortar a los 3 con mensaje y código de salida 1, tests y README ES/EN. Implementa DeepSeek (ejecutor); reviso el diff y paso la suite."
+        },
+        {
+          "at": "2026-10-29T17:06:27Z",
+          "by": "claude-code",
+          "text": "`score --all` ya no sigue escribiendo errores cuando el proveedor está caído: tras 3 errores seguidos para y deja el resto para la próxima corrida.\n- Cuenta el resultado final de cada oferta (después del modelo de reserva). Un parse_error no cuenta y reinicia la racha.\n- Imprime `stopped after 3 consecutive provider errors: A of S offer(s) attempted, R left for the next run`; en --json, `stopped_early` y `not_attempted`.\n- Sale con código 1 aunque algunas ofertas se hayan puntuado, así que el log del sweep lo marca como fallo; el dashboard y la copia de la BD se hacen igual.\n- Si el tercer error cae justo en la última oferta, no cuenta como corte (no quedaba nada pendiente).\nVerificado: 5 tests nuevos, suite 1219 passed. README ES/EN. Commit 6f6f0dc.\nQué mirar: nada en un sweep normal; solo verás la línea \"stopped after...\" si Go se queda sin cuota a mitad de corrida."
+        }
+      ]
+    },
+    {
+      "id": "SC-05",
+      "title": "Sweep de Hermes: ~120 min de scoring, cap por tiempo y detalles de Tecnoempleo",
+      "state": "done",
+      "group": "SC",
+      "deps": ["SC-02", "SC-03", "SC-04"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño, 2026-10-29] La puntuación del sweep puede durar hasta ~120 min, no ~35. Todo fuera del repo, en una sola edición después de mergear SC-02..SC-04:\n- Hermes mata los scripts de cron a los 3600 s (valor por defecto). Subir `cron.script_timeout_seconds` a 9000 (2,5 h) en `~/.hermes/config.yaml`.\n- `BUDGET` del sweep de 3000 a 8400 s (2 h 20 min).\n- Quitar el `SCORE_CAP = 180` fijo: cap = `(tiempo_restante - 180 s) / 16 s`, con 3 min reservados para dashboard y backup. Con ~10 min de búsquedas y detalles da ~450 ofertas por sweep. Si la cuota de Go se agota, SC-04 corta tras 3 errores seguidos y el resto queda para el siguiente sweep.\n- El job de las 19:00 baja también los detalles de Tecnoempleo, necesario con SC-02 (si no, la cola de Tecnoempleo espera ~12 días). `DETAIL_CAP` y pacing sin cambios.\nHecho: el log del siguiente sweep muestra el cap calculado y termina con dashboard y backup; el job de las 19:00 baja detalles de Tecnoempleo.",
+      "notes": [
+        {
+          "at": "2026-10-29T18:56:46Z",
+          "by": "claude-code",
+          "text": "Decisión del dueño (2026-10-29): dejar hasta ~120 min para puntuar en vez de ~35. Requiere subir el timeout de scripts de Hermes."
+        },
+        {
+          "at": "2026-10-29T18:58:47Z",
+          "by": "claude-code",
+          "text": "Plan: subir cron.script_timeout_seconds a 9000, BUDGET 8400, cap de scoring calculado por tiempo, detalles de Tecnoempleo en el job de las 19:00; actualizar AGENTS.md y NEXT_STEPS.md y commitear la documentación."
+        },
+        {
+          "at": "2026-10-29T19:00:50Z",
+          "by": "claude-code",
+          "text": "El sweep ya puede puntuar ~2 h: el tope de ofertas sale del tiempo que queda, no de un 180 fijo.\n- Hermes: `cron.script_timeout_seconds: 9000` en ~/.hermes/config.yaml (antes 3600 por defecto).\n- Sweep: presupuesto 8400 s; cap de scoring = (restante − 180 s) / 16 s (~450 ofertas). Se escribe en el log como `[scoring: quedan Ns -> cap N ofertas]` y en el resumen como `(cap N)`.\n- Job de las 19:00: baja detalles de LinkedIn y de Tecnoempleo (40 por fuente, pacing igual).\n- Copias de seguridad: config.yaml.bak-sc05 y jobscout_sweep.py.bak-sc05.\n- Verificado sin red: self-check y --dry-run del sweep OK; el plan de las 19:00 lanza las dos tandas (hoy quedan 155 LinkedIn y 139 Tecnoempleo pendientes).\nQué comprobar: el log del sweep del 31-oct muestra el cap y termina con dashboard y backup; el de las 19:00 del 2-nov lista `pendientes tecnoempleo: A -> B`.\nDocs (AGENTS.md, NEXT_STEPS.md) commiteadas en kanvas."
+        }
+      ]
+    },
+    {
+      "id": "SC-06",
+      "title": "Alinear el cap de detalles del sweep (40 vs 20)",
+      "state": "done",
+      "group": "SC",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] El script pasa hasta 40 ids (`JOBSCOUT_SWEEP_DETAIL_CAP`), pero `fetch-details` procesa 20 y descarta el resto con un aviso engañoso. Es inofensivo; la propuesta es alinear el cap del script con el del comando (NEXT_STEPS.md:473-477). Es el mismo fichero que SC-05: conviene hacerlo en la misma edición.\nHecho: el log del sweep ya no muestra 'omitted by --max-items'.",
+      "notes": [
+        {
+          "at": "2026-10-29T19:41:21Z",
+          "by": "claude-code",
+          "text": "Plan: bajar el default de DETAIL_CAP del script de 40 a 20 (el tope de los tres comandos de detalles), con copia .bak-sc06; anotarlo en NEXT_STEPS.md."
+        },
+        {
+          "at": "2026-10-29T19:44:27Z",
+          "by": "claude-code",
+          "text": "El sweep ya pide como mucho 20 detalles por fuente, los mismos que procesa cada comando de detalles: se va el aviso \"20 selected job(s) omitted by --max-items\". Las peticiones por pasada no cambian (antes ya solo se bajaban 20).\n- Cambio en `~/.hermes/scripts/jobscout_sweep.py` (fuera del repo): `DETAIL_CAP` 40 -> 20. Copia: `jobscout_sweep.py.bak-sc06`.\n- Anotado en NEXT_STEPS.md (commit en la rama kanvas); suite offline verde (1219 passed).\n- Para comprobar: el log del sweep del 31-oct no tiene la línea \"omitted by --max-items\"."
+        }
+      ]
+    },
+    {
+      "id": "BR-01",
+      "title": "Piloto de dossier por empresa",
+      "state": "proposed",
+      "group": "BR",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "Comando bajo demanda `jobscout dossier --job-id N` con OpenCode Go y `webfetch` (websearch da HTTP 402): un Markdown por empresa en `data/` con sector, tamaño, stack, política de remoto, contratación junior y URLs de origen con fecha. Nunca páginas de LinkedIn. Enlazado desde el dashboard. Piloto sobre las 16 ofertas 'apply' (NEXT_STEPS.md:91-97).\nPregunta abierta: cuánto encuentra el modelo solo con `webfetch`.\nHecho: 16 dossiers generados y revisados por el dueño; tests offline del comando; README ES/EN."
+    },
+    {
+      "id": "BR-02",
+      "title": "Puntuar con y sin dossier (copia de la base)",
+      "state": "proposed",
+      "group": "BR",
+      "deps": ["BR-01"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] Puntuar las 16 ofertas 'apply' con y sin dossier sobre una copia de la base. El scorer leerá dossiers solo si el dueño juzga mejores esos scores (NEXT_STEPS.md:96-98).\nHecho: comparación escrita y decisión del dueño anotada."
+    },
+    {
+      "id": "AJ-01",
+      "title": "Decidir cómo encaja ai-job-search",
+      "state": "proposed",
+      "group": "AJ",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] ai-job-search (MIT; el repo se movió a ai-job-search-dev/ai-job-search; última release v1.7.3 del 2026-10-19) es un workspace de Claude Code, no una librería: `/apply <URL o texto>` genera CV (LaTeX, 2 páginas) y carta (1 página) de UNA oferta cada vez, e `/interview <empresa>` la preparación.\nChoques con el plan propio (BR-03..BR-05):\n- gasta cuota de Claude, que es el cuello de botella (el plan propio usa OpenCode Go);\n- `/setup` vuelca el CV, con los datos de identidad, a su CLAUDE.md, y el plan dice no mandar nunca teléfono ni email al modelo;\n- exige ya Bun y LaTeX (lualatex/xelatex), y el plan dejaba LaTeX para may–jun 2027;\n- trae su propio scraping (LinkedIn jobs-guest, portales daneses) y su `/rank`, que sobran porque jobscout ya recoge y puntúa.\nOpciones: (a) usarlo solo para `/apply` e `/interview`, alimentado por jobscout; (b) portar su método (auditar cada afirmación contra el CV, guarda contra texto malicioso en la oferta) a BR-03/BR-04.\nHecho: decisión anotada; la vía descartada se rechaza en el tablero."
+    },
+    {
+      "id": "AJ-02",
+      "title": "Montar el workspace de ai-job-search fuera del repo",
+      "state": "proposed",
+      "group": "AJ",
+      "deps": ["AJ-01"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "Clonar en un directorio aparte (nunca dentro de jobscout), fijado a un tag o commit revisado (master lleva parches de seguridad posteriores a v1.7.3), y revisar su código antes de ejecutarlo, como se hizo con Kanvas. `/setup` desde `~/vault/cv.md` sin teléfono ni email. Portales desactivados: no se usan `/scrape` ni `/rank`. Bun y LaTeX solo si AJ-01 lo aprueba.\nHecho: `/setup` completo y perfil generado revisado por el dueño."
+    },
+    {
+      "id": "AJ-03",
+      "title": "Exportar el top 10 de jobscout para /apply",
+      "state": "proposed",
+      "group": "AJ",
+      "deps": ["AJ-02"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "Comando de jobscout, offline (solo lee la base), que escribe las 10 mejores ofertas activas, no filtradas por seniority y con detalles, una por fichero en el workspace (`documents/postings/<Company> - <Title>.txt`): texto guardado de la oferta + URL + score. `/apply` acepta URL o texto pegado, de una en una; no hay import JSON/CSV oficial.\nNota: el plan propio trabaja con las ofertas 'apply' (16 hoy), no con un top 10 fijo.\nHecho: 10 ficheros generados; tests offline; README ES/EN."
+    },
+    {
+      "id": "AJ-04",
+      "title": "CV a medida para el top 10",
+      "state": "proposed",
+      "group": "AJ",
+      "deps": ["AJ-03"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "`/apply` por oferta con su fichero de AJ-03 → `cv/main_<company>_<role>.tex|.pdf`. El dueño revisa cada afirmación contra `~/vault/cv.md`. Solo borrador: nada se envía.\nHecho: 10 CV revisados por el dueño."
+    },
+    {
+      "id": "AJ-05",
+      "title": "Carta de presentación para el top 10",
+      "state": "proposed",
+      "group": "AJ",
+      "deps": ["AJ-04"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "`/apply` genera la carta en la misma pasada que el CV (`cover_letters/cover_<company>_<role>.tex|.pdf`, 1 página); esta tarjeta es revisarlas y ajustarlas. Solo borrador.\nHecho: 10 cartas revisadas y una fila `drafted` por oferta en `job_search_tracker.csv`."
+    },
+    {
+      "id": "AJ-06",
+      "title": "Preparación de entrevista (ai-job-search)",
+      "state": "proposed",
+      "group": "AJ",
+      "deps": ["AJ-05"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "`/interview <empresa> [rol]` sobre la carpeta de la candidatura → `documents/applications/<company>_<role>/interview_prep_<stage>.md`, más un simulacro en el chat.\nHecho: preparación generada y revisada para las ofertas que elija el dueño."
+    },
+    {
+      "id": "BR-03",
+      "title": "CV y carta a medida en Markdown",
+      "state": "proposed",
+      "group": "BR",
+      "deps": ["BR-01", "AJ-01"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "Solo para ofertas 'apply', con la estructura que acepta el CV Analyzer de Manfred. Lee `~/vault/cv.md` en tiempo de ejecución, no afirma nada que el CV no diga, nunca manda teléfono ni email al modelo, y es solo borrador (NEXT_STEPS.md:98-101).\nSolapa con AJ-04/AJ-05: AJ-01 decide si se hace esta, la de ai-job-search o una mezcla.\nHecho: borradores de todas las 'apply' revisados por el dueño."
+    },
+    {
+      "id": "BR-04",
+      "title": "Preparación de entrevista (plan propio)",
+      "state": "proposed",
+      "group": "BR",
+      "deps": ["BR-03"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "Tras el CV y la carta, reutilizando el dossier de la empresa (NEXT_STEPS.md:101-102). Solapa con AJ-06.\nHecho: preparación en Markdown para las ofertas que elija el dueño."
+    },
+    {
+      "id": "BR-05",
+      "title": "CV en LaTeX al empezar a aplicar",
+      "state": "proposed",
+      "group": "BR",
+      "deps": ["BR-03"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "Cuando empiecen las candidaturas (may–jun 2027) (NEXT_STEPS.md:102).\nHecho: CV en LaTeX generado a partir del borrador Markdown."
+    },
+    {
+      "id": "FU-01",
+      "title": "Arreglar el filtro del inventario de GetManfred",
+      "state": "review",
+      "group": "FU",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] Ocho sweeps seguidos con los mismos 23 matches y 0 nuevos, mientras el sitemap ganó ~22 ofertas: el filtro exige todos los tokens de la query en el slug y solo acierta `Platform Engineer`. Propuesta: términos cortos propios de GetManfred (devops, sre, cloud, security, platform…) + corte por `lastmod`; sigue siendo una sola petición. Efecto secundario: el `query` del run es la lista unida por comas, así que dashboard y prune ven una sola serie (NEXT_STEPS.md:460-472).\nHecho: propuesta aprobada; tests offline con slugs reales capturados; README ES/EN.",
+      "notes": [
+        {
+          "at": "2026-10-29T19:49:46Z",
+          "by": "claude-code",
+          "text": "Plan: términos cortos propios de GetManfred + corte por lastmod en el filtro local del sitemap; una sola petición; tests con slugs reales; README ES/EN."
+        },
+        {
+          "at": "2026-10-29T20:03:55Z",
+          "by": "claude-code",
+          "text": "GetManfred vuelve a encontrar ofertas nuevas: sobre el sitemap del sweep del 28-oct, el filtro nuevo se queda con 13 ofertas vigentes (sre-devops, devops, sysadmin, platform, cybersecurity…) en vez de las mismas 23, que eran casi todas de 2022-2025.\n- Términos cortos propios de GetManfred (devops, sre, cloud, security, platform…, 18 en total): basta con que aparezca uno en el slug. Salen en `keyword-plan --json`, en el bloque `getmanfred`.\n- Corte por `lastmod`: se descartan las ofertas de más de 120 días (`--max-age-days` / `JOBSCOUT_GETMANFRED_MAX_AGE_DAYS`, 0 = sin corte). Sigue siendo una sola petición.\n- Sweep (fuera del repo) actualizado: le pasa esos términos a `search-getmanfred`. Lo he comprobado con su `--dry-run`.\n- Commit c6aa4d9 en `kanvas` (código, tests con slugs reales, README ES/EN, NEXT_STEPS). Suite: 1227 passed.\n\nQué comprobar: en el log del próximo sweep, la línea de `getmanfred:inventario` debería dar unas 13 ofertas y algunas nuevas. Efecto secundario: el run cambia de `query`, así que en el dashboard y en prune empieza una serie nueva de GetManfred y la antigua se queda parada."
+        }
+      ]
+    },
+    {
+      "id": "FU-02",
+      "title": "Backfill inicial de Tecnoempleo",
+      "state": "proposed",
+      "group": "FU",
+      "deps": ["SC-05"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "Lanzar a mano el browse por función con `--max-pages 10 --max-items 250` (dentro del tope de 10 páginas) y `--confirm-network`. No consta ejecutado (NEXT_STEPS.md:135-136, 214).\nVa después de SC-05: con la cola actual, las ofertas nuevas se puntuarían sin detalles y se pagarían dos veces, y el job de las 19:00 aún no baja detalles de Tecnoempleo (hoy hay 139 pendientes).\nHecho: run completado y su log revisado."
+    },
+    {
+      "id": "FU-03",
+      "title": "InfoJobs: autorización oficial de la API",
+      "state": "proposed",
+      "group": "FU",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño / bloqueo externo] Fuera de alcance sin una nueva decisión: hace falta la autorización oficial de la API y credenciales de app antes de escribir cualquier adaptador. La página privada `candidate/my-infojobs.xhtml` no se toca nunca (NEXT_STEPS.md:662-663, 867-869).\nHecho: el dueño decide si pide la autorización."
+    },
+    {
+      "id": "DB-01",
+      "title": "Decidir si quitar offer.detail del payload",
+      "state": "proposed",
+      "group": "DB",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] La evidencia de enlaces (65 KB) no tiene UI desde DR-3; quitarla elimina una función documentada (NEXT_STEPS.md:331-332).\nHecho: decisión anotada y, si se quita, payload + tests + README ES/EN."
+    },
+    {
+      "id": "DB-02",
+      "title": "Medir el first paint en un navegador real",
+      "state": "proposed",
+      "group": "DB",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] No se ha medido; `reports/dr6-antes.html` y `reports/dr6-despues.html` están preparados para ello (NEXT_STEPS.md:333-334).\nHecho: tiempos de ambos medidos y anotados en NEXT_STEPS.md."
+    },
+    {
+      "id": "DB-03",
+      "title": "Limpiar localStorage al importar decisiones",
+      "state": "proposed",
+      "group": "DB",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] Exportar/importar nunca limpia `localStorage`, así que el botón de exportar sigue visible después de importar (NEXT_STEPS.md:351-352).\nHecho: decisión del dueño y, si se limpia, cambio + test."
+    },
+    {
+      "id": "DB-04",
+      "title": "Destino de la UI de decisión apply/reject",
+      "state": "proposed",
+      "group": "DB",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] Las decisiones binarias salieron del flujo semanal (las sustituye la vista de divergencia, DB-06). Falta decidir si la UI se quita o se queda dormida; las tablas se quedan en cualquier caso (NEXT_STEPS.md:516-519).\nHecho: decisión anotada."
+    },
+    {
+      "id": "DB-05",
+      "title": "Gates FAIL / FLAG con auditoría de vetos",
+      "state": "proposed",
+      "group": "DB",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] Del roadmap del 2026-10-18: confirmar que sigue vigente. FAIL solo por un deal-breaker explícito del perfil o solape cero; todo lo dudoso pasa a FLAG (⚠, sigue en el ranking, con la evidencia citada guardada). El dashboard gana una lista de vetos y el dueño promueve FLAG→FAIL cada semana escribiendo el motivo (NEXT_STEPS.md:558-563).\nHecho: gates + vista + tests + README ES/EN."
+    },
+    {
+      "id": "DB-06",
+      "title": "Vista de divergencia heurístico vs LLM",
+      "state": "proposed",
+      "group": "DB",
+      "deps": ["DB-05"],
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] Del roadmap del 2026-10-18: confirmar que sigue vigente. Ofertas en las que discrepan el heurístico y el scorer LLM, más una pequeña muestra de control de las que coinciden; sustituye la revisión oferta a oferta por una sesión semanal de ~10 min (NEXT_STEPS.md:564-569). Necesita backend primero: no se guarda ninguna evaluación heurística (las 3.207 son `opencode`, NEXT_STEPS.md:425-426).\nHecho: vista + comparación de scorers en `calibration.py` + tests."
+    },
+    {
+      "id": "DB-07",
+      "title": "Dimensions vacías: pedirlas al scorer o quitar la sección",
+      "state": "proposed",
+      "group": "DB",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] Solo 5 de 700 ofertas tienen `dimensions_json`, ninguna escrita después del 2026-10-01, y casi todas las filas se abren solo con el rationale (NEXT_STEPS.md:379-380, 422-424). Causa: el contrato de salida del prompt de OpenCode prohíbe devolver `dimensions` (`src/jobscout/scoring/opencode.py:153-157`).\nHecho: el dueño decide si el scorer vuelve a devolverlas (más tokens por oferta) o se quita la sección; cambio + tests."
+    },
+    {
+      "id": "KW-01",
+      "title": "Decidir si se amplía la cobertura de keywords",
+      "state": "proposed",
+      "group": "KW",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "[Decisión del dueño] Aplazado por el dueño el 2026-09-30. Hoy: tope de 3 queries por familia (`HARD_MAX_QUERIES_PER_FAMILY`), sin fan-out, y las variantes de términos que funcionan solo entran en el catálogo con aprobación humana. Ampliar obliga a decidir antes si se mueve el tope, qué proveedores por familia y cuál es la puerta de revisión (NEXT_STEPS.md:697-702, 906-915).\nHecho: decisión anotada."
+    },
+    {
+      "id": "WF-01",
+      "title": "Flags --scorer-model y --effort",
+      "state": "proposed",
+      "group": "WF",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "Exponer por CLI el modelo y el esfuerzo de OpenCode (hoy solo por entorno) y ajustar el timeout por oferta (`JOBSCOUT_OPENCODE_TIMEOUT_SECONDS`, 180 s) al esfuerzo elegido. Hace práctico comparar modelos sin tocar el entorno (NEXT_STEPS.md:651-655, 903-904).\nHecho: flags + tests + README ES/EN, suite en verde."
+    },
+    {
+      "id": "WF-02",
+      "title": "Marcar 'necesita re-score' en list y dashboard",
+      "state": "proposed",
+      "group": "WF",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "La selección ya detecta el fingerprint de entrada; falta marcar en `list` y en el dashboard las ofertas con score desactualizado, en vez de esperar a un `--rescore` manual (NEXT_STEPS.md:645-650).\nHecho: marca visible + tests + README ES/EN."
+    },
+    {
+      "id": "WF-03",
+      "title": "Extraer el salario del detalle de LinkedIn",
+      "state": "proposed",
+      "group": "WF",
+      "at": "2026-10-28T08:55:14Z",
+      "by": "claude",
+      "desc": "Pasar a `jobs.salary` un salario escrito en la descripción (p. ej. '€25,000 – €35,000'). Requiere capturar una vez markup real y pasarlo por el parser offline (NEXT_STEPS.md:270-272).\nHecho: parser + test con la captura + README ES/EN."
+    }
+  ]
+}
