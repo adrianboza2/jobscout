@@ -284,7 +284,7 @@
     {
       "id": "FU-01",
       "title": "Arreglar el filtro del inventario de GetManfred",
-      "state": "review",
+      "state": "done",
       "group": "FU",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
@@ -305,12 +305,24 @@
     {
       "id": "FU-02",
       "title": "Backfill inicial de Tecnoempleo",
-      "state": "proposed",
+      "state": "done",
       "group": "FU",
       "deps": ["SC-05"],
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "Lanzar a mano el browse por función con `--max-pages 10 --max-items 250` (dentro del tope de 10 páginas) y `--confirm-network`. No consta ejecutado (NEXT_STEPS.md:135-136, 214).\nVa después de SC-05: con la cola actual, las ofertas nuevas se puntuarían sin detalles y se pagarían dos veces, y el job de las 19:00 aún no baja detalles de Tecnoempleo (hoy hay 139 pendientes).\nHecho: run completado y su log revisado."
+      "desc": "Lanzar a mano el browse por función con `--max-pages 10 --max-items 250` (dentro del tope de 10 páginas) y `--confirm-network`. No consta ejecutado (NEXT_STEPS.md:135-136, 214).\nVa después de SC-05: con la cola actual, las ofertas nuevas se puntuarían sin detalles y se pagarían dos veces, y el job de las 19:00 aún no baja detalles de Tecnoempleo (hoy hay 139 pendientes).\nHecho: run completado y su log revisado.",
+      "notes": [
+        {
+          "at": "2026-10-31T00:09:04Z",
+          "by": "claude-code",
+          "text": "Plan: run the Tecnoempleo function browse once by hand (--max-pages 10 --max-items 250 --confirm-network), then review the run output and DB counts."
+        },
+        {
+          "at": "2026-10-31T00:11:07Z",
+          "by": "claude-code",
+          "text": "Backfill hecho: el browse por función de Tecnoempleo (Madrid) trajo 250 ofertas, 91 nuevas y 159 que ya estaban (run #442, completado sin errores, robots.txt leído, 10 páginas a 8 s).\n- Para verlo: `jobscout runs` muestra el run #442 \"FU-02 backfill\".\n- Efecto: las 91 nuevas esperan sus detalles y el scoring no las toca hasta tenerlos. La cola de Tecnoempleo pendiente de detalles queda en 226 ofertas.\n- Decisión para ti: el sweep baja 20 detalles por fuente en cada pasada (07:00 y 19:00 de mitad de ciclo), unos 40 cada 3 días, así que vaciar la cola llevaría unas 2-3 semanas. ¿Lo dejamos drenar solo, o lanzo a mano algunos lotes de `fetch-tecnoempleo-details` (20 por lote, mismo pacing)?"
+        }
+      ]
     },
     {
       "id": "FU-03",

@@ -5,6 +5,15 @@ only on the Kanvas board (`kanvas.json`)** since 2026-10-31; the "Pending",
 "Next" and "Priority" lists below are history, and anything still open from
 them is a card on the board. Do not add new pending items here.
 
+## Session 2026-10-31 — Tecnoempleo initial backfill (FU-02)
+
+- Ran the function browse once by hand: `search-tecnoempleo --browse
+  --max-pages 10 --max-items 250 --confirm-network` (run #442): 250 offers,
+  91 new, 159 duplicates, no errors.
+- The new offers wait for details before scoring; the Tecnoempleo detail
+  backlog is now 226. At 20 per pass (sweep + mid-cycle job) it drains in
+  about 2-3 weeks; the owner chose to let it drain on its own.
+
 ## Session 2026-10-29 — sweep detail cap aligned with the commands (SC-06)
 
 - `jobscout_sweep.py` (outside the repo): `DETAIL_CAP` default 40 -> 20, the
