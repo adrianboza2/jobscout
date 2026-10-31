@@ -176,7 +176,7 @@
     {
       "id": "BR-01",
       "title": "Piloto de dossier por empresa",
-      "state": "doing",
+      "state": "review",
       "group": "BR",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
@@ -191,6 +191,11 @@
           "at": "2026-10-31T10:02:09Z",
           "by": "claude-code",
           "text": "Código commiteado (e03e21f). Piloto: hoy hay 35 ofertas 'apply' activas de 30 empresas. Llevo 8 dossiers escritos (data/dossiers/); el sistema cortó el proceso por falta de memoria. Faltan 22: relanzar con 'dossier --apply', que salta los que ya existen."
+        },
+        {
+          "at": "2026-10-31T13:31:33Z",
+          "by": "claude-code",
+          "text": "Ya puedes leer una ficha de empresa en cada oferta 'apply': 29 de 30 empresas tienen dossier (sector, tamaño, stack, remoto, contratación junior y fuentes con fecha), en data/dossiers/ y plegado en el dashboard (\"Dossier de la empresa\").\n- Pregunta abierta: con webfetch solo encuentra bastante (web propia, empleo, GitHub, inversores); 0-4 \"No encontrado\" por ficha, ~50 s por empresa.\n- Falta Entelgy: falló dos veces por un corte del proveedor (ECONNRESET). Reintentar: `dossier --job-id 15`.\n- Deloitte solo salió subiendo el límite de salida a 8 MB (JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES): las páginas descargadas pasan del 1 MB por defecto. ¿Subimos el límite por defecto solo para dossier?\n- Para revisar: abre el dashboard regenerado y lee varias fichas contra lo que sepas de esas empresas.\nCommits: e03e21f (código, tests, README), 3b3cc31 (tablero), y el log del piloto."
         }
       ]
     },
