@@ -18,9 +18,11 @@ them is a card on the board. Do not add new pending items here.
 - Open question answered: with `webfetch` alone the model finds sector, size,
   stack, remote policy and junior hiring from company sites, careers pages,
   GitHub and investor pages, ~50 s per company.
-- Pilot: 35 active 'apply' offers, 30 companies (not 16). 8 dossiers written
-  before the run was killed by low memory on the machine; the other 22 are
-  pending a re-run (`dossier --apply` skips the existing ones).
+- Pilot: 35 active 'apply' offers, 30 companies (not 16); 29 dossiers written
+  (2.6-5 KB each). The first run was killed by low memory on the VPS (stale
+  Claude Code sessions, not jobscout); the re-run skipped the existing ones.
+  Deloitte needed `JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES=8388608` (fetched pages
+  pass the 1 MB default); Entelgy failed twice with a provider `ECONNRESET`.
 
 ## Session 2026-10-31 — Tecnoempleo initial backfill (FU-02)
 
