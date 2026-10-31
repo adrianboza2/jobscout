@@ -5,6 +5,23 @@ only on the Kanvas board (`kanvas.json`)** since 2026-10-31; the "Pending",
 "Next" and "Priority" lists below are history, and anything still open from
 them is a card on the board. Do not add new pending items here.
 
+## Session 2026-10-31 — company dossier pilot (BR-01)
+
+- New `dossier (--job-id N… | --apply)` command: OpenCode (same isolated
+  invocation as the scorer, `webfetch` allowed) writes one Markdown file per
+  company to `data/dossiers/<slug>.md` with a code-written header; the
+  dashboard embeds it in each offer of that company (collapsible block,
+  `textContent`), because `data/` is not served over Tailscale.
+- First live run stored the fetched pages too (the event stream carries them):
+  the dossier now starts at the answer's last `## Sector`, and an answer
+  without it fails instead of being written.
+- Open question answered: with `webfetch` alone the model finds sector, size,
+  stack, remote policy and junior hiring from company sites, careers pages,
+  GitHub and investor pages, ~50 s per company.
+- Pilot: 35 active 'apply' offers, 30 companies (not 16). 8 dossiers written
+  before the run was killed by low memory on the machine; the other 22 are
+  pending a re-run (`dossier --apply` skips the existing ones).
+
 ## Session 2026-10-31 — Tecnoempleo initial backfill (FU-02)
 
 - Ran the function browse once by hand: `search-tecnoempleo --browse

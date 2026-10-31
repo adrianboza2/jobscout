@@ -447,6 +447,7 @@ subcomando) y `--version`.
 | `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje. |
 | `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. `--all` omite, antes de `--limit`, las de título senior y las que esperan detalles; `--job-id` fuerza ambas. |
+| `dossier (--job-id ID… \| --apply) [--refresh] [--timeout S]` | Investiga la empresa de cada oferta con OpenCode y escribe un dossier Markdown por empresa en `data/dossiers/`. Nunca consulta ni cita LinkedIn. |
 | `runs [--limit N]` | Ejecuciones de búsqueda recientes y conteos almacenados. |
 | `dashboard [--output PATH] [--top N]` | Escribe un informe HTML local autocontenido (solo lectura, sin red). |
 | `import-feedback PATH [--project-id ID]` | Guarda una exportación de feedback del tablero en SQLite (sin red, idempotente). |
@@ -659,6 +660,32 @@ python -m jobscout calibrate                          # todo el feedback importa
 python -m jobscout calibrate --scorer heuristic       # solo evaluaciones de un puntuador
 python -m jobscout calibrate --json                   # informe legible por máquina
 ```
+
+### Dossiers de empresa (OpenCode, bajo demanda)
+
+`dossier` pide a OpenCode (la misma invocación aislada que el puntuador) que
+investigue la empresa de una oferta con `webfetch` y escribe un fichero Markdown
+por empresa en `<directorio de la base>/dossiers/<slug>.md`. Consume cuota de
+OpenCode y red vía el modelo; no lo ejecuta el sweep periódico.
+
+```bash
+python -m jobscout dossier --job-id 42                       # una oferta
+python -m jobscout dossier --apply                           # todas las ofertas activas con decisión 'apply'
+python -m jobscout dossier --apply --refresh                 # regenera los dossiers existentes
+python -m jobscout dossier --job-id 42 --timeout 900         # más margen por empresa (por defecto 600 s)
+```
+
+Se escribe **un dossier por empresa**: si varias ofertas comparten empresa, se
+usa la primera seleccionada. Un dossier existente se omite salvo `--refresh`.
+Las ofertas sin empresa se saltan con un aviso, y un fallo en una empresa no
+detiene las demás (el comando termina con código 1 si alguna falló). El modelo
+tiene prohibido consultar o citar `linkedin.com`; cualquier línea que aún lo
+mencione se elimina antes de guardar y se avisa de cuántas se quitaron. Se guarda
+solo la respuesta final, desde su último `## Sector` (el flujo de OpenCode trae
+también las páginas descargadas); una respuesta sin esa sección cuenta como fallo
+y no se escribe. El dashboard incrusta el texto del dossier en cada oferta de esa empresa (dentro de
+un bloque plegable), sin peticiones externas ni enlaces a ficheros: el informe
+sigue siendo autocontenido y seguro sobre `file://`.
 
 ### Notificaciones locales (opt-in, sin programación)
 

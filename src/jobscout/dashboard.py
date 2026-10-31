@@ -52,6 +52,7 @@ from .db import (
     jobs_awaiting_details,
     latest_detail_fetches_for_jobs,
 )
+from .dossier import company_slug, load_dossiers
 from .keywords import retired_search
 from .models import (
     ACTIVE_FEEDBACK_DECISIONS,
@@ -996,6 +997,7 @@ def build_payload(
     top: int | None = DEFAULT_TOP,
     project_id: str = "",
     database_label: str | None = None,
+    db_path: str | Path | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the serializable dashboard payload from the database.
@@ -1003,10 +1005,13 @@ def build_payload(
     ``top=None`` (the default) embeds every active offer; an explicit positive
     integer bounds the embedded offers. Only report-safe fields are included.
     ``database_label`` is an optional human label (a filename, never an absolute
-    path) shown in the header.
+    path) shown in the header. ``db_path`` is the database the connection reads
+    from; when given, each offer also carries its company's stored dossier
+    Markdown (``None`` when there is none), so the report stays self-contained.
     """
     top = _validate_top(top)
     reference = now or utcnow()
+    dossiers = load_dossiers(db_path) if db_path is not None else {}
     rows = _fetch_active_jobs(conn, top=top)
     job_ids = [int(row["id"]) for row in rows]
     keyword_keys_by_job = _fetch_job_keyword_keys(conn, job_ids)
@@ -1104,6 +1109,10 @@ def build_payload(
                     now=reference,
                     last_seen_at=row["last_seen_at"],
                 ),
+                # The company dossier Markdown, or ``None``. Embedded in the
+                # payload so the report stays offline and self-contained; the
+                # client renders it with ``textContent``, never as HTML.
+                "dossier": _dossier_text(dossiers, row["company"]),
             }
         )
 
@@ -1149,6 +1158,20 @@ def _safe_url(value: Any) -> str | None:
     if not any(lowered.startswith(scheme) for scheme in _ALLOWED_URL_SCHEMES):
         return None
     return text
+
+
+def _dossier_text(dossiers: dict[str, str], company: str | None) -> str | None:
+    """The stored dossier Markdown for ``company``, or ``None``.
+
+    A company name that cannot produce a slug simply has no dossier; that is
+    not an error in a read-only report build.
+    """
+    if not company:
+        return None
+    try:
+        return dossiers.get(company_slug(company))
+    except ValueError:
+        return None
 
 
 def _detail_checked_at(fetch: JobDetailFetch) -> str | None:
@@ -1653,6 +1676,13 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 .lists ul { margin:0; padding-left:var(--sp-16); font-size:var(--fs-13); color:var(--ink-2); }
 .lists li { margin-bottom:var(--sp-4); }
 .lists .blk h3 { color:var(--signal); }
+.dossier { grid-column:1/-1; border-top:1px solid var(--rule); padding-top:var(--sp-8); }
+.dossier > summary { list-style:none; cursor:pointer; font-family:var(--mono);
+  font-size:var(--fs-12); color:var(--ink-2); padding:var(--sp-4) 0; }
+.dossier > summary::-webkit-details-marker { display:none; }
+.dossier > summary:hover, .dossier > summary:focus-visible { color:var(--ink); }
+.dossier-text { white-space:pre-wrap; overflow-wrap:anywhere; margin:var(--sp-8) 0 0;
+  font-family:var(--mono); font-size:var(--fs-12); line-height:1.5; color:var(--ink-2); }
 .foot { grid-column:1/-1; display:flex; gap:var(--sp-16); align-items:center; flex-wrap:wrap;
   font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3);
   border-top:1px solid var(--rule); padding-top:var(--sp-12); }
@@ -2355,6 +2385,16 @@ _SCRIPT = r"""
       body.appendChild(lists);
     }
 
+    // Company dossiers are written by the optional ``dossier`` command. The
+    // Markdown arrives in the payload and is set with ``textContent`` (via
+    // ``el``), so the report stays self-contained and safe over file://.
+    if (offer.dossier) {
+      var dossier = el("details", "dossier");
+      dossier.appendChild(el("summary", null, "Dossier de la empresa"));
+      dossier.appendChild(el("pre", "dossier-text", offer.dossier));
+      body.appendChild(dossier);
+    }
+
     var foot = el("div", "foot");
     foot.appendChild(el("span", null, provenanceText(offer)));
     if (offer.imported_review && offer.imported_review.reviewed) {
@@ -2750,6 +2790,7 @@ def generate_dashboard(
             top=top,
             project_id=project_key(db_path),
             database_label=Path(db_path).name,
+            db_path=db_path,
         )
     except sqlite3.DatabaseError as exc:
         raise DashboardError(f"database at {db_path} could not be read: {exc}") from exc

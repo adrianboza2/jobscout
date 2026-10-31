@@ -9,6 +9,7 @@ Commands
 ``list``             recent jobs with their latest score
 ``rank``             jobs ordered by score
 ``score``            evaluate jobs via OpenCode CLI (default), offline, or an LLM endpoint
+``dossier``          research a company with OpenCode and write a Markdown dossier
 ``keyword-plan``     list the bounded keyword families and the command per query (offline)
 ``import-feedback``  store a dashboard feedback export in SQLite (offline, local)
 ``calibrate``        compare the latest valid evaluations with imported human feedback (offline)
@@ -32,6 +33,7 @@ import json
 import sqlite3
 import sys
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -92,12 +94,14 @@ from .db import (
     job_detail_fetch_count,
     jobs_awaiting_details,
     jobs_needing_evaluation,
+    list_feedback,
     list_jobs,
     list_search_runs,
     variant_job_for_source,
     variants_needing_details,
     variants_needing_refresh,
 )
+from .dossier import company_slug, dossier_path, generate_dossier
 from .feedback import FeedbackError, import_feedback
 from .keywords import (
     UnknownKeywordFamily,
@@ -633,6 +637,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="force re-evaluation even when the scoring input is unchanged",
     )
     score_parser.set_defaults(handler=cmd_score)
+
+    dossier_parser = add_common(
+        subparsers.add_parser(
+            "dossier",
+            help="research a company with OpenCode and write a Markdown dossier",
+        )
+    )
+    dossier_parser.add_argument(
+        "--job-id",
+        type=int,
+        action="append",
+        default=[],
+        help="job id whose company to research (repeatable)",
+    )
+    dossier_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "research every active job whose imported feedback decision is "
+            "'apply'"
+        ),
+    )
+    dossier_parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="regenerate a dossier even when its file already exists",
+    )
+    dossier_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=600.0,
+        help="seconds per company (default: 600; research is slower than scoring)",
+    )
+    dossier_parser.set_defaults(handler=cmd_dossier)
 
     runs_parser = add_common(subparsers.add_parser("runs", help="show recent search runs"))
     runs_parser.add_argument("--limit", type=int, default=10)
@@ -1583,6 +1621,122 @@ def cmd_rank(args: argparse.Namespace, settings: Settings) -> int:
         text=text,
     )
     return EXIT_OK
+
+
+def _display_path(path: Path) -> str:
+    """A path for the operator: relative to the cwd when it lives under it."""
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path)
+
+
+def cmd_dossier(args: argparse.Namespace, settings: Settings) -> int:
+    """Write one company dossier per selected offer's company."""
+    job_ids = list(getattr(args, "job_id", None) or [])
+    if not job_ids and not getattr(args, "apply", False):
+        _write_line(
+            "error: pass --job-id and/or --apply", stream=sys.stderr
+        )
+        return EXIT_ERROR
+
+    as_json = getattr(args, "as_json", False)
+    today = date.today()
+    conn = connect(settings.db_path)
+    selected: list[Any] = []
+    failed = 0
+    try:
+        init_db(conn)
+        if getattr(args, "apply", False):
+            for feedback in list_feedback(conn):
+                if str(feedback.decision) != "apply":
+                    continue
+                job = get_job(conn, int(feedback.job_id))
+                if job is not None and job.is_active:
+                    selected.append(job)
+        for job_id in job_ids:
+            job = get_job(conn, job_id)
+            if job is None:
+                _write_line(f"job #{job_id} not found", stream=sys.stderr)
+                failed += 1
+            else:
+                selected.append(job)
+    finally:
+        conn.close()
+
+    # One dossier per company: the first selected offer of a company wins.
+    chosen: dict[str, Any] = {}
+    for job in selected:
+        company = (job.company or "").strip()
+        if not company:
+            _write_line(
+                f"warning: skipping job #{job.id}: no company", stream=sys.stderr
+            )
+            continue
+        try:
+            slug = company_slug(company)
+        except ValueError as exc:
+            _write_line(f"warning: skipping job #{job.id}: {exc}", stream=sys.stderr)
+            continue
+        chosen.setdefault(slug, job)
+
+    records: list[dict[str, Any]] = []
+    lines: list[str] = []
+    for slug, job in chosen.items():
+        path = dossier_path(settings, job.company)
+        record: dict[str, Any] = {
+            "company": job.company,
+            "slug": slug,
+            "job_id": job.id,
+            "path": str(path),
+        }
+        if path.exists() and not getattr(args, "refresh", False):
+            record["status"] = "skipped"
+            records.append(record)
+            lines.append(f"skipped {slug} (exists)")
+            continue
+        try:
+            result = generate_dossier(
+                settings, job, today=today, timeout=args.timeout
+            )
+        except Exception as exc:  # one failure must not stop the others
+            failed += 1
+            error = str(exc) or exc.__class__.__name__
+            record.update({"status": "failed", "error": error})
+            records.append(record)
+            lines.append(f"failed {slug}: {error}")
+            continue
+
+        record.update(
+            {
+                "status": "wrote",
+                "path": str(result.path),
+                "removed_linkedin_lines": result.removed_linkedin_lines,
+            }
+        )
+        records.append(record)
+        lines.append(f"wrote {_display_path(result.path)}")
+        if result.removed_linkedin_lines:
+            message = (
+                f"warning: removed {result.removed_linkedin_lines} linkedin.com "
+                f"line(s) from {slug}"
+            )
+            # A warning must not corrupt a --json document.
+            _write_line(message, stream=sys.stderr if as_json else sys.stdout)
+
+    _emit(
+        {
+            "model": settings.opencode_model,
+            "refresh": bool(getattr(args, "refresh", False)),
+            "written": sum(1 for item in records if item["status"] == "wrote"),
+            "skipped": sum(1 for item in records if item["status"] == "skipped"),
+            "failed": failed,
+            "dossiers": records,
+        },
+        as_json=as_json,
+        text="\n".join(lines) or "no companies selected",
+    )
+    return EXIT_ERROR if failed else EXIT_OK
 
 
 def _split_model_variant(model: str) -> tuple[str, str | None]:

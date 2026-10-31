@@ -441,6 +441,7 @@ subcommand), and `--version`.
 | `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score. |
 | `rank [--top N] [--min-score S]` | Jobs with a successful score, best first. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evaluate jobs and print the explainable result. `--all` skips senior titles and offers waiting for details before `--limit`; `--job-id` forces both. |
+| `dossier (--job-id ID… \| --apply) [--refresh] [--timeout S]` | Research each offer's company with OpenCode and write one Markdown dossier per company under `data/dossiers/`. Never fetches or cites LinkedIn. |
 | `runs [--limit N]` | Recent search runs and stored counts. |
 | `dashboard [--output PATH] [--top N]` | Write a self-contained local HTML report (read-only, offline). |
 | `import-feedback PATH [--project-id ID]` | Store a dashboard feedback export in SQLite (offline, idempotent). |
@@ -643,6 +644,32 @@ python -m jobscout calibrate                          # all imported feedback
 python -m jobscout calibrate --scorer heuristic       # only one scorer's evaluations
 python -m jobscout calibrate --json                   # machine-readable report
 ```
+
+### Company dossiers (OpenCode, on demand)
+
+`dossier` asks OpenCode (the same isolated invocation as the scorer) to research
+an offer's company with `webfetch` and writes one Markdown file per company under
+`<database directory>/dossiers/<slug>.md`. It spends OpenCode quota and network
+through the model; the periodic sweep does not run it.
+
+```bash
+python -m jobscout dossier --job-id 42                       # one offer
+python -m jobscout dossier --apply                           # every active offer with an 'apply' decision
+python -m jobscout dossier --apply --refresh                 # regenerate existing dossiers
+python -m jobscout dossier --job-id 42 --timeout 900         # more time per company (default 600 s)
+```
+
+Exactly **one dossier per company** is written: when several offers share a
+company, the first selected one wins. An existing dossier is skipped unless
+`--refresh` is passed. Offers without a company are skipped with a warning, and
+one company failing does not stop the others (the command exits 1 if any
+failed). The model is forbidden from fetching or citing `linkedin.com`; any
+line that still mentions it is removed before saving and the count is reported.
+Only the final answer is kept, from its last `## Sector` heading (the OpenCode
+stream also carries the fetched pages); an answer without that section counts as
+a failure and nothing is written. The dashboard embeds the dossier text in each offer of that company (inside a
+collapsible block), with no external requests or file links: the report stays
+self-contained and safe over `file://`.
 
 ### Local notifications (opt-in, no scheduling)
 

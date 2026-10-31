@@ -730,6 +730,100 @@ def extract_evaluation_text(raw_output: str) -> str:
     return "\n".join(collected)
 
 
+def missing_cli_message(settings: Settings) -> str:
+    """Operator-readable error for a missing OpenCode executable."""
+    return (
+        f"OpenCode CLI '{settings.opencode_command}' was not found. "
+        "Install OpenCode and run 'opencode auth login' once; this scorer "
+        "relies on that local authentication and does not use "
+        "JOBSCOUT_LLM_API_KEY for authentication. Set "
+        "JOBSCOUT_OPENCODE_COMMAND to an absolute path or a name on PATH "
+        "(a path relative to the current working directory is never used)."
+    )
+
+
+def run_prompt(
+    settings: Settings,
+    prompt: str,
+    *,
+    timeout: float | None = None,
+    runner: Runner = run_command,
+) -> str:
+    """Run one OpenCode CLI prompt and return the assistant's text.
+
+    This is the same transport as :meth:`OpenCodeScorer.complete` without the
+    evaluation-specific raw/truncated provenance, so commands that only need
+    the answer (such as ``dossier``) reuse the resolved executable, the
+    isolated working directory/config, the scrubbed environment, and the
+    bounded runner. An injected ``runner`` is a test double and keeps the
+    configured command name; a real invocation always resolves an absolute
+    path so a cwd-relative planted executable cannot be picked up.
+    """
+    timeout = settings.opencode_timeout_seconds if timeout is None else timeout
+    if runner is run_command:
+        command = resolve_executable(settings.opencode_command)
+        if command is None:
+            raise OpenCodeNotConfiguredError(missing_cli_message(settings))
+    else:
+        command = None
+    argv = build_command(settings, prompt, command=command)
+    cwd = resolved_workdir(settings)
+    env = scrubbed_subprocess_env(settings)
+
+    try:
+        outcome = runner(
+            argv,
+            cwd=cwd,
+            timeout=timeout,
+            env=env,
+            max_output_bytes=settings.opencode_max_output_bytes,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OpenCodeTimeoutError(
+            f"OpenCode CLI timed out after {timeout:g}s"
+        ) from exc
+    except FileNotFoundError as exc:
+        raise OpenCodeNotConfiguredError(
+            f"OpenCode CLI '{settings.opencode_command}' could not be "
+            "started. Install it and run 'opencode auth login' once."
+        ) from exc
+    except OSError as exc:
+        raise OpenCodeExecutionError(
+            f"OpenCode CLI could not be started: {exc}"
+        ) from exc
+
+    if getattr(outcome, "timed_out", False):
+        raise OpenCodeTimeoutError(f"OpenCode CLI timed out after {timeout:g}s")
+
+    if getattr(outcome, "overflowed", False):
+        raise OpenCodeExecutionError(
+            "OpenCode CLI produced more than "
+            f"{settings.opencode_max_output_bytes} byte(s) of output; "
+            "the process was terminated"
+        )
+
+    if outcome.returncode != 0:
+        error_event = _error_event_detail(
+            outcome.stdout or ""
+        ) or _error_event_detail(outcome.stderr or "")
+        detail = redact_secrets(
+            error_event or (outcome.stderr or outcome.stdout or "").strip(),
+            settings.llm_secrets,
+        )[:MAX_ERROR_CHARS]
+        raise OpenCodeExecutionError(
+            f"OpenCode CLI exited with code {outcome.returncode}"
+            + (f": {detail}" if detail else "")
+        )
+
+    raw, _ = bound_output(
+        outcome.stdout or "", max_bytes=settings.opencode_max_output_bytes
+    )
+    text = extract_evaluation_text(raw)
+    if not text.strip():
+        raise OpenCodeExecutionError("OpenCode CLI returned no output")
+    return text
+
+
 class OpenCodeScorer:
     """Run the local OpenCode CLI and map its answer to an evaluation."""
 
@@ -751,14 +845,7 @@ class OpenCodeScorer:
             raise OpenCodeNotConfiguredError(self._missing_cli_message())
 
     def _missing_cli_message(self) -> str:
-        return (
-            f"OpenCode CLI '{self.settings.opencode_command}' was not found. "
-            "Install OpenCode and run 'opencode auth login' once; this scorer "
-            "relies on that local authentication and does not use "
-            "JOBSCOUT_LLM_API_KEY for authentication. Set "
-            "JOBSCOUT_OPENCODE_COMMAND to an absolute path or a name on PATH "
-            "(a path relative to the current working directory is never used)."
-        )
+        return missing_cli_message(self.settings)
 
     def resolve_command(self) -> str:
         """Resolve the executable for a real invocation.
