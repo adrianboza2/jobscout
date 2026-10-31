@@ -176,11 +176,23 @@
     {
       "id": "BR-01",
       "title": "Piloto de dossier por empresa",
-      "state": "proposed",
+      "state": "doing",
       "group": "BR",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "Comando bajo demanda `jobscout dossier --job-id N` con OpenCode Go y `webfetch` (websearch da HTTP 402): un Markdown por empresa en `data/` con sector, tamaño, stack, política de remoto, contratación junior y URLs de origen con fecha. Nunca páginas de LinkedIn. Enlazado desde el dashboard. Piloto sobre las 16 ofertas 'apply' (NEXT_STEPS.md:91-97).\nPregunta abierta: cuánto encuentra el modelo solo con `webfetch`.\nHecho: 16 dossiers generados y revisados por el dueño; tests offline del comando; README ES/EN."
+      "desc": "Comando bajo demanda `jobscout dossier --job-id N` con OpenCode Go y `webfetch` (websearch da HTTP 402): un Markdown por empresa en `data/` con sector, tamaño, stack, política de remoto, contratación junior y URLs de origen con fecha. Nunca páginas de LinkedIn. Enlazado desde el dashboard. Piloto sobre las 16 ofertas 'apply' (NEXT_STEPS.md:91-97).\nPregunta abierta: cuánto encuentra el modelo solo con `webfetch`.\nHecho: 16 dossiers generados y revisados por el dueño; tests offline del comando; README ES/EN.",
+      "notes": [
+        {
+          "at": "2026-10-31T09:30:36Z",
+          "by": "claude-code",
+          "text": "Plan: comando dossier que reutiliza la invocación aislada de OpenCode del scorer, escribe data/dossiers/<empresa>.md, tests offline con opencode falso, enlace en el dashboard, README ES/EN; luego piloto sobre las 'apply'."
+        },
+        {
+          "at": "2026-10-31T10:02:09Z",
+          "by": "claude-code",
+          "text": "Código commiteado (e03e21f). Piloto: hoy hay 35 ofertas 'apply' activas de 30 empresas. Llevo 8 dossiers escritos (data/dossiers/); el sistema cortó el proceso por falta de memoria. Faltan 22: relanzar con 'dossier --apply', que salta los que ya existen."
+        }
+      ]
     },
     {
       "id": "BR-02",
@@ -195,61 +207,18 @@
     {
       "id": "AJ-01",
       "title": "Decidir cómo encaja ai-job-search",
-      "state": "proposed",
+      "state": "todo",
       "group": "AJ",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "[Decisión del dueño] ai-job-search (MIT; el repo se movió a ai-job-search-dev/ai-job-search; última release v1.7.3 del 2026-10-19) es un workspace de Claude Code, no una librería: `/apply <URL o texto>` genera CV (LaTeX, 2 páginas) y carta (1 página) de UNA oferta cada vez, e `/interview <empresa>` la preparación.\nChoques con el plan propio (BR-03..BR-05):\n- gasta cuota de Claude, que es el cuello de botella (el plan propio usa OpenCode Go);\n- `/setup` vuelca el CV, con los datos de identidad, a su CLAUDE.md, y el plan dice no mandar nunca teléfono ni email al modelo;\n- exige ya Bun y LaTeX (lualatex/xelatex), y el plan dejaba LaTeX para may–jun 2027;\n- trae su propio scraping (LinkedIn jobs-guest, portales daneses) y su `/rank`, que sobran porque jobscout ya recoge y puntúa.\nOpciones: (a) usarlo solo para `/apply` e `/interview`, alimentado por jobscout; (b) portar su método (auditar cada afirmación contra el CV, guarda contra texto malicioso en la oferta) a BR-03/BR-04.\nHecho: decisión anotada; la vía descartada se rechaza en el tablero."
-    },
-    {
-      "id": "AJ-02",
-      "title": "Montar el workspace de ai-job-search fuera del repo",
-      "state": "proposed",
-      "group": "AJ",
-      "deps": ["AJ-01"],
-      "at": "2026-10-28T08:55:14Z",
-      "by": "claude",
-      "desc": "Clonar en un directorio aparte (nunca dentro de jobscout), fijado a un tag o commit revisado (master lleva parches de seguridad posteriores a v1.7.3), y revisar su código antes de ejecutarlo, como se hizo con Kanvas. `/setup` desde `~/vault/cv.md` sin teléfono ni email. Portales desactivados: no se usan `/scrape` ni `/rank`. Bun y LaTeX solo si AJ-01 lo aprueba.\nHecho: `/setup` completo y perfil generado revisado por el dueño."
-    },
-    {
-      "id": "AJ-03",
-      "title": "Exportar el top 10 de jobscout para /apply",
-      "state": "proposed",
-      "group": "AJ",
-      "deps": ["AJ-02"],
-      "at": "2026-10-28T08:55:14Z",
-      "by": "claude",
-      "desc": "Comando de jobscout, offline (solo lee la base), que escribe las 10 mejores ofertas activas, no filtradas por seniority y con detalles, una por fichero en el workspace (`documents/postings/<Company> - <Title>.txt`): texto guardado de la oferta + URL + score. `/apply` acepta URL o texto pegado, de una en una; no hay import JSON/CSV oficial.\nNota: el plan propio trabaja con las ofertas 'apply' (16 hoy), no con un top 10 fijo.\nHecho: 10 ficheros generados; tests offline; README ES/EN."
-    },
-    {
-      "id": "AJ-04",
-      "title": "CV a medida para el top 10",
-      "state": "proposed",
-      "group": "AJ",
-      "deps": ["AJ-03"],
-      "at": "2026-10-28T08:55:14Z",
-      "by": "claude",
-      "desc": "`/apply` por oferta con su fichero de AJ-03 → `cv/main_<company>_<role>.tex|.pdf`. El dueño revisa cada afirmación contra `~/vault/cv.md`. Solo borrador: nada se envía.\nHecho: 10 CV revisados por el dueño."
-    },
-    {
-      "id": "AJ-05",
-      "title": "Carta de presentación para el top 10",
-      "state": "proposed",
-      "group": "AJ",
-      "deps": ["AJ-04"],
-      "at": "2026-10-28T08:55:14Z",
-      "by": "claude",
-      "desc": "`/apply` genera la carta en la misma pasada que el CV (`cover_letters/cover_<company>_<role>.tex|.pdf`, 1 página); esta tarjeta es revisarlas y ajustarlas. Solo borrador.\nHecho: 10 cartas revisadas y una fila `drafted` por oferta en `job_search_tracker.csv`."
-    },
-    {
-      "id": "AJ-06",
-      "title": "Preparación de entrevista (ai-job-search)",
-      "state": "proposed",
-      "group": "AJ",
-      "deps": ["AJ-05"],
-      "at": "2026-10-28T08:55:14Z",
-      "by": "claude",
-      "desc": "`/interview <empresa> [rol]` sobre la carpeta de la candidatura → `documents/applications/<company>_<role>/interview_prep_<stage>.md`, más un simulacro en el chat.\nHecho: preparación generada y revisada para las ofertas que elija el dueño."
+      "desc": "[Decisión del dueño] ai-job-search (MIT; el repo se movió a ai-job-search-dev/ai-job-search; última release v1.7.3 del 2026-10-19) es un workspace de Claude Code, no una librería: `/apply <URL o texto>` genera CV (LaTeX, 2 páginas) y carta (1 página) de UNA oferta cada vez, e `/interview <empresa>` la preparación.\nChoques con el plan propio (BR-03..BR-05):\n- gasta cuota de Claude, que es el cuello de botella (el plan propio usa OpenCode Go);\n- `/setup` vuelca el CV, con los datos de identidad, a su CLAUDE.md, y el plan dice no mandar nunca teléfono ni email al modelo;\n- exige ya Bun y LaTeX (lualatex/xelatex), y el plan dejaba LaTeX para may–jun 2027;\n- trae su propio scraping (LinkedIn jobs-guest, portales daneses) y su `/rank`, que sobran porque jobscout ya recoge y puntúa.\nOpciones: (a) usarlo solo para `/apply` e `/interview`, alimentado por jobscout; (b) portar su método (auditar cada afirmación contra el CV, guarda contra texto malicioso en la oferta) a BR-03/BR-04.\nHecho: decisión anotada; la vía descartada se rechaza en el tablero.",
+      "notes": [
+        {
+          "at": "2026-10-31T09:26:57Z",
+          "by": "claude-code",
+          "text": "Decisión del dueño (2026-10-31): opción (b). Se porta la inspiración y el código útil de ai-job-search a jobscout (BR-03/BR-04), con nuestro proveedor y claves (OpenCode Go), no con cuota de Claude. Se descartan AJ-02..AJ-06."
+        }
+      ]
     },
     {
       "id": "BR-03",
@@ -259,7 +228,14 @@
       "deps": ["BR-01", "AJ-01"],
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "Solo para ofertas 'apply', con la estructura que acepta el CV Analyzer de Manfred. Lee `~/vault/cv.md` en tiempo de ejecución, no afirma nada que el CV no diga, nunca manda teléfono ni email al modelo, y es solo borrador (NEXT_STEPS.md:98-101).\nSolapa con AJ-04/AJ-05: AJ-01 decide si se hace esta, la de ai-job-search o una mezcla.\nHecho: borradores de todas las 'apply' revisados por el dueño."
+      "desc": "Solo para ofertas 'apply', con la estructura que acepta el CV Analyzer de Manfred. Lee `~/vault/cv.md` en tiempo de ejecución, no afirma nada que el CV no diga, nunca manda teléfono ni email al modelo, y es solo borrador (NEXT_STEPS.md:98-101).\nCorre con nuestro scorer (OpenCode Go), no con cuota de Claude. Porta de ai-job-search (MIT; se conserva su aviso de licencia en lo que se copie): la auditoría de cada afirmación del borrador contra el CV y la guarda contra texto malicioso en la oferta (instrucciones escondidas).\nHecho: borradores de todas las 'apply' revisados por el dueño; tests offline; README ES/EN.",
+      "notes": [
+        {
+          "at": "2026-10-31T09:26:58Z",
+          "by": "claude-code",
+          "text": "AJ-01 (b): incorpora lo que se porta de ai-job-search"
+        }
+      ]
     },
     {
       "id": "BR-04",
@@ -269,7 +245,14 @@
       "deps": ["BR-03"],
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "Tras el CV y la carta, reutilizando el dossier de la empresa (NEXT_STEPS.md:101-102). Solapa con AJ-06.\nHecho: preparación en Markdown para las ofertas que elija el dueño."
+      "desc": "Tras el CV y la carta, reutilizando el dossier de la empresa (NEXT_STEPS.md:101-102). Toma como modelo la estructura de `/interview` de ai-job-search (preparación por fase en Markdown), adaptada a nuestro scorer (OpenCode Go).\nHecho: preparación en Markdown para las ofertas que elija el dueño.",
+      "notes": [
+        {
+          "at": "2026-10-31T09:26:58Z",
+          "by": "claude-code",
+          "text": "AJ-01 (b): toma la estructura de /interview de ai-job-search"
+        }
+      ]
     },
     {
       "id": "BR-05",
