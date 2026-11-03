@@ -29,6 +29,10 @@
     {
       "id": "WF",
       "name": "CLI y flujo"
+    },
+    {
+      "id": "EIA",
+      "name": "Evidencias (idea Amble)"
     }
   ],
   "tasks": [
@@ -176,7 +180,7 @@
     {
       "id": "BR-01",
       "title": "Piloto de dossier por empresa",
-      "state": "review",
+      "state": "done",
       "group": "BR",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
@@ -196,6 +200,11 @@
           "at": "2026-10-31T13:31:33Z",
           "by": "claude-code",
           "text": "Ya puedes leer una ficha de empresa en cada oferta 'apply': 29 de 30 empresas tienen dossier (sector, tamaño, stack, remoto, contratación junior y fuentes con fecha), en data/dossiers/ y plegado en el dashboard (\"Dossier de la empresa\").\n- Pregunta abierta: con webfetch solo encuentra bastante (web propia, empleo, GitHub, inversores); 0-4 \"No encontrado\" por ficha, ~50 s por empresa.\n- Falta Entelgy: falló dos veces por un corte del proveedor (ECONNRESET). Reintentar: `dossier --job-id 15`.\n- Deloitte solo salió subiendo el límite de salida a 8 MB (JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES): las páginas descargadas pasan del 1 MB por defecto. ¿Subimos el límite por defecto solo para dossier?\n- Para revisar: abre el dashboard regenerado y lee varias fichas contra lo que sepas de esas empresas.\nCommits: e03e21f (código, tests, README), 3b3cc31 (tablero), y el log del piloto."
+        },
+        {
+          "at": "2026-11-03T11:51:34Z",
+          "by": "claude-code",
+          "text": "Entelgy hecho (2026-11-03): ya están las 30 de 30 empresas. Ahora dossier usa 8 MiB de límite de salida como mínimo; el scorer sigue con 1 MiB. Hay test y README ES/EN, y la batería pasa: 1245 passed. Dashboard regenerado. Sin commit."
         }
       ]
     },
@@ -212,7 +221,7 @@
     {
       "id": "AJ-01",
       "title": "Decidir cómo encaja ai-job-search",
-      "state": "todo",
+      "state": "done",
       "group": "AJ",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
@@ -222,6 +231,11 @@
           "at": "2026-10-31T09:26:57Z",
           "by": "claude-code",
           "text": "Decisión del dueño (2026-10-31): opción (b). Se porta la inspiración y el código útil de ai-job-search a jobscout (BR-03/BR-04), con nuestro proveedor y claves (OpenCode Go), no con cuota de Claude. Se descartan AJ-02..AJ-06."
+        },
+        {
+          "at": "2026-11-03T11:45:49Z",
+          "by": "claude-code",
+          "text": "Decidido: opción (b). AJ-02..AJ-06 retiradas del tablero. Lo que se porta de ai-job-search ya está en BR-03 (auditar cada afirmación contra el CV, guarda contra texto malicioso, aviso MIT) y BR-04 (estructura de /interview). Al pasarla a hecho, BR-03 solo espera ya a BR-01."
         }
       ]
     },
@@ -420,6 +434,34 @@
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
       "desc": "Pasar a `jobs.salary` un salario escrito en la descripción (p. ej. '€25,000 – €35,000'). Requiere capturar una vez markup real y pasarlo por el parser offline (NEXT_STEPS.md:270-272).\nHecho: parser + test con la captura + README ES/EN."
+    },
+    {
+      "id": "EIA-01",
+      "title": "career.md: perfil con evidencias y su fuente",
+      "state": "proposed",
+      "group": "EIA",
+      "at": "2026-11-03T09:26:03Z",
+      "by": "claude-code",
+      "desc": "Idea de amble.fyi: un perfil donde cada afirmación cita de dónde sale (una línea del CV, un repo, un proyecto), más una lista de 'lo que aún no sé'. Se genera a partir de ~/vault/cv.md y tus repos públicos, y tú lo corriges a mano.\nDespués se puntúa una muestra con y sin career.md sobre una copia de la base (mismo método que BR-02) y se compara con tus decisiones apply/reject.\nHecho: career.md revisado por ti y la comparación escrita. El scorer solo lo usa de forma permanente si tú lo decides."
+    },
+    {
+      "id": "EIA-02",
+      "title": "Razones citadas y comprobadas en el scorer",
+      "state": "proposed",
+      "group": "EIA",
+      "deps": ["EIA-01"],
+      "at": "2026-11-03T09:26:03Z",
+      "by": "claude-code",
+      "desc": "'Los modelos proponen, las reglas deciden': el 'por qué encaja' de cada oferta cita líneas de career.md y frases literales de la oferta, y el código comprueba que esas citas existen. Las que no existen se descartan y se ve en el dashboard.\nRelacionada con DB-05 (gates FAIL/FLAG con auditoría de vetos): decidir si van juntas.\nHecho: en el dashboard ves las citas de cada oferta puntuada, y no queda ninguna inventada."
+    },
+    {
+      "id": "EIA-03",
+      "title": "Del 'no' a reglas: proponer cambios al perfil",
+      "state": "proposed",
+      "group": "EIA",
+      "at": "2026-11-03T09:26:03Z",
+      "by": "claude-code",
+      "desc": "Idea de Amble: 'un no es mejor dato que un sí'. Un comando lee tus rechazos con motivo y propone cambios concretos a profile.yaml (dealbreakers, salario mínimo, remoto), cada uno con las ofertas que lo justifican. No cambia nada solo: tú aceptas o descartas cada propuesta.\nHecho: el comando funciona offline sobre tus decisiones reales y te da una lista que puedes revisar."
     }
   ]
 }
