@@ -1299,6 +1299,47 @@ def list_jobs(
     ]
 
 
+#: Stay below SQLite's usual 999 bound-parameter limit when querying by ids.
+_MAX_SQL_VARIABLES = 900
+
+
+def ok_evaluation_fingerprints(
+    conn: sqlite3.Connection, job_ids: Sequence[int]
+) -> tuple[dict[int, str], dict[int, set[tuple[str, str]]]]:
+    """Latest ok scorer and every ok (scorer, fingerprint) for these jobs.
+
+    ``latest`` is the scorer of the newest successful evaluation, the same row
+    ``latest_evaluations`` shows to ``list`` and the dashboard.
+    """
+    latest: dict[int, str] = {}
+    successful: dict[int, set[tuple[str, str]]] = {}
+    ids = [int(job_id) for job_id in job_ids]
+    for start in range(0, len(ids), _MAX_SQL_VARIABLES):
+        chunk = ids[start : start + _MAX_SQL_VARIABLES]
+        placeholders = ",".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"""
+            SELECT e.job_id, e.scorer, e.input_fingerprint,
+                   e.id = (
+                       SELECT MAX(x.id) FROM evaluations x
+                       WHERE x.job_id = e.job_id AND x.status = 'ok'
+                   ) AS is_latest
+            FROM evaluations e
+            WHERE e.status = 'ok' AND e.job_id IN ({placeholders})
+            """,
+            chunk,
+        ).fetchall()
+        for row in rows:
+            job_id = int(row["job_id"])
+            scorer = str(row["scorer"])
+            successful.setdefault(job_id, set()).add(
+                (scorer, row["input_fingerprint"] or "")
+            )
+            if row["is_latest"]:
+                latest[job_id] = scorer
+    return latest, successful
+
+
 def jobs_needing_evaluation(
     conn: sqlite3.Connection,
     *,

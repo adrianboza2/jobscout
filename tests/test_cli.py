@@ -109,6 +109,85 @@ def test_score_heuristic_then_rank_and_list(db_path: Path, capsys) -> None:
     assert json.loads(capsys.readouterr().out)["count"] >= 1
 
 
+def test_list_flags_scores_that_no_longer_match_the_input(
+    db_path: Path, capsys
+) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "--profile",
+                str(PROFILE),
+                "score",
+                "--all",
+                "--scorer",
+                "heuristic",
+            ]
+        )
+        == EXIT_OK
+    )
+    capsys.readouterr()
+
+    assert (
+        main(["--db", str(db_path), "--profile", str(PROFILE), "list", "--json"])
+        == EXIT_OK
+    )
+    before = json.loads(capsys.readouterr().out)
+    scored = [item for item in before["jobs"] if item["score"] is not None]
+    assert scored and all(item["needs_rescore"] is False for item in scored)
+    stale_id = scored[0]["job"]["id"]
+
+    conn = connect(db_path)
+    try:
+        conn.execute(
+            "UPDATE jobs SET description = description || ' changed' WHERE id = ?",
+            (stale_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert (
+        main(["--db", str(db_path), "--profile", str(PROFILE), "list", "--json"])
+        == EXIT_OK
+    )
+    after = {item["job"]["id"]: item for item in json.loads(capsys.readouterr().out)["jobs"]}
+    assert after[stale_id]["needs_rescore"] is True
+    assert all(
+        item["needs_rescore"] is False
+        for job_id, item in after.items()
+        if job_id != stale_id and item["score"] is not None
+    )
+
+    assert main(["--db", str(db_path), "--profile", str(PROFILE), "list"]) == EXIT_OK
+    text = capsys.readouterr().out
+    assert text.count("[needs re-score]") == 1
+    stale_line = next(line for line in text.splitlines() if f"#{stale_id}" in line)
+    assert "[needs re-score]" in stale_line
+
+
+def test_list_with_a_missing_profile_still_works(db_path: Path, capsys) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+
+    exit_code = main(
+        ["--db", str(db_path), "--profile", "does-not-exist.yaml", "list", "--json"]
+    )
+    assert exit_code == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["jobs"]
+    assert all(item["needs_rescore"] is None for item in payload["jobs"])
+
+    assert (
+        main(["--db", str(db_path), "--profile", "does-not-exist.yaml", "list"])
+        == EXIT_OK
+    )
+    assert "[needs re-score]" not in capsys.readouterr().out
+
+
 def test_rank_hides_offers_with_imported_feedback(db_path: Path, capsys) -> None:
     main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
     capsys.readouterr()

@@ -126,6 +126,7 @@ from .scoring import (
     evaluate_job,
     fingerprint_resolver,
     load_profile,
+    stale_job_ids,
 )
 from .scoring.profile import ProfileError
 from .timeutil import iso_days_ago
@@ -237,21 +238,31 @@ def _preference_marker(preference: PreferenceAssessment | None) -> str:
     return f"  [preference={preference.outcome}]"
 
 
-def _job_line(item: Any, preference: PreferenceAssessment | None = None) -> str:
+def _job_line(
+    item: Any,
+    preference: PreferenceAssessment | None = None,
+    needs_rescore: bool | None = None,
+) -> str:
     job = item.job
     score = "  n/a" if item.score is None else f"{item.score:5.1f}"
     recommendation = item.recommendation or "-"
     location = f" ({job.location})" if job.location else ""
+    stale = "  [needs re-score]" if needs_rescore else ""
     return (
         f"#{job.id:<4} {score}  {recommendation:<14} {job.title or '(untitled)'}"
         f" @ {job.company or '(unknown company)'}{location}  [{job.content_status}]"
-        f"{_preference_marker(preference)}"
+        f"{stale}{_preference_marker(preference)}"
     )
 
 
-def _job_payload(item: Any, preference: PreferenceAssessment | None = None) -> dict[str, Any]:
+def _job_payload(
+    item: Any,
+    preference: PreferenceAssessment | None = None,
+    needs_rescore: bool | None = None,
+) -> dict[str, Any]:
     """One list/rank entry, with the preference verdict attached when computed."""
     payload = item.to_dict()
+    payload["needs_rescore"] = needs_rescore
     if preference is not None:
         payload["preference"] = preference.to_dict()
     return payload
@@ -1555,6 +1566,11 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
 
 
 def cmd_list(args: argparse.Namespace, settings: Settings) -> int:
+    try:
+        profile = load_profile(settings.profile_path)
+    except ProfileError:
+        # Listing must keep working without a profile; it only skips the flag.
+        profile = None
     conn = connect(settings.db_path)
     try:
         init_db(conn)
@@ -1565,15 +1581,32 @@ def cmd_list(args: argparse.Namespace, settings: Settings) -> int:
             include_inactive=args.include_inactive,
         )
         preferences = {item.job.id: assess_preference(item.job) for item in items}
+        stale = (
+            stale_job_ids(
+                conn, (item.job for item in items), profile, settings
+            )
+            if profile is not None
+            else set()
+        )
     finally:
         conn.close()
+    rescore = {
+        item.job.id: (None if profile is None else item.job.id in stale)
+        for item in items
+    }
     text = "\n".join(
-        _job_line(item, preferences.get(item.job.id)) for item in items
+        _job_line(item, preferences.get(item.job.id), rescore[item.job.id])
+        for item in items
     ) or "no jobs stored yet"
     _emit(
         {
             "count": len(items),
-            "jobs": [_job_payload(item, preferences.get(item.job.id)) for item in items],
+            "jobs": [
+                _job_payload(
+                    item, preferences.get(item.job.id), rescore[item.job.id]
+                )
+                for item in items
+            ],
         },
         as_json=getattr(args, "as_json", False),
         text=text,
@@ -1582,6 +1615,11 @@ def cmd_list(args: argparse.Namespace, settings: Settings) -> int:
 
 
 def cmd_rank(args: argparse.Namespace, settings: Settings) -> int:
+    try:
+        profile = load_profile(settings.profile_path)
+    except ProfileError:
+        # Ranking must keep working without a profile; it only skips the flag.
+        profile = None
     conn = connect(settings.db_path)
     try:
         init_db(conn)
@@ -1593,6 +1631,13 @@ def cmd_rank(args: argparse.Namespace, settings: Settings) -> int:
             rank_by_score=True,
         )
         preferences = {item.job.id: assess_preference(item.job) for item in items}
+        stale = (
+            stale_job_ids(
+                conn, (item.job for item in items), profile, settings
+            )
+            if profile is not None
+            else set()
+        )
         # An imported human decision outranks the model: the offer leaves the
         # shortlist instead of re-appearing on every run.
         decided = _fetch_imported_feedback(conn, [item.job.id for item in items])
@@ -1603,8 +1648,13 @@ def cmd_rank(args: argparse.Namespace, settings: Settings) -> int:
     # if that ever matters.
     hidden_count = sum(1 for item in items if item.job.id in decided)
     items = [item for item in items if item.job.id not in decided]
+    rescore = {
+        item.job.id: (None if profile is None else item.job.id in stale)
+        for item in items
+    }
     text = "\n".join(
-        _job_line(item, preferences.get(item.job.id)) for item in items
+        _job_line(item, preferences.get(item.job.id), rescore[item.job.id])
+        for item in items
     ) or "no scored jobs yet"
     if hidden_count:
         text += (
@@ -1615,7 +1665,12 @@ def cmd_rank(args: argparse.Namespace, settings: Settings) -> int:
         {
             "count": len(items),
             "hidden_decided": hidden_count,
-            "jobs": [_job_payload(item, preferences.get(item.job.id)) for item in items],
+            "jobs": [
+                _job_payload(
+                    item, preferences.get(item.job.id), rescore[item.job.id]
+                )
+                for item in items
+            ],
         },
         as_json=getattr(args, "as_json", False),
         text=text,
@@ -2053,7 +2108,28 @@ def cmd_dashboard(args: argparse.Namespace, settings: Settings) -> int:
     output = DASHBOARD_DEFAULT_OUTPUT if args.output is None else args.output
     top = args.top
     try:
-        summary = generate_dashboard(settings.db_path, output, top=top)
+        profile = load_profile(settings.profile_path)
+    except ProfileError:
+        # The report must keep working without a profile; it only skips the flag.
+        profile = None
+    stale: set[int] | None = None
+    if profile is not None:
+        conn = connect_readonly(settings.db_path)
+        if conn is not None:
+            try:
+                stale = stale_job_ids(
+                    conn, all_active_jobs(conn), profile, settings
+                )
+            except sqlite3.DatabaseError:
+                # A missing or unreadable schema is reported by the generator
+                # with its own DashboardError; flagging is only an extra.
+                stale = None
+            finally:
+                conn.close()
+    try:
+        summary = generate_dashboard(
+            settings.db_path, output, top=top, stale_job_ids=stale
+        )
     except DashboardError as exc:
         _write_line(f"dashboard error: {exc}", stream=sys.stderr)
         return EXIT_ERROR

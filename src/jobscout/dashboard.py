@@ -40,6 +40,7 @@ import json
 import os
 import re
 import sqlite3
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
@@ -998,6 +999,7 @@ def build_payload(
     project_id: str = "",
     database_label: str | None = None,
     db_path: str | Path | None = None,
+    stale_job_ids: Collection[int] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Build the serializable dashboard payload from the database.
@@ -1008,6 +1010,8 @@ def build_payload(
     path) shown in the header. ``db_path`` is the database the connection reads
     from; when given, each offer also carries its company's stored dossier
     Markdown (``None`` when there is none), so the report stays self-contained.
+    ``stale_job_ids`` marks offers whose shown score no longer matches their
+    current scoring input; ``None`` means the profile was unavailable.
     """
     top = _validate_top(top)
     reference = now or utcnow()
@@ -1023,6 +1027,7 @@ def build_payload(
     # Same helper as ``score``, so the report and the scorer never disagree on
     # which offers are still waiting for a description.
     awaiting_details = jobs_awaiting_details(conn)
+    stale = set(stale_job_ids or ())
     last_sweep_cycle, last_sweep_at = _last_sweep(conn)
 
     offers: list[dict[str, Any]] = []
@@ -1061,6 +1066,9 @@ def build_payload(
                 "salary": _salary(row["salary"]),
                 "salary_est": _salary_est(row),
                 "score": round(float(score), 2) if score is not None else None,
+                # The shown score is stale when it exists but no successful
+                # evaluation of its scorer carries the current input.
+                "needs_rescore": bool(score is not None and job_id in stale),
                 "recommendation": (
                     str(row["recommendation"])
                     if score is not None and row["recommendation"]
@@ -1625,6 +1633,9 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 .score small { display:block; height:3px; margin-top:var(--sp-6); background:var(--rule-2); }
 .score small i { display:block; height:100%; background:currentColor; }
 .score.score-state { font-size:var(--fs-11); font-weight:400; letter-spacing:0; color:var(--ink-3); }
+.score.stale { opacity:.55; text-decoration:underline dashed; text-underline-offset:var(--sp-4); }
+.score .stale { display:block; margin-top:var(--sp-4); font-family:var(--sans);
+  font-size:var(--fs-11); font-weight:400; letter-spacing:0; text-decoration:none; color:var(--ink-3); }
 .s-hi { color:var(--signal); } .s-mid { color:var(--mid); } .s-lo { color:var(--low); }
 .t { font-family:var(--sans); font-size:var(--fs-15); font-weight:600; line-height:1.3; }
 .c { color:var(--ink-2); font-size:var(--fs-13); margin-top:var(--sp-2); }
@@ -2215,13 +2226,23 @@ _SCRIPT = r"""
     var scoreNode;
     if (offer.score !== null) {
       var rounded = Math.round(offer.score);
-      scoreNode = el("div", "score " + scoreBand(offer.score), rounded);
-      scoreNode.setAttribute("aria-label", "Puntaje " + rounded + " sobre 100");
+      var staleClass = offer.needs_rescore ? " stale" : "";
+      scoreNode = el("div", "score " + scoreBand(offer.score) + staleClass, rounded);
+      scoreNode.setAttribute(
+        "aria-label",
+        "Puntaje " + rounded + " sobre 100"
+          + (offer.needs_rescore ? ", re-score pendiente" : "")
+      );
       var track = el("small");
       var fill = el("i");
       fill.style.width = String(offer.score) + "%";
       track.appendChild(fill);
       scoreNode.appendChild(track);
+      if (offer.needs_rescore) {
+        var stale = el("span", "stale", "Re-score pendiente");
+        stale.setAttribute("title", "El modelo, el prompt, el perfil o el texto de la oferta cambiaron desde este puntaje");
+        scoreNode.appendChild(stale);
+      }
     } else {
       // A scoreless offer waiting for its description says so instead of the
       // generic "sin evaluar": the state will change on its own after the next
@@ -2765,6 +2786,7 @@ def generate_dashboard(
     output: str | Path = DEFAULT_OUTPUT,
     *,
     top: int | None = DEFAULT_TOP,
+    stale_job_ids: Collection[int] | None = None,
 ) -> DashboardSummary:
     """Read the database and write the self-contained HTML report.
 
@@ -2791,6 +2813,7 @@ def generate_dashboard(
             project_id=project_key(db_path),
             database_label=Path(db_path).name,
             db_path=db_path,
+            stale_job_ids=stale_job_ids,
         )
     except sqlite3.DatabaseError as exc:
         raise DashboardError(f"database at {db_path} could not be read: {exc}") from exc

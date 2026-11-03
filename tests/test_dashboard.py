@@ -42,6 +42,7 @@ from jobscout.dashboard import (
     render_dashboard_html,
 )
 from jobscout.db import (
+    all_active_jobs,
     connect,
     connect_readonly,
     create_search_run,
@@ -70,6 +71,7 @@ from jobscout.models import (
     SearchRunStatus,
 )
 from jobscout.normalize import finalize_posting
+from jobscout.scoring import stale_job_ids
 from jobscout.scoring.profile import build_snapshot, load_profile
 
 NOW = datetime(2026, 9, 16, 12, 0, tzinfo=timezone.utc)
@@ -3582,6 +3584,62 @@ def test_fallback_provenance_is_visible_and_not_a_placeholder(tmp_path: Path) ->
 
     html_text = generate_and_read(path)
     assert "heuristic-v1+fallback" in html_text
+
+
+def test_dashboard_flags_stale_scores_and_keeps_the_report_self_contained(
+    tmp_path: Path, profile, settings
+) -> None:
+    path = tmp_path / "stale.sqlite3"
+    conn = connect(path)
+    try:
+        init_db(conn)
+        stale, _ = store_posting(conn, _posting(), now="2026-09-15T10:00:00Z")
+        unscored, _ = store_posting(
+            conn,
+            _posting(
+                source_job_id="3901234568",
+                url="https://www.linkedin.com/jobs/view/3901234568/unscored",
+                title="Unscored Role",
+            ),
+            now="2026-09-15T10:00:00Z",
+        )
+        insert_evaluation(
+            conn,
+            _score(
+                stale.id,
+                80.0,
+                Recommendation.APPLY,
+                input_fingerprint="old-input",
+            ),
+        )
+    finally:
+        conn.close()
+
+    conn = open_readonly_database(path)
+    try:
+        jobs = all_active_jobs(conn)
+        stale_ids = stale_job_ids(conn, jobs, profile, settings)
+        payload = build_payload(
+            conn, stale_job_ids=stale_ids | {int(unscored.id)}, now=NOW
+        )
+    finally:
+        conn.close()
+
+    by_id = {offer["id"]: offer for offer in payload["offers"]}
+    assert by_id[stale.id]["needs_rescore"] is True
+    # An offer with no shown score is never stale, even if it were in the set.
+    assert by_id[unscored.id]["score"] is None
+    assert by_id[unscored.id]["needs_rescore"] is False
+
+    html_text = render_dashboard_html(payload)
+    assert "Re-score pendiente" in html_text
+    assert "needs_rescore" in html_text
+    assert ".score.stale" in html_text
+    assert not re.search(
+        r'<(?:link|script|img|iframe)[^>]+(?:src|href)="https?://', html_text
+    )
+    assert "cdn." not in html_text
+    assert "fetch(" not in html_text
 
 
 # ---------------------------------------------------------------------------

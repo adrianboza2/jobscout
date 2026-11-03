@@ -57,6 +57,7 @@ from jobscout.models import (
     SearchRunStatus,
 )
 from jobscout.normalize import finalize_posting
+from jobscout.scoring import effective_fingerprint, fingerprint_resolver, stale_job_ids
 from jobscout.scoring.profile import build_snapshot
 
 REQUIRED_TABLES = {
@@ -888,6 +889,42 @@ def test_unknown_provenance_is_reevaluated(conn, stored_job) -> None:
             conn, scorer="heuristic", fingerprint_for=lambda job: "expected"
         )
     ] == [stored_job.id]
+
+
+def test_stale_job_ids_agrees_with_selection_for_scored_jobs(
+    conn, profile, settings
+) -> None:
+    current_job = _store_seen_at(conn, 4001, "2026-10-28T10:00:00Z")
+    stale_job = _store_seen_at(conn, 4002, "2026-10-27T10:00:00Z")
+    never_scored = _store_seen_at(conn, 4003, "2026-10-26T10:00:00Z")
+    older_match = _store_seen_at(conn, 4004, "2026-10-25T10:00:00Z")
+
+    current_fp = effective_fingerprint("heuristic", current_job, profile, settings)
+    older_match_fp = effective_fingerprint(
+        "heuristic", older_match, profile, settings
+    )
+    _score(conn, current_job, current_fp)
+    _score(conn, stale_job, "old-input")
+    _score(conn, older_match, older_match_fp)
+    _score(conn, older_match, "newer-but-different")
+
+    jobs = all_active_jobs(conn)
+    stale = stale_job_ids(conn, jobs, profile, settings)
+    selected = {
+        job.id
+        for job in jobs_needing_evaluation(
+            conn,
+            scorer="heuristic",
+            fingerprint_for=fingerprint_resolver("heuristic", settings, profile),
+        )
+    }
+    scored = {
+        job.id for job in jobs if latest_evaluation(conn, job.id) is not None
+    }
+
+    assert stale == {stale_job.id}
+    assert stale == selected & scored
+    assert never_scored.id not in stale
 
 
 def test_foreign_keys_cascade_on_job_delete(conn, stored_job) -> None:

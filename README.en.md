@@ -163,6 +163,14 @@ Cycle notes:
   the ones that only need a re-score, each group newest first; so a model,
   prompt or profile change cannot push a sweep's new offers past the `--limit`
   cap. Use `--rescore` to force a fresh pass over every active offer.
+- `list`, `rank` and the dashboard **flag out-of-date scores**: an offer whose
+  shown score comes from a scorer that no longer has any successful evaluation
+  with the current fingerprint (the model, prompt, profile or posting text
+  changed) shows `[needs re-score]` in text, `needs_rescore: true` in `--json`
+  and "Re-score pendiente" next to the dashboard score. It is the same
+  comparison `score --all` uses, so the flag clears once the next run re-scores
+  the offer. If the profile cannot be read, `list` still works without the flag
+  (`needs_rescore: null`).
 
 ### Seniority and technology criterion (prompt v5)
 
@@ -438,8 +446,8 @@ subcommand), and `--version`.
 | `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich LinkedIn jobs with the full description. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence. |
 | `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enrich Tecnoempleo offers from their public detail page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
 | `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enrich GetManfred offers from the recognized `JobPosting` JSON-LD on their public page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
-| `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score. |
-| `rank [--top N] [--min-score S]` | Jobs with a successful score, best first. |
+| `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score; `[needs re-score]` flags out-of-date scores. |
+| `rank [--top N] [--min-score S]` | Jobs with a successful score, best first; same `[needs re-score]` flag. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evaluate jobs and print the explainable result. `--all` skips senior titles and offers waiting for details before `--limit`; `--job-id` forces both. |
 | `dossier (--job-id ID… \| --apply) [--refresh] [--timeout S]` | Research each offer's company with OpenCode and write one Markdown dossier per company under `data/dossiers/`. Never fetches or cites LinkedIn. |
 | `runs [--limit N]` | Recent search runs and stored counts. |

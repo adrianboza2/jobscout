@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from ..config import Settings
-from ..db import insert_evaluation, upsert_profile
+from ..db import insert_evaluation, ok_evaluation_fingerprints, upsert_profile
 from ..models import (
     Evaluation,
     EvaluationStatus,
@@ -110,6 +110,29 @@ def fingerprint_resolver(
         return effective_fingerprint(scorer_name, job, profile, settings)
 
     return resolve
+
+
+def stale_job_ids(
+    conn: Any, jobs: Iterable[Any], profile: Profile, settings: Settings
+) -> set[int]:
+    """Ids whose shown score no longer matches the current effective input.
+
+    Only offers that already show a successful score can be stale; an unscored
+    offer is handled by selection. An old row naming an unknown scorer is left
+    alone instead of crashing the listing or the read-only dashboard build.
+    """
+    by_id = {int(job.id): job for job in jobs if job.id is not None}
+    latest, successful = ok_evaluation_fingerprints(conn, list(by_id))
+
+    stale: set[int] = set()
+    for job_id, scorer in latest.items():
+        try:
+            current = effective_fingerprint(scorer, by_id[job_id], profile, settings)
+        except ScorerError:
+            continue
+        if (scorer, current) not in successful.get(job_id, set()):
+            stale.add(job_id)
+    return stale
 
 
 #: Total attempts allowed while a scorer response is contract-invalid (malformed

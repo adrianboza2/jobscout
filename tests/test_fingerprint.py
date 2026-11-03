@@ -6,7 +6,14 @@ from dataclasses import replace
 
 import pytest
 
-from jobscout.scoring import ScorerError, effective_fingerprint, fingerprint_resolver
+from jobscout.db import insert_evaluation
+from jobscout.models import Evaluation, Recommendation, ScorerName
+from jobscout.scoring import (
+    ScorerError,
+    effective_fingerprint,
+    fingerprint_resolver,
+    stale_job_ids,
+)
 from jobscout.scoring.heuristic import input_fingerprint as heuristic_fingerprint
 from jobscout.scoring.llm import input_fingerprint as llm_fingerprint
 from jobscout.scoring.opencode import input_fingerprint as opencode_fingerprint
@@ -87,3 +94,61 @@ def test_fingerprint_resolver_is_bound_to_scorer_profile_and_settings(
 def test_unknown_scorer_is_rejected(strong_posting, profile, settings) -> None:
     with pytest.raises(ScorerError):
         effective_fingerprint("nope", strong_posting, profile, settings)
+
+
+def _score_with_fingerprint(job, fingerprint: str) -> Evaluation:
+    return Evaluation(
+        job_id=job.id,
+        scorer=ScorerName.HEURISTIC,
+        overall_score=50,
+        recommendation=Recommendation.CONSIDER,
+        input_fingerprint=fingerprint,
+    )
+
+
+def test_stale_job_ids_accepts_a_current_score(conn, stored_job, profile, settings) -> None:
+    current = effective_fingerprint("heuristic", stored_job, profile, settings)
+    insert_evaluation(conn, _score_with_fingerprint(stored_job, current))
+
+    assert stale_job_ids(conn, [stored_job], profile, settings) == set()
+
+
+def test_stale_job_ids_flags_changed_input(conn, stored_job, profile, settings) -> None:
+    current = effective_fingerprint("heuristic", stored_job, profile, settings)
+    insert_evaluation(conn, _score_with_fingerprint(stored_job, current))
+
+    rewritten = replace(
+        stored_job, description=(stored_job.description or "") + " extra"
+    )
+    changed_profile = profile_from_dict(
+        {**profile.to_dict(), "summary": "different summary"}
+    )
+
+    assert stale_job_ids(conn, [rewritten], profile, settings) == {stored_job.id}
+    assert stale_job_ids(conn, [stored_job], changed_profile, settings) == {
+        stored_job.id
+    }
+
+
+def test_stale_job_ids_ignores_unscored_offers(conn, stored_job, profile, settings) -> None:
+    assert stale_job_ids(conn, [stored_job], profile, settings) == set()
+
+
+def test_stale_job_ids_flags_an_empty_stored_fingerprint(
+    conn, stored_job, profile, settings
+) -> None:
+    insert_evaluation(conn, _score_with_fingerprint(stored_job, ""))
+
+    assert stale_job_ids(conn, [stored_job], profile, settings) == {stored_job.id}
+
+
+def test_stale_job_ids_accepts_any_matching_success_of_the_same_scorer(
+    conn, stored_job, profile, settings
+) -> None:
+    current = effective_fingerprint("heuristic", stored_job, profile, settings)
+    insert_evaluation(conn, _score_with_fingerprint(stored_job, current))
+    insert_evaluation(conn, _score_with_fingerprint(stored_job, "different"))
+
+    # The newest success is what ``list`` shows, but the older success still
+    # proves the current input was evaluated, matching selection semantics.
+    assert stale_job_ids(conn, [stored_job], profile, settings) == set()

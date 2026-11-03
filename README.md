@@ -162,6 +162,14 @@ Notas del ciclo:
   más antigua; así un cambio de modelo, prompt o perfil no deja las ofertas
   nuevas de un sweep detrás del tope de `--limit`. Usa `--rescore` para forzar
   una corrida nueva sobre todas las ofertas activas.
+- `list`, `rank` y el dashboard **marcan el puntaje desactualizado**: una oferta
+  cuyo puntaje visible viene de un puntuador que ya no tiene ninguna evaluación
+  exitosa con la huella actual (cambió el modelo, el prompt, el perfil o el
+  texto de la oferta) sale con `[needs re-score]` en texto, `needs_rescore:
+  true` en `--json` y «Re-score pendiente» junto al puntaje del dashboard. Es la
+  misma comparación que usa `score --all`, así que la marca desaparece cuando la
+  siguiente corrida la re-puntúa. Si el perfil no se puede leer, `list` sigue
+  funcionando sin la marca (`needs_rescore: null`).
 
 ### Criterio de seniority y tecnologías (prompt v5)
 
@@ -444,8 +452,8 @@ subcomando) y `--version`.
 | `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas de LinkedIn con la descripción completa. Por defecto, las que aún no están enriquecidas; `--refresh` vuelve sobre las ya consultadas con evidencia obsoleta o reintentable. |
 | `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enriquece ofertas de Tecnoempleo desde su página de detalle pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
 | `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enriquece ofertas de GetManfred desde el JSON-LD `JobPosting` reconocido de su página pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
-| `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje. |
-| `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero. |
+| `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje; `[needs re-score]` marca los puntajes desactualizados. |
+| `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero; misma marca `[needs re-score]`. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. `--all` omite, antes de `--limit`, las de título senior y las que esperan detalles; `--job-id` fuerza ambas. |
 | `dossier (--job-id ID… \| --apply) [--refresh] [--timeout S]` | Investiga la empresa de cada oferta con OpenCode y escribe un dossier Markdown por empresa en `data/dossiers/`. Nunca consulta ni cita LinkedIn. |
 | `runs [--limit N]` | Ejecuciones de búsqueda recientes y conteos almacenados. |
