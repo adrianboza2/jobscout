@@ -31,6 +31,10 @@ DESCRIPTION_CHARS = 3000
 #: Path segment of the dossier directory, next to the database.
 DOSSIER_DIRNAME = "dossiers"
 
+#: Output floor for dossier runs: the OpenCode stream carries every page the
+#: model fetched, and large corporate sites overflow the scorer's 1 MiB default.
+DOSSIER_MIN_OUTPUT_BYTES = 8 * 1024 * 1024
+
 
 def company_slug(name: str) -> str:
     """Return a filesystem-safe slug for a company name.
@@ -187,6 +191,12 @@ def generate_dossier(
     """Research ``job``'s company and write its dossier file."""
     company = (getattr(job, "company", "") or "").strip()
     prompt = build_dossier_prompt(job, today)
+
+    # Raise, never lower: an explicit larger env value still wins.
+    if settings.opencode_max_output_bytes < DOSSIER_MIN_OUTPUT_BYTES:
+        settings = settings.with_overrides(
+            opencode_max_output_bytes=DOSSIER_MIN_OUTPUT_BYTES
+        )
     answer = run_prompt(settings, prompt, timeout=timeout, runner=runner)
     body, removed = sanitize_dossier(answer)
     rendered = render_dossier(

@@ -683,7 +683,9 @@ tiene prohibido consultar o citar `linkedin.com`; cualquier línea que aún lo
 mencione se elimina antes de guardar y se avisa de cuántas se quitaron. Se guarda
 solo la respuesta final, desde su último `## Sector` (el flujo de OpenCode trae
 también las páginas descargadas); una respuesta sin esa sección cuenta como fallo
-y no se escribe. El dashboard incrusta el texto del dossier en cada oferta de esa empresa (dentro de
+y no se escribe. Como ese flujo incluye las páginas descargadas, `dossier` sube
+el límite de salida a 8 MiB como mínimo (`JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES`
+solo cuenta si es mayor); el puntuador sigue con su 1 MiB. El dashboard incrusta el texto del dossier en cada oferta de esa empresa (dentro de
 un bloque plegable), sin peticiones externas ni enlaces a ficheros: el informe
 sigue siendo autocontenido y seguro sobre `file://`.
 

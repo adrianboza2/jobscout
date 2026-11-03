@@ -21,6 +21,7 @@ from jobscout.dashboard import build_payload, render_dashboard_html
 from jobscout.db import connect, init_db, store_posting, upsert_feedback
 from jobscout.dossier import (
     DESCRIPTION_CHARS,
+    DOSSIER_MIN_OUTPUT_BYTES,
     build_dossier_prompt,
     company_slug,
     dossier_path,
@@ -263,6 +264,21 @@ def test_generate_dossier_writes_the_file_and_uses_the_isolated_invocation(
     env = call["env"]
     assert env["XDG_CONFIG_HOME"] == str(isolated_config_home(settings))
     assert env["OPENCODE_DISABLE_PROJECT_CONFIG"] == "1"
+    assert call["max_output_bytes"] == DOSSIER_MIN_OUTPUT_BYTES
+
+
+def test_generate_dossier_keeps_a_larger_configured_output_limit(
+    tmp_path: Path, opencode_settings: Settings
+) -> None:
+    settings = opencode_settings.with_overrides(
+        db_path=tmp_path / "jobscout.sqlite3",
+        opencode_max_output_bytes=DOSSIER_MIN_OUTPUT_BYTES * 2,
+    )
+    runner = FakeRunner([command_outcome(stdout="## Sector\nSaaS.\n")])
+
+    generate_dossier(settings, make_job(), today=TODAY, timeout=600, runner=runner)
+
+    assert runner.calls[0]["max_output_bytes"] == DOSSIER_MIN_OUTPUT_BYTES * 2
 
 
 def test_load_dossiers_reads_the_directory_keyed_by_slug(tmp_path: Path) -> None:

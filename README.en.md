@@ -667,7 +667,10 @@ failed). The model is forbidden from fetching or citing `linkedin.com`; any
 line that still mentions it is removed before saving and the count is reported.
 Only the final answer is kept, from its last `## Sector` heading (the OpenCode
 stream also carries the fetched pages); an answer without that section counts as
-a failure and nothing is written. The dashboard embeds the dossier text in each offer of that company (inside a
+a failure and nothing is written. Because that stream includes the fetched
+pages, `dossier` raises the output limit to at least 8 MiB
+(`JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES` only counts when larger); the scorer keeps
+its 1 MiB. The dashboard embeds the dossier text in each offer of that company (inside a
 collapsible block), with no external requests or file links: the report stays
 self-contained and safe over `file://`.
 
