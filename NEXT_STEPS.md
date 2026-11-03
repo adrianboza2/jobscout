@@ -5,6 +5,18 @@ only on the Kanvas board (`kanvas.json`)** since 2026-10-31; the "Pending",
 "Next" and "Priority" lists below are history, and anything still open from
 them is a card on the board. Do not add new pending items here.
 
+## Session 2026-11-03 — close BR-01 and AJ-01
+
+- `dossier` now uses an 8 MiB output limit at minimum, because the OpenCode
+  stream carries every fetched page and big corporate sites (Deloitte) overflow
+  the scorer's 1 MiB default. A larger `JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES`
+  still wins, and scoring keeps 1 MiB (owner, 2026-11-03).
+- Entelgy retried (`dossier --job-id 15`): 30/30 'apply' companies have a
+  dossier. Owner reviewed the pilot; BR-01 and AJ-01 are done, so BR-03
+  (tailored CV and cover letter) is unblocked.
+- Proposed EIA-01..03 on the board (evidence-backed profile, cited reasons,
+  rules from rejections), inspired by amble.fyi.
+
 ## Session 2026-10-31 — company dossier pilot (BR-01)
 
 - New `dossier (--job-id N… | --apply)` command: OpenCode (same isolated
