@@ -641,6 +641,24 @@ def build_parser() -> argparse.ArgumentParser:
         default=ScorerName.OPENCODE.value,
         help="scorer backend (default: OpenCode with the configured model)",
     )
+    score_parser.add_argument(
+        "--scorer-model",
+        default=None,
+        help=(
+            "OpenCode model for this run, overrides JOBSCOUT_OPENCODE_MODEL, "
+            "e.g. opencode-go/deepseek-v4.1-flash"
+        ),
+    )
+    score_parser.add_argument(
+        "--effort",
+        default=None,
+        help=(
+            "OpenCode variant/effort for this run, overrides "
+            "JOBSCOUT_OPENCODE_VARIANT, e.g. low/high/max; '' sends no variant; "
+            "also sizes the per-offer timeout unless "
+            "JOBSCOUT_OPENCODE_TIMEOUT_SECONDS is set"
+        ),
+    )
     score_parser.add_argument("--limit", type=int, default=None)
     score_parser.add_argument(
         "--rescore",
@@ -1807,6 +1825,21 @@ def _fallback_settings(settings: Settings, fallback_model: str) -> Settings:
 
 
 def cmd_score(args: argparse.Namespace, settings: Settings) -> int:
+    if args.scorer != ScorerName.OPENCODE.value and (
+        args.scorer_model is not None or args.effort is not None
+    ):
+        _write_line(
+            "usage error: --scorer-model and --effort only apply to the opencode scorer",
+            stream=sys.stderr,
+        )
+        return EXIT_ERROR
+    # The overrides must feed both the fingerprint and the evaluation, so they
+    # are applied to the settings before either is resolved.
+    if args.scorer_model is not None:
+        settings = replace(settings, opencode_model=args.scorer_model)
+    if args.effort is not None:
+        settings = replace(settings, opencode_variant=args.effort or None)
+
     try:
         profile = load_profile(settings.profile_path)
     except ProfileError as exc:

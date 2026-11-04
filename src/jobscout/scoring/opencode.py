@@ -759,7 +759,7 @@ def run_prompt(
     configured command name; a real invocation always resolves an absolute
     path so a cwd-relative planted executable cannot be picked up.
     """
-    timeout = settings.opencode_timeout_seconds if timeout is None else timeout
+    timeout = settings.effective_opencode_timeout_seconds if timeout is None else timeout
     if runner is run_command:
         command = resolve_executable(settings.opencode_command)
         if command is None:
@@ -868,7 +868,7 @@ class OpenCodeScorer:
         # path so a cwd-relative planted executable cannot be picked up.
         command = None if self.runner is not None else self.resolve_command()
         argv = build_command(self.settings, prompt, command=command)
-        timeout = self.settings.opencode_timeout_seconds
+        timeout = self.settings.effective_opencode_timeout_seconds
         cwd = resolved_workdir(self.settings)
         env = scrubbed_subprocess_env(self.settings)
         active_runner = self.runner or run_command

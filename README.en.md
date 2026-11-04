@@ -448,7 +448,7 @@ subcommand), and `--version`.
 | `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enrich GetManfred offers from the recognized `JobPosting` JSON-LD on their public page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score; `[needs re-score]` flags out-of-date scores. |
 | `rank [--top N] [--min-score S]` | Jobs with a successful score, best first; same `[needs re-score]` flag. |
-| `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evaluate jobs and print the explainable result. `--all` skips senior titles and offers waiting for details before `--limit`; `--job-id` forces both. |
+| `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--scorer-model MODEL] [--effort EFFORT] [--limit N] [--rescore]` | Evaluate jobs and print the explainable result. `--all` skips senior titles and offers waiting for details before `--limit`; `--job-id` forces both. |
 | `dossier (--job-id ID… \| --apply) [--refresh] [--timeout S]` | Research each offer's company with OpenCode and write one Markdown dossier per company under `data/dossiers/`. Never fetches or cites LinkedIn. |
 | `runs [--limit N]` | Recent search runs and stored counts. |
 | `dashboard [--output PATH] [--top N]` | Write a self-contained local HTML report (read-only, offline). |
@@ -855,6 +855,13 @@ bounded **while the process runs**: crossing
 the same hardened prompt as the HTTP scorer, so the posting is treated as
 untrusted data. Incomplete output stays `parse_error` and is **never retried
 automatically**: jobscout never invents a score. Re-run the scorer to try again.
+
+`--scorer-model` and `--effort` set the model and effort for one `score` run,
+handy for A/B comparisons; `--effort ''` sends no variant. Both are part of the
+input fingerprint, so changing them re-scores offers. When
+`JOBSCOUT_OPENCODE_TIMEOUT_SECONDS` is not set, the per-offer timeout is derived
+from the effort: none, `minimal`, or `low` 180 s; `medium` 240 s; `high` 360 s;
+`max` 600 s.
 
 ## Keyword optimization workflow
 

@@ -16,7 +16,12 @@ import pytest
 
 from conftest import FakeRunner, command_outcome, fake_popen_factory, fixture_text
 
-from jobscout.config import DEFAULT_OPENCODE_MODEL, DEFAULT_OPENCODE_VARIANT, Settings
+from jobscout.config import (
+    DEFAULT_OPENCODE_MODEL,
+    DEFAULT_OPENCODE_VARIANT,
+    ConfigError,
+    Settings,
+)
 from jobscout.models import ContentStatus, EvaluationStatus, Job, Recommendation, ScorerName
 from jobscout.scoring import ScorerError, evaluate_job, get_scorer
 from jobscout.scoring.llm import UNTRUSTED_BEGIN, UNTRUSTED_END
@@ -82,7 +87,8 @@ def test_default_model_is_included_opencode_go() -> None:
     assert DEFAULT_OPENCODE_MODEL == "opencode-go/deepseek-v4.1-flash"
     assert defaults.opencode_model == "opencode-go/deepseek-v4.1-flash"
     assert defaults.opencode_command == "opencode"
-    assert defaults.opencode_timeout_seconds == 180.0
+    assert defaults.opencode_timeout_seconds is None
+    assert defaults.effective_opencode_timeout_seconds == 180.0
     assert DEFAULT_OPENCODE_VARIANT == "low"
     assert defaults.opencode_variant == "low"
 
@@ -119,6 +125,61 @@ def test_opencode_settings_are_configurable_through_env() -> None:
     assert settings.opencode_workdir == "/tmp/neutral"
     assert settings.opencode_max_output_bytes == 4096
     assert settings.opencode_json_events is False
+
+
+def test_unset_timeout_is_derived_from_the_effort() -> None:
+    for effort, expected in (
+        ("low", 180.0),
+        ("medium", 240.0),
+        ("high", 360.0),
+        ("max", 600.0),
+        ("MAX", 600.0),
+        ("turbo", 180.0),
+    ):
+        settings = Settings.from_env(
+            env={"JOBSCOUT_OPENCODE_VARIANT": effort}, dotenv_path=None
+        )
+        assert settings.opencode_timeout_seconds is None
+        assert settings.effective_opencode_timeout_seconds == expected
+
+
+def test_timeout_uses_a_variant_embedded_in_the_model() -> None:
+    settings = Settings.from_env(
+        env={
+            "JOBSCOUT_OPENCODE_MODEL": "opencode-go/deepseek-v4.1-flash#max",
+            "JOBSCOUT_OPENCODE_VARIANT": "",
+        },
+        dotenv_path=None,
+    )
+    assert settings.opencode_variant is None
+    assert settings.effective_opencode_timeout_seconds == 600.0
+
+
+def test_timeout_follows_the_model_variant_over_the_setting() -> None:
+    # build_command sends the model's own `#variant` and ignores the setting.
+    settings = Settings(
+        opencode_model="opencode-go/deepseek-v4.1-flash#max", opencode_variant="low"
+    )
+    assert settings.effective_opencode_timeout_seconds == 600.0
+
+
+def test_explicit_timeout_wins_over_the_effort() -> None:
+    settings = Settings.from_env(
+        env={
+            "JOBSCOUT_OPENCODE_TIMEOUT_SECONDS": "42",
+            "JOBSCOUT_OPENCODE_VARIANT": "max",
+        },
+        dotenv_path=None,
+    )
+    assert settings.effective_opencode_timeout_seconds == 42.0
+
+
+def test_non_positive_timeout_is_rejected() -> None:
+    for raw in ("0", "-1"):
+        with pytest.raises(ConfigError):
+            Settings.from_env(
+                env={"JOBSCOUT_OPENCODE_TIMEOUT_SECONDS": raw}, dotenv_path=None
+            )
 
 
 def test_fallback_model_is_optional_and_read_from_env() -> None:
@@ -729,11 +790,21 @@ def test_successful_event_stream_produces_structured_evaluation(
     call = runner.calls[0]
     assert call["argv"][0] == "opencode"
     assert call["argv"][1] == "run"
-    assert call["timeout"] == opencode_settings.opencode_timeout_seconds
+    assert call["timeout"] == opencode_settings.effective_opencode_timeout_seconds
     assert call["cwd"] == str(
         Path(opencode_settings.db_path).expanduser().resolve().parent / "opencode-work"
     )
     assert "shell" not in call
+
+
+def test_scorer_passes_the_effort_sized_timeout_to_the_runner(
+    opencode_settings, strong_posting, profile
+) -> None:
+    settings = opencode_settings.with_overrides(opencode_variant="max")
+    assert settings.opencode_timeout_seconds is None
+    scorer, runner = make_scorer(settings, [command_outcome(0, VALID_JSON)])
+    scorer.score(strong_posting, profile)
+    assert runner.calls[0]["timeout"] == 600.0
 
 
 def test_single_json_object_output_is_parsed(opencode_settings, strong_posting, profile) -> None:

@@ -20,6 +20,7 @@ from jobscout.config import HARD_MAX_ITEMS, HARD_MAX_PAGES, Settings
 from jobscout.db import (
     all_active_jobs,
     connect,
+    evaluations_for_job,
     insert_detail_fetch,
     insert_evaluation,
     upsert_feedback,
@@ -896,6 +897,124 @@ def test_score_with_opencode_scorer_uses_mocked_subprocess(
     assert created and created[0].kwargs.get("shell") is False
 
 
+def test_score_flags_override_the_opencode_model_and_effort(
+    db_path: Path, capsys, monkeypatch, tmp_path: Path
+) -> None:
+    from conftest import fake_popen_factory
+    from jobscout.scoring import opencode as opencode_module
+    from jobscout.scoring.opencode import OPENCODE_PROMPT_VERSION
+
+    payload = (FIXTURES / "llm_response_valid.json").read_text(encoding="utf-8")
+    event = json.dumps(
+        {"type": "text", "sessionID": "ses_test", "part": {"type": "text", "text": payload}}
+    )
+
+    factory, created = fake_popen_factory(stdout_text=event)
+    monkeypatch.setattr(opencode_module.subprocess, "Popen", factory)
+    fake_exe = tmp_path / "opencode-fake"
+    fake_exe.write_text("", encoding="utf-8")
+    monkeypatch.setenv("JOBSCOUT_OPENCODE_COMMAND", str(fake_exe))
+
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    exit_code = main(
+        [
+            "--db",
+            str(db_path),
+            "--profile",
+            str(PROFILE),
+            "score",
+            "--job-id",
+            "1",
+            "--scorer",
+            "opencode",
+            "--scorer-model",
+            "foo/bar",
+            "--effort",
+            "high",
+        ]
+    )
+    capsys.readouterr()
+
+    assert exit_code == EXIT_OK
+    argv = created[0].argv
+    assert argv[argv.index("--model") + 1] == "foo/bar#high"
+    conn = connect(db_path)
+    try:
+        evaluations = evaluations_for_job(conn, 1)
+    finally:
+        conn.close()
+    assert evaluations[0].prompt_version == f"{OPENCODE_PROMPT_VERSION}+high"
+
+
+def test_score_with_empty_effort_sends_no_variant(
+    db_path: Path, capsys, monkeypatch, tmp_path: Path
+) -> None:
+    from conftest import fake_popen_factory
+    from jobscout.scoring import opencode as opencode_module
+
+    payload = (FIXTURES / "llm_response_valid.json").read_text(encoding="utf-8")
+    event = json.dumps(
+        {"type": "text", "sessionID": "ses_test", "part": {"type": "text", "text": payload}}
+    )
+
+    factory, created = fake_popen_factory(stdout_text=event)
+    monkeypatch.setattr(opencode_module.subprocess, "Popen", factory)
+    fake_exe = tmp_path / "opencode-fake"
+    fake_exe.write_text("", encoding="utf-8")
+    monkeypatch.setenv("JOBSCOUT_OPENCODE_COMMAND", str(fake_exe))
+
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+    exit_code = main(
+        [
+            "--db",
+            str(db_path),
+            "--profile",
+            str(PROFILE),
+            "score",
+            "--job-id",
+            "1",
+            "--scorer",
+            "opencode",
+            "--effort",
+            "",
+        ]
+    )
+    capsys.readouterr()
+
+    assert exit_code == EXIT_OK
+    argv = created[0].argv
+    assert argv[argv.index("--model") + 1] == "opencode-go/deepseek-v4.1-flash"
+
+
+def test_score_model_and_effort_flags_require_the_opencode_scorer(
+    db_path: Path, capsys
+) -> None:
+    main(["--db", str(db_path), "ingest-fixture", str(FIXTURE)])
+    capsys.readouterr()
+
+    exit_code = main(
+        [
+            "--db",
+            str(db_path),
+            "--profile",
+            str(PROFILE),
+            "score",
+            "--job-id",
+            "1",
+            "--scorer",
+            "heuristic",
+            "--scorer-model",
+            "foo/bar",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert exit_code == EXIT_ERROR
+    assert "only apply to the opencode scorer" in captured.err
+    assert "scored " not in captured.out
+
+
 def test_score_with_opencode_scorer_missing_cli_fails_cleanly(
     db_path: Path, capsys, monkeypatch
 ) -> None:
@@ -992,6 +1111,19 @@ def test_score_switches_to_fallback_and_keeps_it_for_the_rest_of_the_run(
     primary_calls = [model for _, model in calls if model == "opencode-go/deepseek-v4.1-flash#low"]
     assert len(primary_calls) == 1
     assert [model for _, model in calls].count(FALLBACK_MODEL) == 3
+
+
+def test_fallback_settings_size_their_timeout_from_the_fallback_variant() -> None:
+    import jobscout.cli as cli
+
+    settings = Settings.from_env(env={}, dotenv_path=None)
+    fallback = cli._fallback_settings(settings, FALLBACK_MODEL)
+    assert fallback.opencode_timeout_seconds is None
+    assert fallback.effective_opencode_timeout_seconds == 360.0
+
+    explicit = settings.with_overrides(opencode_timeout_seconds=42.0)
+    fallback = cli._fallback_settings(explicit, FALLBACK_MODEL)
+    assert fallback.effective_opencode_timeout_seconds == 42.0
 
 
 def test_fallback_skips_offers_already_scored_with_the_fallback_input(

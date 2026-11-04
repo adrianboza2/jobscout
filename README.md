@@ -454,7 +454,7 @@ subcomando) y `--version`.
 | `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enriquece ofertas de GetManfred desde el JSON-LD `JobPosting` reconocido de su página pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje; `[needs re-score]` marca los puntajes desactualizados. |
 | `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero; misma marca `[needs re-score]`. |
-| `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. `--all` omite, antes de `--limit`, las de título senior y las que esperan detalles; `--job-id` fuerza ambas. |
+| `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--scorer-model MODEL] [--effort EFFORT] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. `--all` omite, antes de `--limit`, las de título senior y las que esperan detalles; `--job-id` fuerza ambas. |
 | `dossier (--job-id ID… \| --apply) [--refresh] [--timeout S]` | Investiga la empresa de cada oferta con OpenCode y escribe un dossier Markdown por empresa en `data/dossiers/`. Nunca consulta ni cita LinkedIn. |
 | `runs [--limit N]` | Ejecuciones de búsqueda recientes y conteos almacenados. |
 | `dashboard [--output PATH] [--top N]` | Escribe un informe HTML local autocontenido (solo lectura, sin red). |
@@ -873,6 +873,13 @@ Reutiliza el mismo prompt endurecido que el puntuador HTTP, así que la oferta s
 trata como dato no confiable. Una salida incompleta queda como `parse_error` y
 **no se reintenta automáticamente**: jobscout nunca inventa un puntaje. Vuelve a
 ejecutar el puntuador para intentar de nuevo.
+
+`--scorer-model` y `--effort` fijan el modelo y el esfuerzo de una sola
+ejecución de `score`, útil para comparar dos configuraciones; `--effort ''` no
+envía variante. Ambos forman parte de la huella de entrada, así que cambiarlos
+re-puntúa las ofertas. Si no se define `JOBSCOUT_OPENCODE_TIMEOUT_SECONDS`, el
+timeout por oferta se deduce del esfuerzo: sin variante, `minimal` o `low`
+180 s; `medium` 240 s; `high` 360 s; `max` 600 s.
 
 ## Flujo de optimización de palabras clave
 

@@ -90,6 +90,15 @@ DEFAULT_OPENCODE_FALLBACK_MODEL: str | None = None
 # JOBSCOUT_OPENCODE_WORKDIR; a library caller can pass "" to inherit the cwd.
 DEFAULT_OPENCODE_WORKDIR: str | None = None
 DEFAULT_OPENCODE_TIMEOUT_SECONDS = 180.0
+# Per-offer timeout by reasoning effort when no explicit timeout is set. A
+# higher effort reasons longer per offer; 180 s was sized for ``low``.
+EFFORT_TIMEOUT_SECONDS = {
+    "minimal": 180.0,
+    "low": 180.0,
+    "medium": 240.0,
+    "high": 360.0,
+    "max": 600.0,
+}
 DEFAULT_OPENCODE_MAX_OUTPUT_BYTES = 1_048_576
 # Isolate the CLI from the user's plugins and project config by default. Plugins
 # are arbitrary code loaded from the local OpenCode config, so an isolated
@@ -371,7 +380,7 @@ def _env_int(env: dict[str, str], name: str, default: int) -> int:
         raise ConfigError(f"{PREFIX}{name} must be an integer, got {raw!r}") from exc
 
 
-def _env_float(env: dict[str, str], name: str, default: float) -> float:
+def _env_float(env: dict[str, str], name: str, default: float | None) -> float | None:
     raw = _raw(env, name)
     if raw is None:
         return default
@@ -506,7 +515,9 @@ class Settings:
     opencode_command: str = DEFAULT_OPENCODE_COMMAND
     opencode_model: str = DEFAULT_OPENCODE_MODEL
     opencode_variant: str | None = DEFAULT_OPENCODE_VARIANT
-    opencode_timeout_seconds: float = DEFAULT_OPENCODE_TIMEOUT_SECONDS
+    #: ``None`` derives the timeout from the effort (see
+    #: :attr:`effective_opencode_timeout_seconds`).
+    opencode_timeout_seconds: float | None = None
     opencode_workdir: str | None = DEFAULT_OPENCODE_WORKDIR
     opencode_max_output_bytes: int = DEFAULT_OPENCODE_MAX_OUTPUT_BYTES
     opencode_json_events: bool = True
@@ -593,7 +604,7 @@ class Settings:
             raise ConfigError("opencode_command must be a non-empty executable name or path")
         if not self.opencode_model or not self.opencode_model.strip():
             raise ConfigError("opencode_model must be a non-empty provider/model string")
-        if self.opencode_timeout_seconds <= 0:
+        if self.opencode_timeout_seconds is not None and self.opencode_timeout_seconds <= 0:
             raise ConfigError("opencode_timeout_seconds must be > 0")
         if self.opencode_max_output_bytes < 1:
             raise ConfigError("opencode_max_output_bytes must be >= 1")
@@ -633,6 +644,20 @@ class Settings:
     @property
     def llm_secrets(self) -> tuple[str, ...]:
         return tuple(secret for secret in (self.llm_api_key,) if secret)
+
+    @property
+    def effective_opencode_timeout_seconds(self) -> float:
+        """Per-offer timeout: the explicit value, else sized by the effort."""
+        if self.opencode_timeout_seconds is not None:
+            return self.opencode_timeout_seconds
+        effort = self.opencode_variant
+        if "#" in self.opencode_model:
+            # ``build_command`` leaves a model that already carries a variant
+            # untouched, so that suffix is the effort actually sent.
+            effort = self.opencode_model.split("#", 1)[1]
+        return EFFORT_TIMEOUT_SECONDS.get(
+            (effort or "").strip().lower(), DEFAULT_OPENCODE_TIMEOUT_SECONDS
+        )
 
     def with_overrides(self, **overrides: object) -> "Settings":
         """Return a copy with non-``None`` overrides applied."""
@@ -738,7 +763,7 @@ class Settings:
                 merged, "OPENCODE_VARIANT", DEFAULT_OPENCODE_VARIANT
             ),
             opencode_timeout_seconds=_env_float(
-                merged, "OPENCODE_TIMEOUT_SECONDS", DEFAULT_OPENCODE_TIMEOUT_SECONDS
+                merged, "OPENCODE_TIMEOUT_SECONDS", None
             ),
             opencode_workdir=_env_opt_str(
                 merged, "OPENCODE_WORKDIR", DEFAULT_OPENCODE_WORKDIR
