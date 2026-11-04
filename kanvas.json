@@ -211,12 +211,39 @@
     {
       "id": "BR-02",
       "title": "Puntuar con y sin dossier (copia de la base)",
-      "state": "proposed",
+      "state": "review",
       "group": "BR",
       "deps": ["BR-01"],
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "[Decisión del dueño] Puntuar las 16 ofertas 'apply' con y sin dossier sobre una copia de la base. El scorer leerá dossiers solo si el dueño juzga mejores esos scores (NEXT_STEPS.md:96-98).\nHecho: comparación escrita y decisión del dueño anotada."
+      "desc": "[Decisión del dueño] Puntuar las 16 ofertas 'apply' con y sin dossier sobre una copia de la base. El scorer leerá dossiers solo si el dueño juzga mejores esos scores (NEXT_STEPS.md:96-98).\nHecho: comparación escrita y decisión del dueño anotada.",
+      "notes": [
+        {
+          "at": "2026-11-03T12:00:15Z",
+          "by": "claude-code",
+          "text": "Plan: sin tocar el código del repo. Dos copias de la base en data/; un script de experimento fuera del repo añade el dossier de la empresa al prompt (como texto no fiable) solo en la copia 'con'. Puntúo las ofertas 'apply' activas en ambas copias con el mismo modelo y comparo score, veredicto y razones. Si el dueño prefiere los scores con dossier, el cambio real va en otra tarea."
+        },
+        {
+          "at": "2026-11-03T12:54:31Z",
+          "by": "claude-code",
+          "text": "Comparación hecha: con el dossier en el prompt, el scorer no puntúa mejor. Los cambios caben dentro de lo que varía el modelo por sí solo.\n- 35 ofertas 'apply', mismo modelo (deepseek-v4.1-flash), tres pasadas sobre copias de la base: sin dossier, con dossier y otra vez sin dossier (para medir el ruido).\n- Con dossier frente a sin dossier: el score cambia 7,1 puntos de media y la recomendación cambia en 8 de 35. Repetir la pasada sin dossier cambia el score 7,2 puntos y la recomendación en 11. El efecto no se distingue del azar; con dossier la media baja 2,5 puntos (61,5 → 58,9).\n- Las razones no citan nada del dossier (0 de 35): el modelo sigue juzgando por los requisitos de la oferta frente al perfil.\n- Peor en un punto: con dossier, el tipo de empleador sale mal en algún caso (Hitachi Energy y Changan Europe pasan de \"internacional\" a \"consultora_grande\").\n- Detalle por oferta, ordenado por diferencia: reports/br02-dossier-comparison.md\nRecomendación: el scorer no lee dossiers. Siguen siendo útiles para ti y para los borradores (BR-03)."
+        },
+        {
+          "at": "2026-11-03T12:54:32Z",
+          "by": "claude-code",
+          "text": "Question: ¿Dejamos el scorer sin dossier (recomendado: el efecto no se distingue del ruido) o quieres meterlo igualmente?"
+        },
+        {
+          "at": "2026-11-03T14:17:16Z",
+          "by": "claude-code",
+          "text": "Decisión del dueño (2026-11-03): aplazada. El scorer sigue sin dossiers; no se toca el código."
+        },
+        {
+          "at": "2026-11-03T14:17:17Z",
+          "by": "claude-code",
+          "text": "Comparación hecha y decisión anotada: aplazas la decisión, así que el scorer sigue sin dossiers y el código del repo no ha cambiado.\n- Resultado: el dossier mueve el score lo mismo que repetir la pasada sin él (7,1 frente a 7,2 puntos de media). Ninguna razón cita datos del dossier, y en 2 casos el tipo de empleador sale peor.\n- Para revisar: reports/br02-dossier-comparison.md (oferta por oferta, con las razones de las dos pasadas).\n- Si un día lo retomas: las copias y los scripts del experimento están en data/br02/ (unos 285 MB; se pueden borrar sin problema)."
+        }
+      ]
     },
     {
       "id": "AJ-01",
@@ -420,11 +447,23 @@
     {
       "id": "WF-02",
       "title": "Marcar 'necesita re-score' en list y dashboard",
-      "state": "proposed",
+      "state": "review",
       "group": "WF",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "La selección ya detecta el fingerprint de entrada; falta marcar en `list` y en el dashboard las ofertas con score desactualizado, en vez de esperar a un `--rescore` manual (NEXT_STEPS.md:645-650).\nHecho: marca visible + tests + README ES/EN."
+      "desc": "La selección ya detecta el fingerprint de entrada; falta marcar en `list` y en el dashboard las ofertas con score desactualizado, en vez de esperar a un `--rescore` manual (NEXT_STEPS.md:645-650).\nHecho: marca visible + tests + README ES/EN.",
+      "notes": [
+        {
+          "at": "2026-11-03T12:18:17Z",
+          "by": "agent",
+          "text": "Rama wf-02 (worktree ../jobscout-wf-02), sin commit. stale_job_ids() en scoring/__init__.py reutiliza effective_fingerprint con el mismo criterio que jobs_needing_evaluation: una oferta puntuada está desactualizada si ninguna evaluación ok de su scorer lleva la huella actual. list/rank: [needs re-score] y needs_rescore en --json (null sin perfil). Dashboard: puntaje atenuado + 'Re-score pendiente'. 9 tests nuevos, README ES/EN. Suite 1254 passed. Copia de la base: 175 de 922 puntuadas marcadas."
+        },
+        {
+          "at": "2026-11-03T12:25:39Z",
+          "by": "claude-code",
+          "text": "Dueño (2026-11-03): la marca [needs re-score] también se queda en rank. Revisión: en una copia de la base real, las 175 ofertas marcadas coinciden exactamente con las que re-puntuaría score --all (12 esperan la descripción). Merge a master después de que termine BR-02."
+        }
+      ]
     },
     {
       "id": "WF-03",
