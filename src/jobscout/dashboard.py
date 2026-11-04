@@ -302,41 +302,6 @@ def _salary_est(row: sqlite3.Row) -> list[Any] | None:
     ]
 
 
-def _dimensions(value: Any) -> list[dict[str, Any]]:
-    """Parse ``dimensions_json`` without inventing a score for a broken entry.
-
-    ``DimensionScore.from_dict`` defaults a missing score to ``0.0``, which would
-    turn malformed stored data into a fake dimension. Here every element that is
-    not a usable dict is dropped, so absent evidence stays absent.
-    """
-    loaded = _loads(value, [])
-    if not isinstance(loaded, list):
-        return []
-    dimensions: list[dict[str, Any]] = []
-    for item in loaded:
-        if not isinstance(item, dict):
-            continue
-        name = item.get("name")
-        if not isinstance(name, str) or not name.strip():
-            continue
-        score = item.get("score")
-        if isinstance(score, bool) or not isinstance(score, (int, float)):
-            continue
-        weight = item.get("weight")
-        if isinstance(weight, bool) or not isinstance(weight, (int, float)):
-            weight = 1.0
-        dimensions.append(
-            {
-                "name": name.strip(),
-                "score": float(score),
-                "weight": float(weight),
-                "rationale": str(item.get("rationale") or ""),
-                "evidence": _string_list(item.get("evidence")),
-            }
-        )
-    return dimensions
-
-
 def _age_days_exact(value: str | None, *, now: datetime) -> float | None:
     """Unrounded age in days, for threshold comparisons that must stay exact."""
     parsed = parse_datetime(value)
@@ -392,7 +357,6 @@ def _fetch_active_jobs(
                e.overall_score AS score,
                e.recommendation AS recommendation,
                e.confidence AS confidence,
-               e.dimensions_json AS dimensions_json,
                e.strengths_json AS strengths_json,
                e.gaps_json AS gaps_json,
                e.blockers_json AS blockers_json,
@@ -1043,7 +1007,6 @@ def build_payload(
                 "model": str(row["model"]) if row["model"] else "",
                 "evaluated_at": row["evaluated_at"],
                 "rationale": _collapse_whitespace(row["rationale"]),
-                "dimensions": _dimensions(row["dimensions_json"]),
                 "strengths": _string_list(row["strengths_json"]),
                 "gaps": _string_list(row["gaps_json"]),
                 "blockers": _string_list(row["blockers_json"]),
@@ -1518,22 +1481,10 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 .row[open] .chev { transform:rotate(90deg); }
 .row[open] > summary { background:var(--sheet); }
 .body { background:var(--sheet); padding:var(--sp-4) var(--sp-8) var(--sp-24) var(--sp-90);
-  display:grid; grid-template-columns:1.1fr 1fr; gap:var(--sp-36); }
-.body.nodims { grid-template-columns:1fr; }
+  display:grid; grid-template-columns:1fr; gap:var(--sp-36); }
 .body h3 { font-family:var(--mono); font-size:var(--fs-11); font-weight:600; line-height:1;
   text-transform:uppercase; letter-spacing:.08em; color:var(--ink-3); margin:var(--sp-18) 0 var(--sp-10); }
 .why { font-family:var(--serif); font-size:var(--fs-16); line-height:1.55; margin:0; max-width:62ch; }
-.nodims-note { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); margin-top:var(--sp-8); }
-.dims { display:grid; gap:var(--sp-12); }
-.dim { display:grid; grid-template-columns:110px 1fr 34px; gap:var(--sp-10); align-items:start; }
-.dim .k { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-2); }
-.dim .k em { display:block; font-style:normal; color:var(--ink-3); font-size:var(--fs-11); }
-.bar { height:6px; background:var(--rule-2); margin-top:var(--sp-5); }
-.bar i { display:block; height:100%; background:var(--ink); }
-.dim .v { font-family:var(--mono); font-size:var(--fs-12); text-align:right; font-variant-numeric:tabular-nums; }
-.dim p { grid-column:2/4; margin:var(--sp-2) 0 0; font-size:var(--fs-13); color:var(--ink-2); }
-.dim q { display:block; font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); quotes:none;
-  border-left:2px solid var(--rule); padding-left:var(--sp-8); margin-top:var(--sp-4); }
 .lists { grid-column:1/-1; display:grid; grid-template-columns:repeat(4,1fr); gap:var(--sp-24);
   border-top:1px solid var(--rule); padding-top:var(--sp-4); }
 .lists ul { margin:0; padding-left:var(--sp-16); font-size:var(--fs-13); color:var(--ink-2); }
@@ -2174,8 +2125,7 @@ _SCRIPT = r"""
   }
 
   function renderBody(offer) {
-    var dims = Array.isArray(offer.dimensions) ? offer.dimensions : [];
-    var body = el("div", dims.length ? "body" : "body nodims");
+    var body = el("div", "body");
 
     var left = el("div");
     left.appendChild(el("h3", null, "Justificación del modelo"));
@@ -2207,40 +2157,7 @@ _SCRIPT = r"""
       }
       left.appendChild(salaryBox);
     }
-    if (!dims.length) {
-      left.appendChild(el("p", "nodims-note", "sin desglose en esta evaluación"));
-    }
     body.appendChild(left);
-
-    if (dims.length) {
-      var right = el("div");
-      right.appendChild(el("h3", null, "Desglose por dimensiones"));
-      var dimsBox = el("div", "dims");
-      var weightSum = 0;
-      dims.forEach(function (dim) { weightSum += Number(dim.weight) || 0; });
-      dims.forEach(function (dim) {
-        var row = el("div", "dim");
-        var key = el("div", "k", dim.name);
-        if (weightSum !== 0) {
-          key.appendChild(el("em", null,
-            "peso " + Math.round(dim.weight / weightSum * 100) + "%"));
-        }
-        row.appendChild(key);
-        var bar = el("div", "bar");
-        var fill = el("i");
-        fill.style.width = String(dim.score) + "%";
-        bar.appendChild(fill);
-        row.appendChild(bar);
-        row.appendChild(el("div", "v", Math.round(dim.score)));
-        if (dim.rationale) { row.appendChild(el("p", null, dim.rationale)); }
-        (dim.evidence || []).forEach(function (evidence) {
-          row.appendChild(el("q", null, evidence));
-        });
-        dimsBox.appendChild(row);
-      });
-      right.appendChild(dimsBox);
-      body.appendChild(right);
-    }
 
     var hasLists = ["strengths", "gaps", "blockers", "unknowns"].some(function (key) {
       return Array.isArray(offer[key]) && offer[key].length > 0;

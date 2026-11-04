@@ -1235,81 +1235,16 @@ def test_unparseable_first_seen_is_not_new_and_does_not_raise(dr1_db: Path) -> N
     assert offers[jobs["a"]]["is_new"] is False
 
 
-def test_dimensions_are_parsed_from_the_successful_evaluation(dr1_db: Path) -> None:
-    """Behaviour 8: dimensions carry all five fields with numeric values."""
+def test_stored_dimensions_are_not_embedded_in_the_payload(dr1_db: Path) -> None:
+    """Old evaluations keep ``dimensions_json``; the dashboard no longer shows it."""
     jobs = _seed_dr1_db_ids(dr1_db)
     offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
 
-    assert offers[jobs["a"]]["dimensions"] == [
-        {
-            "name": "role_fit",
-            "score": 90.0,
-            "weight": 0.3,
-            "rationale": "r",
-            "evidence": ["q1"],
-        }
-    ]
+    assert all("dimensions" not in offer for offer in offers.values())
+    assert offers[jobs["a"]]["rationale"] == "r"
 
 
-def test_broken_empty_and_missing_dimensions_are_empty_lists(dr1_db: Path) -> None:
-    """Behaviour 9: ``[]``, broken JSON and no evaluation all yield ``[]``."""
-    jobs = _seed_dr1_db_ids(dr1_db)
-    conn = connect(dr1_db)
-    try:
-        conn.execute(
-            "UPDATE evaluations SET dimensions_json = '[]' WHERE job_id = ?", (jobs["a"],)
-        )
-        conn.execute(
-            "UPDATE evaluations SET dimensions_json = '{' WHERE job_id = ?", (jobs["d"],)
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
-    assert offers[jobs["a"]]["dimensions"] == []
-    assert offers[jobs["d"]]["dimensions"] == []
-    assert offers[jobs["b"]]["dimensions"] == []
-
-
-def test_malformed_dimension_entries_are_dropped_without_inventing_scores(
-    dr1_db: Path,
-) -> None:
-    """Behaviour 10: no name or no numeric score means the entry is dropped."""
-    jobs = _seed_dr1_db_ids(dr1_db)
-    conn = connect(dr1_db)
-    try:
-        conn.execute(
-            "UPDATE evaluations SET dimensions_json = ? WHERE job_id = ?",
-            (
-                json.dumps(
-                    [
-                        {"score": 80},
-                        {"name": "x", "score": "alto"},
-                        "texto",
-                        {"name": "ok", "score": 70},
-                    ]
-                ),
-                jobs["a"],
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
-    assert offers[jobs["a"]]["dimensions"] == [
-        {
-            "name": "ok",
-            "score": 70.0,
-            "weight": 1.0,
-            "rationale": "",
-            "evidence": [],
-        }
-    ]
-
-
-def test_dimensions_come_from_the_latest_successful_evaluation(dr1_db: Path) -> None:
+def test_body_comes_from_the_latest_successful_evaluation(dr1_db: Path) -> None:
     """Behaviour 11: a newer failed evaluation never hides the successful one."""
     jobs = _seed_dr1_db_ids(dr1_db)
     conn = connect(dr1_db)
@@ -1331,7 +1266,7 @@ def test_dimensions_come_from_the_latest_successful_evaluation(dr1_db: Path) -> 
         conn.close()
 
     offers = {offer["id"]: offer for offer in _dr1_payload(dr1_db)["offers"]}
-    assert offers[jobs["a"]]["dimensions"][0]["name"] == "role_fit"
+    assert offers[jobs["a"]]["rationale"] == "r"
 
 
 def test_salary_is_collapsed_or_none(dr1_db: Path) -> None:
@@ -1496,7 +1431,6 @@ def test_visible_ui_text_is_neutral_spanish(db_file: Path) -> None:
         "Salario · bruto anual",
         "Ver la oferta",
         "sin evaluar",
-        "sin desglose en esta evaluación",
         "indicado",
         "sin dato",
         "Último barrido",
@@ -1993,15 +1927,6 @@ def test_offer_body_is_built_lazily_on_toggle(db_file: Path) -> None:
     assert html_text.count("renderBody(offer)") == 2
 
 
-def test_dimension_weight_is_rendered_as_a_share_of_the_weight_sum(db_file: Path) -> None:
-    html_text = generate_and_read(db_file)
-
-    assert "var weightSum = 0;" in html_text
-    assert "weightSum += Number(dim.weight) || 0;" in html_text
-    assert '"peso " + Math.round(dim.weight / weightSum * 100) + "%"' in html_text
-    assert "if (weightSum !== 0)" in html_text
-
-
 def test_salary_provenance_is_labelled_indicado_or_sin_dato(db_file: Path) -> None:
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
@@ -2023,13 +1948,18 @@ def test_salary_provenance_is_labelled_indicado_or_sin_dato(db_file: Path) -> No
     assert ".salbox dd.sal-stated { color:var(--money); font-weight:600; }" in css
 
 
-def test_missing_dimensions_state_that_no_breakdown_exists(db_file: Path) -> None:
+def test_dimension_breakdown_is_not_rendered(db_file: Path) -> None:
+    """The scorer no longer returns dimensions, so the body has no breakdown."""
     html_text = generate_and_read(db_file)
     css = _embedded_style(html_text)
 
-    assert '"sin desglose en esta evaluación"' in html_text
-    assert 'dims.length ? "body" : "body nodims"' in html_text
-    assert ".body.nodims { grid-template-columns:1fr; }" in css
+    assert "Desglose por dimensiones" not in html_text
+    assert "sin desglose" not in html_text
+    assert "offer.dimensions" not in html_text
+    assert 'var body = el("div", "body");' in html_text
+    assert "grid-template-columns:1fr; gap:var(--sp-36); }" in css
+    for selector in (".nodims", ".dims", ".dim ", ".bar "):
+        assert selector not in css
 
 
 def test_status_line_sits_at_the_right_of_the_masthead(db_file: Path) -> None:

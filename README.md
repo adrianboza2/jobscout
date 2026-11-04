@@ -222,8 +222,7 @@ Cada oferta es **una fila de una línea**: puntaje con barra coloreada por banda
 `sin dato`; nunca se inventa una cifra) y antigüedad. Una evaluación fallida se
 muestra como `sin evaluar (error)`, nunca como 0. Las filas se pintan de 50 en 50
 (**Mostrar 50 más**) y el detalle se construye solo al abrir la fila:
-justificación completa del modelo (ya no se recorta), salario indicado, desglose
-por dimensiones (o `sin desglose en esta evaluación`), Puntos fuertes / Carencias
+justificación completa del modelo (ya no se recorta), salario indicado, Puntos fuertes / Carencias
 / Bloqueos / Incógnitas cuando la evaluación las trae, y un pie con modelo,
 confianza, fecha, la decisión importada, los botones **✓ aplicar** / **✕
 descartar** (el motivo, de hasta 500 caracteres, se abre al elegir) y **Ver la

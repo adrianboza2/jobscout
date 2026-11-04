@@ -220,8 +220,7 @@ title, company and location, chips (recommendation, `nueva`, the preference's
 number is never invented) and age. A failed evaluation shows as `sin evaluar
 (error)`, never as 0. Rows are painted 50 at a time (**Mostrar 50 más**) and the
 detail is built only when a row is opened: the model's full rationale (no longer
-truncated), the stated salary, the per-dimension breakdown (or `sin desglose en
-esta evaluación`), Puntos fuertes / Carencias / Bloqueos / Incógnitas when the
+truncated), the stated salary, Puntos fuertes / Carencias / Bloqueos / Incógnitas when the
 evaluation has them, and a footer with model, confidence, date, the imported
 decision, the **✓ aplicar** / **✕ descartar** buttons (the reason field, up to 500
 characters, opens after choosing) and **Ver la oferta ↗**. Report warnings are quiet lines at the end, next
