@@ -16,14 +16,17 @@ from conftest import FakeHttpClient, FIXTURES, fixture_text, no_network, respons
 
 from jobscout.cli import EXIT_ERROR, EXIT_FAIL_CLOSED, EXIT_OK, main
 from jobscout.collectors.base import CollectorDisabledError, TRUNCATION_HEADER
+from jobscout.collectors.linkedin_details import parse_description_salary
 from jobscout.collectors.tecnoempleo import TecnoempleoSearchConfig, search_tecnoempleo
 from jobscout.collectors.tecnoempleo_details import (
+    choose_salary,
     fetch_tecnoempleo_details,
     parse_detail_company,
     parse_detail_description,
     parse_detail_fields,
     parse_detail_location,
     parse_detail_posted_at,
+    parse_detail_salary,
     parse_detail_technologies,
     plan_detail_targets,
     resolve_detail_url,
@@ -35,6 +38,7 @@ from jobscout.pipeline import ingest_collector_result, ingest_detail_results
 PAGE_FIXTURE = FIXTURES / "tecnoempleo_search_page.html"
 DETAIL_FIXTURE = FIXTURES / "tecnoempleo_detail_page.html"
 REAL_DETAIL_FIXTURE = FIXTURES / "tecnoempleo_detail_page_real.html"
+SALARY_DETAIL_FIXTURE = FIXTURES / "tecnoempleo_detail_page_salary_real.html"
 DRIFT_FIXTURE = FIXTURES / "tecnoempleo_detail_page_drift.html"
 ROBOTS_ALLOW = "User-agent: *\nDisallow: /alertas-empleo-rss.php\nDisallow: /profesionales/\n"
 # Denies the offer detail path itself (not only the search path), so the detail
@@ -43,6 +47,17 @@ ROBOTS_DENY = "User-agent: *\nDisallow: /backend-python-engineer/\n"
 BACKEND_URL = (
     "https://www.tecnoempleo.com/desarrollador-backend-python/"
     "grupo-digital/rf-7a491a37220693ec4248"
+)
+SALARY_ITEM = (
+    "<li class='list-item clearfix border-bottom py-2'>"
+    "<span class='float-end'>39.000 &euro;&nbsp;-&nbsp;45.000 &euro; Bruto/a&ntilde;o</span>"
+    "<div class='badge'><i class='fi fi-plus'></i></div>"
+    "<span class='d-inline-block px-2'>Salario</span>"
+    "</li>"
+)
+DESCRIPTION_WITH_SALARY = (
+    "<div class='descripcion'><p>Buscamos una persona con Python y SQL.</p>"
+    "<p>Salario: 40.000 - 50.000 € brutos anuales</p></div>"
 )
 
 
@@ -98,6 +113,62 @@ def test_parse_detail_real_markup_extracts_company_location_and_date() -> None:
     assert fields.location == "Madrid"
     # ...and the date from the strict dd/mm/yyyy in og:description.
     assert fields.posted_at == "2026-07-03T00:00:00Z"
+
+
+def test_parse_detail_salary_reads_the_salario_item() -> None:
+    html = SALARY_DETAIL_FIXTURE.read_text(encoding="utf-8")
+    assert parse_detail_salary(html) == "39.000 € - 45.000 € Bruto/año"
+    # This real page states its own figures in the description, which win.
+    assert parse_detail_fields(html).salary == "€40,000 and €43,000"
+
+
+def test_parse_detail_salary_is_absent_without_the_item() -> None:
+    assert parse_detail_salary(fixture_text("tecnoempleo_detail_page.html")) is None
+    assert parse_detail_salary(fixture_text("tecnoempleo_detail_page_real.html")) is None
+
+
+def test_parse_detail_salary_falls_back_to_the_description() -> None:
+    fields = parse_detail_fields(DESCRIPTION_WITH_SALARY)
+    assert fields.salary is not None
+    assert fields.salary == parse_description_salary(fields.description)
+
+
+def test_parse_detail_salary_description_wins_over_the_page_field() -> None:
+    fields = parse_detail_fields(SALARY_ITEM + DESCRIPTION_WITH_SALARY)
+    assert fields.salary is not None
+    assert fields.salary == parse_description_salary(fields.description)
+    assert fields.salary != "39.000 € - 45.000 € Bruto/año"
+
+
+# Description lines of two stored Tecnoempleo offers (copied verbatim).
+REAL_SINGLE_FIGURE_LINE = "+ Rango salarial máximo valorado de 45.000€ B/A"
+REAL_GLUED_RANGE_LINE = "Banda Salarial de 39.000 €BA a 42.000 €BA"
+PAGE_BAND = "33.000 € - 45.000 € Bruto/año"
+
+
+def test_choose_salary_prefers_the_page_band_over_a_single_figure() -> None:
+    single = parse_description_salary(REAL_SINGLE_FIGURE_LINE)
+    assert single == "45.000€"
+    assert choose_salary(single, PAGE_BAND) == PAGE_BAND
+
+
+def test_choose_salary_prefers_a_description_range_over_the_page_band() -> None:
+    glued = parse_description_salary(REAL_GLUED_RANGE_LINE)
+    assert glued == "39.000 €BA a 42.000 €"
+    assert choose_salary(glued, "39.000 € - 42.000 € Bruto/año") == glued
+
+
+def test_choose_salary_keeps_a_single_figure_without_a_page_band() -> None:
+    assert choose_salary("45.000€", None) == "45.000€"
+    assert choose_salary(None, PAGE_BAND) == PAGE_BAND
+    assert choose_salary(None, None) is None
+
+
+def test_parse_detail_fields_page_band_wins_over_a_single_description_figure() -> None:
+    html = SALARY_ITEM + (
+        f"<div class='descripcion'><p>Buscamos DevOps.</p><p>{REAL_SINGLE_FIGURE_LINE}</p></div>"
+    )
+    assert parse_detail_fields(html).salary == "39.000 € - 45.000 € Bruto/año"
 
 
 def test_parse_detail_company_prefers_real_anchor_over_breadcrumb() -> None:
@@ -289,6 +360,30 @@ def test_detail_real_page_is_ok_and_populates_fields(conn, settings) -> None:
     assert item.location == "Madrid"
     assert item.posted_at == "2026-07-03T00:00:00Z"
     assert item.company != "Backend Engineer"
+
+
+def test_detail_salary_page_populates_item_and_job(conn, settings) -> None:
+    from jobscout.models import DetailFetchStatus
+
+    jobs = _store_search_offers(conn, settings)
+    backend = next(job for job in jobs if job.source_job_id == "rf-7a491a37220693ec4248")
+    client = FakeHttpClient(
+        [response(200, fixture_text("tecnoempleo_detail_page_salary_real.html"), headers={"content-type": "text/html"})]
+    )
+    result = fetch_tecnoempleo_details(
+        [backend],
+        settings=settings,
+        network_enabled=True,
+        client=client,
+        sleep=lambda _: None,
+        robots_text=ROBOTS_ALLOW,
+    )
+    item = result.items[0]
+    assert item.status is DetailFetchStatus.OK
+    assert item.salary == "€40,000 and €43,000"
+
+    ingest_detail_results(conn, result, settings=settings, provider="tecnoempleo")
+    assert get_job(conn, backend.id).salary == "€40,000 and €43,000"
 
 
 def test_detail_cloudflare_beacon_page_body_is_archived(conn, settings) -> None:

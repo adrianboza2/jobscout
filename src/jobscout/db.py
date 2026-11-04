@@ -1868,6 +1868,18 @@ def update_job_content(
         )
 
 
+def latest_detail_body(
+    conn: sqlite3.Connection, source: str, url: str
+) -> str | None:
+    """Newest stored detail body for ``url``, or ``None`` when none was kept."""
+    row = conn.execute(
+        "SELECT body FROM raw_documents WHERE source = ? AND kind = 'job_detail'"
+        " AND url = ? AND body IS NOT NULL AND body != '' ORDER BY id DESC LIMIT 1",
+        (str(source), str(url)),
+    ).fetchone()
+    return row["body"] if row else None
+
+
 def jobs_needing_salary_backfill(
     conn: sqlite3.Connection, *, source: str = "linkedin"
 ) -> list[Job]:

@@ -397,6 +397,10 @@ _AMOUNT = (
     rf"(?:€\s?(?:{_NUM})\s?[kK]?(?:\s?EUR\b)?"
     rf"|(?:{_NUM})\s?[kK]?\s?(?:€|EUR\b|euros?\b))"
 )
+#: A gross marker glued to an amount ("39.000 €BA a 42.000 €BA", "€B/A",
+#: "€ brutos"); without it the separator after the left amount is never reached.
+#: Only the left side takes it, so ranges that already matched keep their text.
+_GROSS = r"(?:\s?(?:B\.?/A\.?|B\.?A\.?|brutos?)(?!\w))?"
 #: A bare number, only usable as the right side of a range.
 _BARE = rf"(?:{_NUM})\s?[kK]?"
 #: Range separators in the languages the stored postings use.
@@ -404,7 +408,8 @@ _SEP = r"\s*(?:-|–|—|to|a|y|and|hasta)\s*"
 #: Two amounts (or one amount plus a bare number); the trailing lookahead stops
 #: a bare right side from matching the first digits of a longer number.
 _RANGE_RE = re.compile(
-    rf"(?:{_AMOUNT}|{_BARE}){_SEP}{_AMOUNT}|{_AMOUNT}{_SEP}(?:{_BARE})(?![\d.,])",
+    rf"(?:{_AMOUNT}{_GROSS}|{_BARE}){_SEP}{_AMOUNT}"
+    rf"|{_AMOUNT}{_GROSS}{_SEP}(?:{_BARE})(?![\d.,])",
     re.I,
 )
 _SINGLE_RE = re.compile(rf"(?:(?:up to|to|hasta|máximo|max\.?)\s+)?{_AMOUNT}", re.I)

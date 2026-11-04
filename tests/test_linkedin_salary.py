@@ -18,12 +18,14 @@ from jobscout.collectors.linkedin_details import (
     parse_description_salary,
     parse_detail_description,
 )
-from jobscout.db import connect, get_job, init_db, store_posting
+from jobscout.db import connect, get_job, init_db, insert_raw_document, store_posting
+from jobscout.models import RawDocument, RawDocumentKind
 from jobscout.normalize import normalize_job_posting
 from jobscout.pipeline import ingest_detail_results
 
 REAL_SALARY_PAGE = FIXTURES / "linkedin_detail_page_real_salary.html"
 PLAIN_PAGE = FIXTURES / "linkedin_detail_page.html"
+TECNOEMPLEO_SALARY_PAGE = FIXTURES / "tecnoempleo_detail_page_salary_real.html"
 
 
 def _store_job(conn, source_job_id: str, **overrides):
@@ -107,6 +109,19 @@ def test_non_salary_lines_are_ignored(description) -> None:
     assert parse_description_salary(description) is None
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Verbatim from a stored Tecnoempleo description.
+        ("Banda Salarial de 39.000 €BA a 42.000 €BA", "39.000 €BA a 42.000 €"),
+        ("Salario 40.000€B/A - 50.000€B/A", "40.000€B/A - 50.000€"),
+        ("Salario: 40.000 € brutos a 50.000 € brutos anuales", "40.000 € brutos a 50.000 €"),
+    ],
+)
+def test_gross_marker_glued_to_the_left_amount_keeps_the_range(text, expected) -> None:
+    assert parse_description_salary(text) == expected
+
+
 def test_first_qualifying_line_wins() -> None:
     description = "Junior: €28,000 – €41,000\nSenior: €42,000 – €52,000"
 
@@ -166,9 +181,7 @@ def test_fetch_without_a_pay_range_leaves_salary_empty(conn, settings) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_backfill_salary_fills_only_missing_linkedin_salaries(
-    settings, capsys
-) -> None:
+def test_backfill_salary_fills_only_missing_salaries(settings, capsys) -> None:
     conn = connect(settings.db_path)
     init_db(conn)
     to_fill = _store_job(
@@ -196,18 +209,90 @@ def test_backfill_salary_fills_only_missing_linkedin_salaries(
         == EXIT_OK
     )
     output = capsys.readouterr().out
-    assert "examined 1 LinkedIn offer(s), 1 would get a salary" in output
+    assert (
+        "examined 2 offer(s) (LinkedIn 1, Tecnoempleo 1), 2 would get a salary"
+        in output
+    )
     assert f"#{to_fill.id} 36 000€ - 42 000€" in output
+    assert f"#{foreign.id} 42.000€" in output
     conn = connect(settings.db_path)
     assert get_job(conn, to_fill.id).salary is None
     conn.close()
 
     assert main(["--db", str(settings.db_path), "backfill-salary"]) == EXIT_OK
     output = capsys.readouterr().out
-    assert "examined 1 LinkedIn offer(s), 1 got a salary" in output
+    assert (
+        "examined 2 offer(s) (LinkedIn 1, Tecnoempleo 1), 2 got a salary" in output
+    )
 
     conn = connect(settings.db_path)
     assert get_job(conn, to_fill.id).salary == "36 000€ - 42 000€"
     assert get_job(conn, kept.id).salary == "existing value"
-    assert get_job(conn, foreign.id).salary is None
+    assert get_job(conn, foreign.id).salary == "42.000€"
+    conn.close()
+
+
+def test_backfill_tecnoempleo_falls_back_to_the_stored_detail_page(settings, capsys) -> None:
+    conn = connect(settings.db_path)
+    init_db(conn)
+    from_page_url = "https://www.tecnoempleo.com/backend-python/rf-aaaaaaaaaaaaaaaaaaaa"
+    from_page = _store_job(
+        conn,
+        "rf-aaaaaaaaaaaaaaaaaaaa",
+        source="tecnoempleo",
+        jobUrl=from_page_url,
+        description="Backend Python en Madrid, equipo pequeño y producto propio.",
+    )
+    insert_raw_document(
+        conn,
+        RawDocument(
+            kind=RawDocumentKind.JOB_DETAIL,
+            source="tecnoempleo",
+            url=from_page_url,
+            sha256="tecnoempleo-detail-body",
+            byte_size=1,
+            stored_at="2026-09-15T10:00:00Z",
+            body=TECNOEMPLEO_SALARY_PAGE.read_text(encoding="utf-8"),
+        ),
+    )
+    from_description = _store_job(
+        conn,
+        "rf-bbbbbbbbbbbbbbbbbbbb",
+        source="tecnoempleo",
+        jobUrl="https://www.tecnoempleo.com/backend-python/rf-bbbbbbbbbbbbbbbbbbbb",
+        description="Sueldo bruto / año 42.000€ en 12 pagas",
+    )
+    kept = _store_job(
+        conn,
+        "rf-cccccccccccccccccccc",
+        source="tecnoempleo",
+        jobUrl="https://www.tecnoempleo.com/backend-python/rf-cccccccccccccccccccc",
+        description="Salario: Hasta 50.000 € brutos anuales",
+        salary="existing value",
+    )
+    conn.close()
+
+    assert (
+        main(["--db", str(settings.db_path), "backfill-salary", "--dry-run"])
+        == EXIT_OK
+    )
+    output = capsys.readouterr().out
+    assert (
+        "examined 2 offer(s) (LinkedIn 0, Tecnoempleo 2), 2 would get a salary"
+        in output
+    )
+    assert f"#{from_page.id} 39.000 € - 45.000 € Bruto/año" in output
+    assert f"#{from_description.id} 42.000€" in output
+    conn = connect(settings.db_path)
+    assert get_job(conn, from_page.id).salary is None
+    conn.close()
+
+    assert main(["--db", str(settings.db_path), "backfill-salary"]) == EXIT_OK
+    output = capsys.readouterr().out
+    assert "examined 2 offer(s) (LinkedIn 0, Tecnoempleo 2), 2 got a salary" in output
+
+    conn = connect(settings.db_path)
+    assert get_job(conn, from_page.id).salary == "39.000 € - 45.000 € Bruto/año"
+    assert get_job(conn, from_description.id).salary == "42.000€"
+    assert get_job(conn, kept.id).salary == "existing value"
     conn.close()

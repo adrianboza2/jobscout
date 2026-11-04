@@ -450,8 +450,8 @@ subcomando) y `--version`.
 | `search-tecnoempleo (--keywords K [--location L] \| --browse) [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Búsqueda pública server-rendered de Tecnoempleo. `--browse` recorre las ofertas de Madrid por función profesional; es mutuamente excluyente con `--keywords` y `--location`. Respeta `robots.txt` en tiempo de ejecución. Deshabilitada sin `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | Lista las familias de palabras clave y el comando exacto por consulta (sin red, sin base de datos). |
 | `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas de LinkedIn con la descripción completa. Por defecto, las que aún no están enriquecidas; `--refresh` vuelve sobre las ya consultadas con evidencia obsoleta o reintentable. |
-| `backfill-salary [--dry-run]` | Rellena el salario de ofertas LinkedIn ya enriquecidas a partir de su descripción (una vez, sin red). |
-| `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enriquece ofertas de Tecnoempleo desde su página de detalle pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
+| `backfill-salary [--dry-run]` | Rellena el salario de ofertas LinkedIn y Tecnoempleo ya enriquecidas a partir de su descripción o de la página de detalle guardada (una vez, sin red). |
+| `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enriquece ofertas de Tecnoempleo desde su página de detalle pública, incluido el salario cuando la página lo publica. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
 | `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enriquece ofertas de GetManfred desde el JSON-LD `JobPosting` reconocido de su página pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje; `[needs re-score]` marca los puntajes desactualizados. |
 | `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero; misma marca `[needs re-score]`. |
@@ -572,10 +572,15 @@ python -m jobscout fetch-details --refresh --stale-days 14 --dry-run            
 python -m jobscout backfill-salary --dry-run                                          # salarios ya enriquecidos, sin red
 ```
 
-Cuando la descripción de un detalle de LinkedIn indica un rango salarial en euros,
-`fetch-details` rellena `salary` con ese texto; `backfill-salary [--dry-run]` hace
-lo mismo una sola vez, sin red, sobre las ofertas ya enriquecidas que aún no
-tienen salario y nunca sobrescribe uno existente.
+Cuando la descripción de un detalle de LinkedIn indica un salario en euros,
+`fetch-details` rellena `salary` con ese texto. En Tecnoempleo,
+`fetch-tecnoempleo-details` elige por este orden: el rango (dos cifras) que da la
+descripción; si no, el campo «Salario» de la página, una banda redondeada que
+elige la empresa; y si tampoco hay campo, la cifra suelta de la descripción
+(«hasta 45.000 €»). `backfill-salary [--dry-run]` hace lo mismo una sola vez, sin
+red, sobre las ofertas ya enriquecidas que aún no tienen salario —en Tecnoempleo
+lee el campo de la página de detalle guardada— y nunca sobrescribe uno
+existente.
 
 Toda selección de `fetch-details` — la ruta por defecto, `--all`, `--refresh` y un
 `--job-id` explícito — se restringe a ofertas de LinkedIn (`source = linkedin`).
@@ -619,8 +624,10 @@ sin cookies, sin RSS privado ni API; vuelve a leer `robots.txt` y falla cerrado 
 la ruta de detalle está deshabilitada; límites, pacing y techo de descarga
 conservadores.
 
-Extrae descripción, empresa, ubicación, fecha y tecnologías **solo de markup
-reconocido** (`itemprop`/clases estables; la fecha prefiere `<time datetime>`).
+Extrae descripción, empresa, ubicación, fecha, tecnologías y salario **solo de
+markup reconocido** (`itemprop`/clases estables; la fecha prefiere
+`<time datetime>`, y el salario sigue el orden descrito arriba: rango de la
+descripción, campo «Salario» de la página, cifra suelta de la descripción).
 Un detalle reconocido deja la oferta en `content_status = ok` con descripción no
 vacía. Un detalle no reconocido, un 403 o un cuerpo truncado quedan en
 `partial`/`failed` con un error honesto: nunca se inventa un `ok`. La decisión de

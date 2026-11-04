@@ -6,7 +6,7 @@ Commands
 ``ingest-fixture``   ingest a JSON fixture offline (default development path)
 ``search-linkedin``  bounded, explicitly opted-in LinkedIn guest search
 ``fetch-details``    bounded, explicitly opted-in job-detail enrichment
-``backfill-salary``  fill a missing LinkedIn salary from stored descriptions (offline)
+``backfill-salary``  fill a missing salary from stored details or descriptions (offline)
 ``list``             recent jobs with their latest score
 ``rank``             jobs ordered by score
 ``score``            evaluate jobs via OpenCode CLI (default), offline, or an LLM endpoint
@@ -68,7 +68,9 @@ from .collectors.tecnoempleo import (
     search_tecnoempleo,
 )
 from .collectors.tecnoempleo_details import (
+    choose_salary,
     fetch_tecnoempleo_details,
+    parse_detail_salary,
     plan_detail_targets as plan_tecnoempleo_detail_targets,
 )
 from .config import ConfigError, HARD_MAX_ITEMS, Settings, validate_bounded_int
@@ -97,6 +99,7 @@ from .db import (
     jobs_awaiting_details,
     jobs_needing_evaluation,
     jobs_needing_salary_backfill,
+    latest_detail_body,
     list_feedback,
     list_jobs,
     list_search_runs,
@@ -626,7 +629,7 @@ def build_parser() -> argparse.ArgumentParser:
         subparsers.add_parser(
             "backfill-salary",
             help=(
-                "fill a missing LinkedIn salary from the stored description "
+                "fill a missing salary from stored details or descriptions "
                 "(offline, one-off)"
             ),
         )
@@ -1604,13 +1607,15 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
 
 
 def cmd_backfill_salary(args: argparse.Namespace, settings: Settings) -> int:
-    """Fill a missing LinkedIn salary from the already-stored description.
+    """Fill a missing salary from a stored detail page or the description.
 
-    Offline and one-off: no request is made, and only offers of
-    ``source = linkedin`` with a non-empty description and no salary are
-    examined. An existing salary is never overwritten: the selection skips it
-    and the UPDATE repeats that condition. ``--dry-run`` opens an existing
-    database read-only and writes nothing.
+    Offline and one-off: no request is made. LinkedIn offers use the description
+    extractor; Tecnoempleo offers combine it with the "Salario" field of their
+    newest stored detail page through ``choose_salary``. Only offers with a
+    non-empty description and no salary are examined. An existing salary is
+    never overwritten: the selection skips it and the UPDATE repeats that
+    condition. ``--dry-run`` opens an existing database read-only and writes
+    nothing.
     """
     db_path = Path(settings.db_path)
     dry_run = bool(getattr(args, "dry_run", False))
@@ -1632,12 +1637,23 @@ def cmd_backfill_salary(args: argparse.Namespace, settings: Settings) -> int:
     try:
         if not dry_run:
             init_db(conn)
-        jobs = jobs_needing_salary_backfill(conn)
-        matches = [
-            (int(job.id), value)
-            for job in jobs
-            if (value := parse_description_salary(job.description or ""))
+        jobs = [
+            job
+            for source in ("linkedin", "tecnoempleo")
+            for job in jobs_needing_salary_backfill(conn, source=source)
         ]
+        counts = {
+            source: sum(1 for job in jobs if job.source == source)
+            for source in ("linkedin", "tecnoempleo")
+        }
+        matches = []
+        for job in jobs:
+            value = parse_description_salary(job.description or "")
+            if job.source == "tecnoempleo":
+                body = latest_detail_body(conn, "tecnoempleo", job.url or "")
+                value = choose_salary(value, parse_detail_salary(body) if body else None)
+            if value:
+                matches.append((int(job.id), value))
         if dry_run:
             applied = matches
         else:
@@ -1651,7 +1667,8 @@ def cmd_backfill_salary(args: argparse.Namespace, settings: Settings) -> int:
 
     verb = "would get" if dry_run else "got"
     text = (
-        f"examined {len(jobs)} LinkedIn offer(s), {len(applied)} {verb} a salary"
+        f"examined {len(jobs)} offer(s) (LinkedIn {counts['linkedin']}, "
+        f"Tecnoempleo {counts['tecnoempleo']}), {len(applied)} {verb} a salary"
         + "".join(f"\n#{job_id} {value}" for job_id, value in applied)
     )
     _emit(
@@ -1659,6 +1676,7 @@ def cmd_backfill_salary(args: argparse.Namespace, settings: Settings) -> int:
             "examined": len(jobs),
             "filled": len(applied),
             "dry_run": dry_run,
+            "sources": counts,
             "offers": [
                 {"job_id": job_id, "salary": value} for job_id, value in applied
             ],

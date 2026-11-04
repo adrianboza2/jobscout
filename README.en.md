@@ -444,8 +444,8 @@ subcommand), and `--version`.
 | `search-tecnoempleo (--keywords K [--location L] \| --browse) [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Bounded Tecnoempleo public server-rendered search. `--browse` walks Madrid offers by professional function; it is mutually exclusive with `--keywords` and `--location`. Enforces `robots.txt` at run time. Disabled without `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | List the keyword families and the exact command per query (no network, no database). |
 | `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich LinkedIn jobs with the full description. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence. |
-| `backfill-salary [--dry-run]` | Fill the salary of already-enriched LinkedIn offers from their description (one-off, offline). |
-| `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enrich Tecnoempleo offers from their public detail page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
+| `backfill-salary [--dry-run]` | Fill the salary of already-enriched LinkedIn and Tecnoempleo offers from their description or the stored detail page (one-off, offline). |
+| `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enrich Tecnoempleo offers from their public detail page, including the salary when the page publishes it. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
 | `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enrich GetManfred offers from the recognized `JobPosting` JSON-LD on their public page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score; `[needs re-score]` flags out-of-date scores. |
 | `rank [--top N] [--min-score S]` | Jobs with a successful score, best first; same `[needs re-score]` flag. |
@@ -561,10 +561,14 @@ python -m jobscout fetch-details --refresh --stale-days 14 --dry-run            
 python -m jobscout backfill-salary --dry-run                                          # already-enriched salaries, offline
 ```
 
-When a LinkedIn detail description states a euro pay range, `fetch-details`
-fills `salary` with that text; `backfill-salary [--dry-run]` does the same once,
-offline, for already-enriched offers that still have no salary, and never
-overwrites an existing value.
+When a LinkedIn detail description states a euro salary, `fetch-details` fills
+`salary` with that text. On Tecnoempleo, `fetch-tecnoempleo-details` picks, in
+order: the range (two figures) the description gives; otherwise the page's own
+"Salario" field, a rounded band the employer picks; and when there is no field
+either, the description's single figure ("hasta 45.000 €"). `backfill-salary
+[--dry-run]` does the same once, offline, for already-enriched offers that still
+have no salary —on Tecnoempleo it reads the field from the stored detail page—
+and never overwrites an existing value.
 
 Every `fetch-details` selection route — the default, `--all`, `--refresh`, and an
 explicit `--job-id` — is restricted to LinkedIn offers (`source = linkedin`). A
@@ -604,9 +608,10 @@ safety model as the search: no login, cookies, private RSS, or API; it re-reads
 `robots.txt` and fails closed when the detail path is disallowed; conservative
 limits, pacing, and download ceiling.
 
-It extracts description, company, location, date, and technologies **only from
-recognized markup** (`itemprop`/stable classes; the date prefers
-`<time datetime>`). A recognized detail page leaves the offer at
+It extracts description, company, location, date, technologies, and salary
+**only from recognized markup** (`itemprop`/stable classes; the date prefers
+`<time datetime>`, and the salary follows the order above: description range,
+page "Salario" field, single description figure). A recognized detail page leaves the offer at
 `content_status = ok` with a non-empty description. An unrecognized page, a 403,
 or a truncated body stays `partial`/`failed` with an honest error: `ok` is never
 invented. The pipeline applies the rule that a partial or failed attempt never

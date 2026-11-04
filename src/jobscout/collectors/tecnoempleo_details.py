@@ -74,6 +74,7 @@ from .base import (
     fetch_with_policy,
 )
 from .htmlutil import VOID_TAGS, sanitize_redirect
+from .linkedin_details import parse_description_salary
 from .ratelimit import BackoffPolicy, RequestPacer
 from .robots import check_robots
 from .tecnoempleo import (
@@ -155,6 +156,15 @@ DATE_CLASS_MARKERS = ("fecha-publicacion", "publicado", "fecha")
 #: of the matched container only.
 TECH_CLASS_MARKERS = ("tecnologias", "skills", "requisitos-tecnicos")
 
+#: Details-list markers for the pay range: a ``list-item`` row holds the value
+#: in a ``float-end`` span and labels it in a ``d-inline-block`` span.
+SALARY_ITEM_CLASS_MARKERS = ("list-item",)
+SALARY_VALUE_CLASS_MARKERS = ("float-end",)
+SALARY_LABEL_CLASS_MARKERS = ("d-inline-block",)
+SALARY_LABEL = "Salario"
+#: One figure inside an extracted salary ("39.000", "36 000", "50000", "45k").
+_SALARY_FIGURE_RE = re.compile(r"\d+(?:[.,\s]\d{3})*")
+
 #: Minimum characters for extracted text to count as real content.
 MIN_DESCRIPTION_CHARS = 10
 
@@ -189,6 +199,7 @@ class TecnoempleoDetailItem:
     location: str | None = None
     posted_at: str | None = None
     technologies: list[str] = field(default_factory=list)
+    salary: str | None = None
 
     @property
     def is_definitive_missing(self) -> bool:
@@ -210,6 +221,7 @@ class TecnoempleoDetailItem:
             "location": self.location,
             "posted_at": self.posted_at,
             "technologies": list(self.technologies),
+            "salary": self.salary,
             "fetched_at": self.fetched_at,
             "http_status": self.http_status,
             "byte_size": self.byte_size,
@@ -653,10 +665,55 @@ class TecnoempleoDetailFields:
     location: str | None = None
     posted_at: str | None = None
     technologies: list[str] = field(default_factory=list)
+    salary: str | None = None
 
     @property
     def recognized(self) -> bool:
         return len(self.description) >= MIN_DESCRIPTION_CHARS
+
+
+def parse_detail_salary(html_text: str) -> str | None:
+    """Return the pay range from the page's own "Salario" item, verbatim.
+
+    The value is the text of the item's ``float-end`` span, and the item counts
+    only when its label span reads "Salario". Unknown markup, a missing item, or
+    a value without a digit yields ``None``; the function never raises.
+    """
+
+    def is_item(tag: str, attributes: dict[str, str]) -> bool:
+        return tag == "li" and _has_class(
+            attributes.get("class", ""), SALARY_ITEM_CLASS_MARKERS
+        )
+
+    def is_span_with(markers: Sequence[str]) -> Callable[[str, dict[str, str]], bool]:
+        return lambda tag, attributes: tag == "span" and _has_class(
+            attributes.get("class", ""), markers
+        )
+
+    for _text, raw in _captures(html_text, is_item):
+        labels = [
+            normalize_text(text)
+            for text, _raw in _captures(raw, is_span_with(SALARY_LABEL_CLASS_MARKERS))
+        ]
+        if SALARY_LABEL not in labels:
+            continue
+        for text, _raw in _captures(raw, is_span_with(SALARY_VALUE_CLASS_MARKERS)):
+            value = normalize_text(text)
+            if any(char.isdigit() for char in value):
+                return value
+    return None
+
+
+def choose_salary(description_salary: str | None, page_salary: str | None) -> str | None:
+    """Pick the stored salary: a description range, else the page field, else a lone figure.
+
+    The page's "Salario" item is a rounded band the employer picks, so a range
+    the recruiter wrote is more faithful; a single description figure ("hasta
+    45.000 €", "máximo 45.000€") says less than the page's band.
+    """
+    if description_salary and len(_SALARY_FIGURE_RE.findall(description_salary)) >= 2:
+        return description_salary
+    return page_salary or description_salary
 
 
 def parse_detail_fields(html_text: str) -> TecnoempleoDetailFields:
@@ -664,16 +721,20 @@ def parse_detail_fields(html_text: str) -> TecnoempleoDetailFields:
 
     Fields are extracted independently: a description with no company markup
     still yields a description, and unknown markup yields an empty result rather
-    than a fabricated one.
+    than a fabricated one. The salary follows ``choose_salary``.
     """
     if not html_text:
         return TecnoempleoDetailFields()
+    description = parse_detail_description(html_text)
     return TecnoempleoDetailFields(
-        description=parse_detail_description(html_text),
+        description=description,
         company=parse_detail_company(html_text),
         location=parse_detail_location(html_text),
         posted_at=parse_detail_posted_at(html_text),
         technologies=parse_detail_technologies(html_text),
+        salary=choose_salary(
+            parse_description_salary(description), parse_detail_salary(html_text)
+        ),
     )
 
 
@@ -966,6 +1027,7 @@ def fetch_tecnoempleo_details(
             item.location = fields.location
             item.posted_at = fields.posted_at
             item.technologies = list(fields.technologies)
+            item.salary = fields.salary
             item.notes = f"description extracted ({len(fields.description)} chars)"
         else:
             item.status = DetailFetchStatus.PARTIAL
@@ -996,9 +1058,11 @@ __all__ = [
     "fetch_tecnoempleo_details",
     "parse_detail_company",
     "parse_detail_description",
+    "choose_salary",
     "parse_detail_fields",
     "parse_detail_location",
     "parse_detail_posted_at",
+    "parse_detail_salary",
     "parse_detail_technologies",
     "plan_detail_targets",
     "resolve_detail_url",
