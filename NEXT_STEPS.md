@@ -5,6 +5,29 @@ only on the Kanvas board (`kanvas.json`)** since 2026-10-31; the "Pending",
 "Next" and "Priority" lists below are history, and anything still open from
 them is a card on the board. Do not add new pending items here.
 
+## Session 2026-11-04 — board cleanup, Tecnoempleo refetch, DB-01/DB-07/DB-03
+
+- Board decisions (owner): DB-04 (decision UI) withdrawn, the UI stays because EIA-01/EIA-03
+  compare against those decisions; DB-02 (first-paint measurement) withdrawn, only useful if the
+  dashboard feels slow; FU-03 (InfoJobs API) withdrawn, nothing to do unless the owner requests
+  app credentials. KW-01 stays proposed. DB-06 rewritten as "measure first": score active offers
+  with the heuristic on a DB copy and check whether disagreements expose model errors before any
+  view is built. DB-05 now waits on EIA-02.
+- FU-04: the 393 Tecnoempleo pages without a stored body were all fetched 18–25 Sep, before the
+  Cloudflare beacon exemption (afa279a, 26 Sep); every later page was stored. The 156 offers still
+  active were refetched: 62 enriched with their page stored (5 with a salary), and 94 answered
+  404/410 and are now inactive.
+- DB-01: `offer.detail` left the dashboard payload (−101 KB, 1.59 → 1.49 MB on the real DB).
+- DB-07: the dimensions section left the dashboard (5 of 700 offers ever had it); the scorer's
+  output contract is unchanged and stored `dimensions_json` stays.
+- DB-03: on load the dashboard forgets a local decision only when the DB holds the same decision
+  with the same or a later date; the controls start from the imported decision.
+- Owner rule: for approved board tasks the orchestrator commits and merges once the diff is read
+  and the suite is green (`AGENTS.md`, "Orchestrator and worker sessions").
+- EIA-01: `~/vault/career.md` written, answered by the owner and audited against the vault
+  (master, CTIC course, ABAI/FCC details, projects). No CV is left in `~/vault`; the master CV is
+  on Windows only. Comparison run in progress. Suite on `master`: 1291 passed.
+
 ## Session 2026-11-04 — Tecnoempleo salaries (WF-04)
 
 - Tecnoempleo detail pages carry their own "Salario" item, which the adapter did not read.
