@@ -211,7 +211,7 @@
     {
       "id": "BR-02",
       "title": "Puntuar con y sin dossier (copia de la base)",
-      "state": "review",
+      "state": "done",
       "group": "BR",
       "deps": ["BR-01"],
       "at": "2026-10-28T08:55:14Z",
@@ -438,16 +438,32 @@
     {
       "id": "WF-01",
       "title": "Flags --scorer-model y --effort",
-      "state": "proposed",
+      "state": "done",
       "group": "WF",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "Exponer por CLI el modelo y el esfuerzo de OpenCode (hoy solo por entorno) y ajustar el timeout por oferta (`JOBSCOUT_OPENCODE_TIMEOUT_SECONDS`, 180 s) al esfuerzo elegido. Hace práctico comparar modelos sin tocar el entorno (NEXT_STEPS.md:651-655, 903-904).\nHecho: flags + tests + README ES/EN, suite en verde."
+      "desc": "Exponer por CLI el modelo y el esfuerzo de OpenCode (hoy solo por entorno) y ajustar el timeout por oferta (`JOBSCOUT_OPENCODE_TIMEOUT_SECONDS`, 180 s) al esfuerzo elegido. Hace práctico comparar modelos sin tocar el entorno (NEXT_STEPS.md:651-655, 903-904).\nHecho: flags + tests + README ES/EN, suite en verde.",
+      "notes": [
+        {
+          "at": "2026-11-04T11:55:19Z",
+          "by": "claude-code-wf01",
+          "text": "Plan: score gains --scorer-model and --effort (override JOBSCOUT_OPENCODE_MODEL/VARIANT for one run, opencode scorer only; --effort '' disables the variant like the env). Per-offer timeout: if JOBSCOUT_OPENCODE_TIMEOUT_SECONDS is unset it derives from the effective effort (none/low/minimal 180 s = today, medium 240, high 360, max 600, unknown 180); an explicit env value still wins. Fallback model's variant follows the same rule. Sweep unchanged (.env variant is empty -> 180 s). Tests + README ES/EN."
+        },
+        {
+          "at": "2026-11-04T12:06:33Z",
+          "by": "claude-code-wf01",
+          "text": "Done (uncommitted, worktree jobscout-wf-01). What changes: 'score' gains --scorer-model MODEL and --effort EFFORT (one-run overrides of JOBSCOUT_OPENCODE_MODEL/VARIANT; --effort '' sends no variant; rejected with a usage error for non-opencode scorers). Overrides feed fingerprint + evaluation, so changing them re-scores. Per-offer timeout: JOBSCOUT_OPENCODE_TIMEOUT_SECONDS unset -> derived from effort (none/minimal/low 180 s, medium 240, high 360, max 600, unknown 180); a model's own '#variant' wins over the variant setting (that's what build_command sends); explicit env still wins; fallback model sizes its own timeout. Settings.opencode_timeout_seconds is now float|None + property effective_opencode_timeout_seconds. .env.example no longer sets 180 explicitly. README ES/EN: score row + paragraph. Sweep unchanged: real .env has empty VARIANT and no TIMEOUT -> 180 s. How tested: full suite 1264 passed; new tests in test_opencode.py (timeout table, #variant, explicit wins, runner gets 600 on max) and test_cli.py (argv foo/bar#high + prompt_version +high, empty effort, non-opencode rejection, fallback timeout). No real OpenCode call. Owner should check: the timeout values per effort are a judgement (max ~40 s/offer measured on 2026-09-30, so 600 s is generous); first real run with --effort max to confirm no timeouts."
+        }
+      ],
+      "started": {
+        "at": "2026-11-04T11:55:19Z",
+        "by": "claude-code-wf01"
+      }
     },
     {
       "id": "WF-02",
       "title": "Marcar 'necesita re-score' en list y dashboard",
-      "state": "review",
+      "state": "done",
       "group": "WF",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
@@ -468,11 +484,27 @@
     {
       "id": "WF-03",
       "title": "Extraer el salario del detalle de LinkedIn",
-      "state": "proposed",
+      "state": "done",
       "group": "WF",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "Pasar a `jobs.salary` un salario escrito en la descripción (p. ej. '€25,000 – €35,000'). Requiere capturar una vez markup real y pasarlo por el parser offline (NEXT_STEPS.md:270-272).\nHecho: parser + test con la captura + README ES/EN."
+      "desc": "Pasar a `jobs.salary` un salario escrito en la descripción (p. ej. '€25,000 – €35,000'). Requiere capturar una vez markup real y pasarlo por el parser offline (NEXT_STEPS.md:270-272).\nHecho: parser + test con la captura + README ES/EN.",
+      "notes": [
+        {
+          "at": "2026-11-04T11:53:32Z",
+          "by": "claude-code-wf03",
+          "text": "Plan: stored LinkedIn descriptions already contain the salary text (56/418 mention € amounts, ~35 are real pay ranges), so no live capture. Add a conservative salary extractor to the LinkedIn detail parser (salary-context line + annual-size amounts, skip budgets/benefits/turnover), test it with real stored descriptions through the project parser, backfill the DB copy and count."
+        },
+        {
+          "at": "2026-11-04T12:04:26Z",
+          "by": "claude-code-wf03",
+          "text": "Done in worktree jobscout-wf-03 (branch wf-03, uncommitted). No live capture was needed: raw_documents already holds 573 real LinkedIn detail pages.\nWhat changes for the owner: (1) fetch-details now fills jobs.salary when the LinkedIn description states a euro pay range, storing the posting's own text (e.g. '€25,000 – €35,000', 'Hasta 50.000 €'). Nothing is reformatted or inferred. Only euro amounts on an annual-gross scale (10k-400k) count, and the line must mention pay or consist almost entirely of the amount; turnover, training budgets, gym, meal vouchers and referral bonuses are ignored. (2) New offline one-off command 'backfill-salary [--dry-run]' fills already-enriched LinkedIn offers that have no salary and never overwrites an existing one. It is needed because details are not re-fetched.\nResult on a backup-API copy of the real DB: 33 of 418 LinkedIn offers with a description now have a salary. I reviewed all 33 by hand: no false positives. The prototype missed 0 of the real salary lines; the monthly '1150€ gross per month' line is skipped on purpose. A second run fills 0 (idempotent).\nTests: tests/test_linkedin_salary.py (22). It covers a real captured page (tests/fixtures/linkedin_detail_page_real_salary.html, trimmed to the description section, following the tecnoempleo_detail_page_real.html precedent) passed through parse_detail_description, real stored lines (positive and negative), the fetch path into jobs.salary, and the backfill and --dry-run. Full suite: 1276 passed. README ES/EN updated.\nOwner to check: after merge, run 'python -m jobscout backfill-salary --dry-run' then without --dry-run on the real DB. The 33 offers' input fingerprint changes (salary is part of it), so the sweep will re-score them gradually, now with a stated salary instead of an estimate. Possible follow-up: Tecnoempleo has 0 salaries stored, and the same extractor finds about 24 in its descriptions."
+        }
+      ],
+      "started": {
+        "at": "2026-11-04T11:53:32Z",
+        "by": "claude-code-wf03"
+      }
     },
     {
       "id": "EIA-01",
@@ -501,6 +533,15 @@
       "at": "2026-11-03T09:26:03Z",
       "by": "claude-code",
       "desc": "Idea de Amble: 'un no es mejor dato que un sí'. Un comando lee tus rechazos con motivo y propone cambios concretos a profile.yaml (dealbreakers, salario mínimo, remoto), cada uno con las ofertas que lo justifican. No cambia nada solo: tú aceptas o descartas cada propuesta.\nHecho: el comando funciona offline sobre tus decisiones reales y te da una lista que puedes revisar."
+    },
+    {
+      "id": "WF-04",
+      "title": "Extraer el salario de las descripciones de Tecnoempleo",
+      "state": "todo",
+      "group": "WF",
+      "at": "2026-11-04T13:10:52Z",
+      "by": "claude-code",
+      "desc": "Que las ofertas de Tecnoempleo muestren su salario cuando la descripción lo dice. Hoy no hay ninguna con salario guardado; el extractor de WF-03 (el mismo que ya rellena LinkedIn) encuentra unas 24 en sus descripciones.\nAntes de reutilizarlo, comprobar si la ficha de Tecnoempleo trae un campo de salario propio que el adaptador no lee: si existe, ese manda.\nHecho: `fetch-tecnoempleo-details` rellena el salario, `backfill-salary` cubre también las ya guardadas, salarios rellenados en la base real y revisados uno a uno, test con texto real guardado, README ES/EN, suite en verde."
     }
   ]
 }
