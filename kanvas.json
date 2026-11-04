@@ -537,11 +537,46 @@
     {
       "id": "WF-04",
       "title": "Extraer el salario de las descripciones de Tecnoempleo",
-      "state": "todo",
+      "state": "review",
       "group": "WF",
       "at": "2026-11-04T13:10:52Z",
       "by": "claude-code",
-      "desc": "Que las ofertas de Tecnoempleo muestren su salario cuando la descripción lo dice. Hoy no hay ninguna con salario guardado; el extractor de WF-03 (el mismo que ya rellena LinkedIn) encuentra unas 24 en sus descripciones.\nAntes de reutilizarlo, comprobar si la ficha de Tecnoempleo trae un campo de salario propio que el adaptador no lee: si existe, ese manda.\nHecho: `fetch-tecnoempleo-details` rellena el salario, `backfill-salary` cubre también las ya guardadas, salarios rellenados en la base real y revisados uno a uno, test con texto real guardado, README ES/EN, suite en verde."
+      "desc": "Que las ofertas de Tecnoempleo muestren su salario cuando la descripción lo dice. Hoy no hay ninguna con salario guardado; el extractor de WF-03 (el mismo que ya rellena LinkedIn) encuentra unas 24 en sus descripciones.\nAntes de reutilizarlo, comprobar si la ficha de Tecnoempleo trae un campo de salario propio que el adaptador no lee: si existe, ese manda.\nHecho: `fetch-tecnoempleo-details` rellena el salario, `backfill-salary` cubre también las ya guardadas, salarios rellenados en la base real y revisados uno a uno, test con texto real guardado, README ES/EN, suite en verde.",
+      "notes": [
+        {
+          "at": "2026-11-04T13:23:10Z",
+          "by": "claude-code-wf04",
+          "text": "Plan: las fichas guardadas traen campo propio de salario (visible 'X € - Y € Bruto/año' + JSON-LD baseSalary, coinciden en las 37). parse_detail_fields lee ese campo; si no hay, parse_description_salary sobre la descripción. fetch-tecnoempleo-details lo guarda; backfill-salary amplía a Tecnoempleo (página guardada > descripción, sin pisar). Test con ficha real recortada. README ES/EN. Probado sobre copia de la base."
+        },
+        {
+          "at": "2026-11-04T13:33:00Z",
+          "by": "claude-code-wf04",
+          "text": "Qué cambia: la ficha de Tecnoempleo trae un campo propio «Salario» (p. ej. '39.000 € - 45.000 € Bruto/año', igual que su JSON-LD baseSalary en las 37 fichas guardadas que lo tienen) que el adaptador no leía. Ahora fetch-tecnoempleo-details guarda ese campo y, si la ficha no lo trae, usa el extractor de descripciones de WF-03. backfill-salary cubre también Tecnoempleo (primero la ficha guardada en raw_documents, luego la descripción) y no pisa ningún salario existente. README ES/EN actualizados. Sin commit (rama wf-04).\nCómo lo probé: suite 1292 passed. Test con una ficha real recortada (tests/fixtures/tecnoempleo_detail_page_salary_real.html) pasada por parse_detail_salary/parse_detail_fields, más fallback, el campo de la ficha manda, fetch con transporte falso y backfill (dry-run y real, sin pisar). En la copia de la base (data/ del worktree), backfill-salary --dry-run: 47 ofertas de Tecnoempleo con salario (36 del campo de la ficha y 11 de la descripción), 0 nuevas de LinkedIn. Las revisé una a una contra el texto: las 47 son correctas.\nQué comprobar: (1) el campo de la ficha parece una banda redondeada que elige la empresa y a veces no coincide con lo que dice la descripción: #1093 ficha 74-86k frente a la descripción y el título, que dicen 70-85k; #1353 ficha 60-72k frente a 65k; #1447 ficha 45-54k frente a 45-50k. Según tu regla manda la ficha, y lo recomiendo así porque es estructurado y la descripción a veces da solo un extremo (#1228, #1319), pero dímelo si prefieres que mande la descripción cuando trae un rango. (2) 393 fichas de detalle no tienen el cuerpo guardado (se descartó por 'credential-like'), así que para esas el backfill solo puede usar la descripción; cogerán el campo cuando se vuelvan a descargar. (3) Falta ejecutar backfill-salary en la base real (lo hace el orquestador tras el merge)."
+        },
+        {
+          "at": "2026-11-04T13:53:41Z",
+          "by": "claude-code-wf04",
+          "text": "Decisión del dueño (2026-11-04): manda la descripción; el campo «Salario» de la ficha solo cuando la descripción no da cifras. Cambiados parse_detail_fields, backfill-salary, tests y README ES/EN. Suite 1292 passed. Dry-run en la copia: siguen 47 de Tecnoempleo (25 de la descripción, 22 de la ficha). Empeoran dos respecto a la ficha: #1228 queda en '45.000€' (la descripción dice 'máximo valorado') y #1319 en '39.000 €' (el extractor corta '39.000 €BA a 42.000 €BA'). Sin commit."
+        },
+        {
+          "at": "2026-11-04T13:59:58Z",
+          "by": "claude-code-wf04",
+          "text": "Regla aceptada por el dueño aplicada (choose_salary en tecnoempleo_details.py, usada por fetch-tecnoempleo-details y backfill-salary): 1) el rango de la descripción, 2) el campo «Salario» de la ficha, 3) la cifra suelta de la descripción. parse_description_salary entiende el sufijo pegado a la cifra izquierda ('€BA', '€B/A', '€ brutos'): #1319 da ahora '39.000 €BA a 42.000 €'; la cifra derecha no lleva sufijo para que los rangos que ya salían conserven su texto. Recuento en la copia, dry-run: 47 de Tecnoempleo; 16 por el rango de la descripción, 26 por el campo de la ficha (#1228 vuelve a 33-45k) y 5 por la cifra suelta (#454, #577, #1296, #1298, #1327). LinkedIn: de las 418 descripciones, los 33 salarios guardados salen idénticos y no aparece ninguno nuevo; el cambio del parser solo altera #1319 (Tecnoempleo). Tests con los textos reales de #1228 y #1319. README ES/EN actualizados. Suite 1299 passed. Sin commit."
+        }
+      ],
+      "started": {
+        "at": "2026-11-04T13:23:10Z",
+        "by": "claude-code-wf04"
+      }
+    },
+    {
+      "id": "FU-04",
+      "title": "Tecnoempleo: 393 fichas sin página guardada por el filtro de credenciales",
+      "state": "proposed",
+      "group": "FU",
+      "at": "2026-11-04T13:56:43Z",
+      "by": "claude-code",
+      "desc": "De las 542 fichas de Tecnoempleo descargadas, 393 no guardan la página: el filtro que evita guardar secretos (`src/jobscout/config.py:306`) cree que contienen una credencial. Para esas solo queda la descripción, así que se pierden la evidencia y el campo «Salario» de la ficha (WF-04).\nAveriguar qué dispara el filtro en esas páginas. Si es un falso positivo (un token de formulario, un id con forma de clave), ajustarlo sin dejar pasar credenciales reales; si es un secreto de verdad, guardar la página sin él.\nHecho: causa explicada; si se arregla, test con una ficha real, y las fichas nuevas se guardan enteras. Volver a descargar las 393 lo decides tú aparte (son peticiones de red)."
     }
   ]
 }
