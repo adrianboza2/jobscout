@@ -47,8 +47,11 @@ prompts (owner decision, 2026-11-04). What is specific to this repo:
   `PYTHONPATH=src /home/adrian/jobscout/.venv/bin/python -m jobscout`, because the shared
   venv's editable install points at the main checkout; pytest already picks the worktree's
   `src` (`/home/adrian/jobscout/.venv/bin/python -m pytest -q`).
-- **Merge:** linear history. Commit on the branch, fast-forward `master`, rebase the next branch
-  onto it, and run the full suite on `master` after the last merge.
+- **Merge:** for a task the owner approved on the board, the orchestrator commits and merges
+  without asking once it has read the diff and the suite is green; it asks first only when a
+  behaviour, data, provider or scope decision is still open (owner, 2026-11-04). Linear
+  history: commit on the branch, fast-forward `master`, rebase the next branch onto it, and
+  run the full suite on `master` after the last merge.
 - **Hermes sweep script** (outside the repo): changed once, after merging, by the orchestrator,
   never by workers.
 
@@ -171,7 +174,8 @@ do not push them. Do not push at all unless the user asks.
 - Comments explain why, not what. Blank line inside functions to break logical blocks, short
   docstrings, no speculative abstractions.
 - Conventional commit subjects, no AI attribution. Code + tests + docs go in the same commit.
-  Do not commit unless asked.
+  Commit only when asked; an approved board task merged by the orchestrator counts as asked
+  (see "Orchestrator and worker sessions").
 
 ## Collection policy (deliberate deviations — these override the contract above where they conflict)
 
