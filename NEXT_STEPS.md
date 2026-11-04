@@ -5,6 +5,24 @@ only on the Kanvas board (`kanvas.json`)** since 2026-10-31; the "Pending",
 "Next" and "Priority" lists below are history, and anything still open from
 them is a card on the board. Do not add new pending items here.
 
+## Session 2026-11-04 — WF-01, WF-03 and orchestrator/worker sessions
+
+- New way of working (owner, for all projects): one orchestrator session launches each
+  board task as a full background Claude Code session (Opus 5.5, effort medium) in its own
+  worktree, with an Orca tab attached, so the worker can delegate to DeepSeek itself. The
+  orchestrator reviews, runs the gate and merges. User-level skill `orquestador`; repo
+  specifics in `AGENTS.md` ("Orchestrator and worker sessions"). WF-01 and WF-03 were the
+  first two tasks run this way, in parallel.
+- WF-01: `score --scorer-model/--effort` override the OpenCode model and variant for one
+  run. Without an explicit `JOBSCOUT_OPENCODE_TIMEOUT_SECONDS`, the per-offer timeout
+  follows the effort (low 180 s, medium 240, high 360, max 600). The sweep's `.env` has no
+  variant, so it keeps 180 s.
+- WF-03: LinkedIn descriptions that state a euro pay range now fill `jobs.salary` with the
+  posting's own text. `backfill-salary` ran once on the real DB: 33 of 418 LinkedIn offers got
+  a salary, and their fingerprint changed, so the sweep re-scores them gradually. WF-04
+  (Tecnoempleo salaries, about 24 found by the same extractor) is proposed on the board.
+- Suite on `master` after both merges: 1286 passed.
+
 ## Session 2026-11-03 — scoring with and without dossier (BR-02)
 
 - Experiment only, no repo code changed: a script outside `src/` appended the
