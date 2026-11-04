@@ -5,6 +5,22 @@ only on the Kanvas board (`kanvas.json`)** since 2026-10-31; the "Pending",
 "Next" and "Priority" lists below are history, and anything still open from
 them is a card on the board. Do not add new pending items here.
 
+## Session 2026-11-03 — scoring with and without dossier (BR-02)
+
+- Experiment only, no repo code changed: a script outside `src/` appended the
+  company dossier to the OpenCode scoring prompt (marked untrusted). It scored
+  the 35 active 'apply' offers on DB copies: without, with, and a second
+  without pass to measure the model's own run-to-run noise.
+- Result: the dossier moved scores by 7.1 points on average and changed 8
+  recommendations; repeating the no-dossier pass moved them 7.2 and changed 11.
+  The effect is indistinguishable from noise, no rationale cited dossier facts,
+  and the employer tier got worse in two cases (Hitachi Energy, Changan Europe
+  as `consultora_grande`). Dossiers only exist for companies already marked
+  'apply', so they would not reach the offers the ranking is for.
+- Owner deferred the decision: the scorer stays without dossiers for now.
+  Report: `reports/br02-dossier-comparison.md`; copies and scripts:
+  `data/br02/`.
+
 ## Session 2026-11-03 — close BR-01 and AJ-01
 
 - `dossier` now uses an 8 MiB output limit at minimum, because the OpenCode
