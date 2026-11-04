@@ -28,19 +28,29 @@ an answer only.
 - **Keep for the orchestrator:** design decisions, briefs, reviewing every delegated diff,
   running the test gate, and talking to the owner. Trivial one-liners are cheaper to do than to
   brief. When something is not delegated, say so and why.
-- **Orca orchestration** (`orca-ide skills get orchestration`) is for supervising several full
-  agents in parallel worktrees. It is not the default here: for this repo's sequential,
-  single-owner work, DeepSeek delegation is cheaper. Use it only when the owner asks for
-  supervised parallel workers.
 - `.claude/settings.json` injects this rule on every prompt so it is not forgotten.
-- **Worktrees** are for independent tasks only; sequential tasks are done on `master`. One
-  coordinator in the main checkout writes the task cards, creates one worktree per task with
-  one worker each, then reviews, tests and merges one branch at a time. The local
+
+### Orchestrator and worker sessions
+
+The owner opens one orchestrator session, and every board task runs in its own **worker
+session**: a full Claude Code session (Opus 5.5, effort medium), not an Agent-tool subagent, so
+it can delegate to DeepSeek itself under the rules above. The orchestrator launches, watches,
+reviews and merges workers with the user-level `orquestador` skill; the owner does not paste
+prompts (owner decision, 2026-11-04). What is specific to this repo:
+
+- **Board:** workers run the main checkout's CLI against the main board:
+  `python3 /home/adrian/jobscout/.agents/skills/kanvas/kanvas.py <cmd> -b /home/adrian/jobscout/kanvas.json --as claude-code-<id>`.
+- **Worktree:** every worker gets its own (`../jobscout-<id>`). Tasks that depend on each other
+  run one after another: the next is launched once the previous one is merged. The local
   `.git/hooks/post-checkout` links `.env` and `profile.yaml` into new worktrees; the database
-  is not linked, so live checks there use a copy. In a worktree run the CLI as
+  is not linked, so live checks there use a copy made with sqlite3's backup API. Run the CLI as
   `PYTHONPATH=src /home/adrian/jobscout/.venv/bin/python -m jobscout`, because the shared
-  venv's editable install points at the main checkout. Changes to the Hermes sweep script
-  (outside the repo) are made once, after merging, never by parallel workers.
+  venv's editable install points at the main checkout; pytest already picks the worktree's
+  `src` (`/home/adrian/jobscout/.venv/bin/python -m pytest -q`).
+- **Merge:** linear history. Commit on the branch, fast-forward `master`, rebase the next branch
+  onto it, and run the full suite on `master` after the last merge.
+- **Hermes sweep script** (outside the repo): changed once, after merging, by the orchestrator,
+  never by workers.
 
 ## Environment
 
