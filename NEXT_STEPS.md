@@ -5,6 +5,21 @@ only on the Kanvas board (`kanvas.json`)** since 2026-10-31; the "Pending",
 "Next" and "Priority" lists below are history, and anything still open from
 them is a card on the board. Do not add new pending items here.
 
+## Session 2026-11-04 — Tecnoempleo salaries (WF-04)
+
+- Tecnoempleo detail pages carry their own "Salario" item, which the adapter did not read.
+  Rule (owner): a range written in the description wins, then the page's item (a rounded
+  band the employer picks), then a single figure from the description. The page item kept
+  #1228 at 33-45k where the description only gave the maximum.
+- The description extractor now reads a gross marker glued to the left amount
+  ("39.000 €BA a 42.000 €BA"); the 33 LinkedIn salaries come out identical.
+- `backfill-salary` ran on the real DB: 47 Tecnoempleo offers got a salary (16 description
+  range, 26 page item, 5 single figure); a second run fills 0. Their fingerprints changed, so
+  the sweep re-scores them gradually. Suite on `master`: 1299 passed.
+- Found on the way: 393 of 542 Tecnoempleo detail pages were stored without their body
+  because the secret filter flagged them (`config.py:306`), so only their description is
+  left. Proposed as FU-04. GetManfred skips 145 of 151 bodies for the 256 KB cap, by design.
+
 ## Session 2026-11-04 — WF-01, WF-03 and orchestrator/worker sessions
 
 - New way of working (owner, for all projects): one orchestrator session launches each
