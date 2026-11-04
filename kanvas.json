@@ -408,7 +408,6 @@
       "title": "Gates FAIL / FLAG con auditoría de vetos",
       "state": "proposed",
       "group": "DB",
-      "deps": ["EIA-02"],
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
       "desc": "[Decisión del dueño] Del roadmap del 2026-10-18: confirmar que sigue vigente. FAIL solo por un deal-breaker explícito del perfil o solape cero; todo lo dudoso pasa a FLAG (⚠, sigue en el ranking, con la evidencia citada guardada). El dashboard gana una lista de vetos y el dueño promueve FLAG→FAIL cada semana escribiendo el motivo (NEXT_STEPS.md:558-563).\nHecho: gates + vista + tests + README ES/EN."
@@ -538,7 +537,7 @@
     {
       "id": "EIA-01",
       "title": "career.md: perfil con evidencias y su fuente",
-      "state": "review",
+      "state": "done",
       "group": "EIA",
       "at": "2026-11-03T09:26:03Z",
       "by": "claude-code",
@@ -569,16 +568,6 @@
         "at": "2026-11-04T14:17:06Z",
         "by": "claude-code-eia01"
       }
-    },
-    {
-      "id": "EIA-02",
-      "title": "Razones citadas y comprobadas en el scorer",
-      "state": "proposed",
-      "group": "EIA",
-      "deps": ["EIA-01"],
-      "at": "2026-11-03T09:26:03Z",
-      "by": "claude-code",
-      "desc": "'Los modelos proponen, las reglas deciden': el 'por qué encaja' de cada oferta cita líneas de career.md y frases literales de la oferta, y el código comprueba que esas citas existen. Las que no existen se descartan y se ve en el dashboard.\nRelacionada con DB-05 (gates FAIL/FLAG con auditoría de vetos): decidir si van juntas.\nHecho: en el dashboard ves las citas de cada oferta puntuada, y no queda ninguna inventada."
     },
     {
       "id": "EIA-03",
