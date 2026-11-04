@@ -354,77 +354,106 @@
       ]
     },
     {
-      "id": "FU-03",
-      "title": "InfoJobs: autorización oficial de la API",
-      "state": "proposed",
-      "group": "FU",
-      "at": "2026-10-28T08:55:14Z",
-      "by": "claude",
-      "desc": "[Decisión del dueño / bloqueo externo] Fuera de alcance sin una nueva decisión: hace falta la autorización oficial de la API y credenciales de app antes de escribir cualquier adaptador. La página privada `candidate/my-infojobs.xhtml` no se toca nunca (NEXT_STEPS.md:662-663, 867-869).\nHecho: el dueño decide si pide la autorización."
-    },
-    {
       "id": "DB-01",
       "title": "Decidir si quitar offer.detail del payload",
-      "state": "proposed",
+      "state": "review",
       "group": "DB",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "[Decisión del dueño] La evidencia de enlaces (65 KB) no tiene UI desde DR-3; quitarla elimina una función documentada (NEXT_STEPS.md:331-332).\nHecho: decisión anotada y, si se quita, payload + tests + README ES/EN."
-    },
-    {
-      "id": "DB-02",
-      "title": "Medir el first paint en un navegador real",
-      "state": "proposed",
-      "group": "DB",
-      "at": "2026-10-28T08:55:14Z",
-      "by": "claude",
-      "desc": "[Decisión del dueño] No se ha medido; `reports/dr6-antes.html` y `reports/dr6-despues.html` están preparados para ello (NEXT_STEPS.md:333-334).\nHecho: tiempos de ambos medidos y anotados en NEXT_STEPS.md."
+      "desc": "[Decisión del dueño] La evidencia de enlaces (65 KB) no tiene UI desde DR-3; quitarla elimina una función documentada (NEXT_STEPS.md:331-332).\nHecho: decisión anotada y, si se quita, payload + tests + README ES/EN.",
+      "notes": [
+        {
+          "at": "2026-11-04T14:16:57Z",
+          "by": "claude-code-db01",
+          "text": "Plan: quitar offer.detail del payload, _detail_evidence y sus helpers/constantes, latest_detail_fetches_for_jobs (solo lo usaba esto), tests y la sección de README ES/EN; medir HTML antes/después sobre copia de la BD y comparar secciones."
+        },
+        {
+          "at": "2026-11-04T14:21:25Z",
+          "by": "claude-code-db01",
+          "text": "Hecho (decisión del dueño 2026-11-04: se quita). Qué cambia: el payload del dashboard ya no lleva offer.detail; se borran _detail_evidence y sus helpers/constantes en dashboard.py, latest_detail_fetches_for_jobs en db.py (solo lo usaba esto, y la generación ahorra una consulta), sus tests y la sección 'Evidencia del enlace' de README ES/EN. Ahorro: 1 588 565 -> 1 485 353 bytes, 100.8 KB menos (más que los 65 KB de octubre porque hay 1097 ofertas activas). Cómo se probó: dashboard generado desde copia de la BD (backup API) a data/before.html y data/after.html del worktree; se compararon el JSON embebido sección a sección y el resto del HTML: todo idéntico salvo la hora de generación y 22 age_days redondeados por los 3 min entre ejecuciones. El JS nunca leía offer.detail. Plantilla sin tocar: sigue autocontenido/offline/file://. pytest -q: 1290 passed. Qué comprobar: abrir el dashboard tras el siguiente sweep y ver que se ve igual. Sin commit."
+        }
+      ],
+      "started": {
+        "at": "2026-11-04T14:16:57Z",
+        "by": "claude-code-db01"
+      }
     },
     {
       "id": "DB-03",
       "title": "Limpiar localStorage al importar decisiones",
-      "state": "proposed",
+      "state": "review",
       "group": "DB",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "[Decisión del dueño] Exportar/importar nunca limpia `localStorage`, así que el botón de exportar sigue visible después de importar (NEXT_STEPS.md:351-352).\nHecho: decisión del dueño y, si se limpia, cambio + test."
-    },
-    {
-      "id": "DB-04",
-      "title": "Destino de la UI de decisión apply/reject",
-      "state": "proposed",
-      "group": "DB",
-      "at": "2026-10-28T08:55:14Z",
-      "by": "claude",
-      "desc": "[Decisión del dueño] Las decisiones binarias salieron del flujo semanal (las sustituye la vista de divergencia, DB-06). Falta decidir si la UI se quita o se queda dormida; las tablas se quedan en cualquier caso (NEXT_STEPS.md:516-519).\nHecho: decisión anotada."
+      "desc": "[Decisión del dueño] Exportar/importar nunca limpia `localStorage`, así que el botón de exportar sigue visible después de importar (NEXT_STEPS.md:351-352).\nHecho: decisión del dueño y, si se limpia, cambio + test.",
+      "notes": [
+        {
+          "at": "2026-11-04T15:40:02Z",
+          "by": "claude-code-db03",
+          "text": "Plan: el payload lleva la fecha de la decisión importada (nunca el motivo); al cargar, el dashboard borra de localStorage solo las entradas cuya decisión coincide con la importada y cuya fecha local es <= la de la base; los botones muestran la decisión importada si no hay local. Test + README ES/EN."
+        },
+        {
+          "at": "2026-11-04T15:49:27Z",
+          "by": "claude-code-db03",
+          "text": "Qué cambia: al abrir el dashboard regenerado tras import-feedback, el navegador olvida las decisiones locales que la base ya tiene con la misma decisión y fecha igual o posterior, así que 'Exportar N decisiones' desaparece. Lo que aún no está en la base se conserva (otra decisión, una edición posterior a la exportación, una entrada sin fecha), y también se cuentan las ofertas inactivas que ya no salen en la lista. Los botones siguen marcados con la decisión importada, así que la vista no cambia. El payload añade la fecha de la decisión (en ms, nunca el motivo) a imported_review y un mapa imported_feedback con todas las decisiones importadas. Probado: suite completa 1291 passed; con una copia de la base, el payload del dashboard es idéntico al de master salvo age_days (depende del reloj) y los campos nuevos; la poda simulada en node con las 47 decisiones reales borra las 45 coincidentes, incluidas las 2 de ofertas inactivas (171, 184), y mantiene la editada después, la de otro valor y la de un id desconocido. README ES/EN actualizados. Qué comprobar: abre el dashboard tras el próximo barrido; si tu navegador solo tenía decisiones ya importadas, el botón Exportar ya no aparece y los botones siguen marcados."
+        }
+      ],
+      "started": {
+        "at": "2026-11-04T15:40:02Z",
+        "by": "claude-code-db03"
+      }
     },
     {
       "id": "DB-05",
       "title": "Gates FAIL / FLAG con auditoría de vetos",
       "state": "proposed",
       "group": "DB",
+      "deps": ["EIA-02"],
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
       "desc": "[Decisión del dueño] Del roadmap del 2026-10-18: confirmar que sigue vigente. FAIL solo por un deal-breaker explícito del perfil o solape cero; todo lo dudoso pasa a FLAG (⚠, sigue en el ranking, con la evidencia citada guardada). El dashboard gana una lista de vetos y el dueño promueve FLAG→FAIL cada semana escribiendo el motivo (NEXT_STEPS.md:558-563).\nHecho: gates + vista + tests + README ES/EN."
     },
     {
       "id": "DB-06",
-      "title": "Vista de divergencia heurístico vs LLM",
+      "title": "Divergencia heurístico vs modelo: medir antes de construir la vista",
       "state": "proposed",
       "group": "DB",
       "deps": ["DB-05"],
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "[Decisión del dueño] Del roadmap del 2026-10-18: confirmar que sigue vigente. Ofertas en las que discrepan el heurístico y el scorer LLM, más una pequeña muestra de control de las que coinciden; sustituye la revisión oferta a oferta por una sesión semanal de ~10 min (NEXT_STEPS.md:564-569). Necesita backend primero: no se guarda ninguna evaluación heurística (las 3.207 son `opencode`, NEXT_STEPS.md:425-426).\nHecho: vista + comparación de scorers en `calibration.py` + tests."
+      "desc": "Saber si una revisión semanal de las ofertas en las que discrepan las reglas (el puntuador heurístico, gratis e instantáneo, hoy sin usar) y el modelo te enseñaría errores del modelo o solo ruido de las reglas.\nSobre una copia de la base: puntuar con el heurístico todas las ofertas activas, sin guardarlo en la base real, y compararlo con el último puntaje del modelo. Contar cuántas discrepan mucho y, en las 10 que más discrepan, ver quién acierta según el texto de la oferta y tus decisiones apply/reject.\nHecho: un informe corto con esas cifras y una recomendación (construir la vista semanal, ajustar antes las reglas o abandonar la idea). La vista solo se construye si tú lo decides después.",
+      "notes": [
+        {
+          "at": "2026-11-04T15:32:36Z",
+          "by": "claude-code",
+          "text": "Reescrita (dueño, 2026-11-04): primero medir si la vista merece la pena"
+        }
+      ]
     },
     {
       "id": "DB-07",
       "title": "Dimensions vacías: pedirlas al scorer o quitar la sección",
-      "state": "proposed",
+      "state": "review",
       "group": "DB",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
-      "desc": "[Decisión del dueño] Solo 5 de 700 ofertas tienen `dimensions_json`, ninguna escrita después del 2026-10-01, y casi todas las filas se abren solo con el rationale (NEXT_STEPS.md:379-380, 422-424). Causa: el contrato de salida del prompt de OpenCode prohíbe devolver `dimensions` (`src/jobscout/scoring/opencode.py:153-157`).\nHecho: el dueño decide si el scorer vuelve a devolverlas (más tokens por oferta) o se quita la sección; cambio + tests."
+      "desc": "[Decisión del dueño] Solo 5 de 700 ofertas tienen `dimensions_json`, ninguna escrita después del 2026-10-01, y casi todas las filas se abren solo con el rationale (NEXT_STEPS.md:379-380, 422-424). Causa: el contrato de salida del prompt de OpenCode prohíbe devolver `dimensions` (`src/jobscout/scoring/opencode.py:153-157`).\nHecho: el dueño decide si el scorer vuelve a devolverlas (más tokens por oferta) o se quita la sección; cambio + tests.",
+      "notes": [
+        {
+          "at": "2026-11-04T15:33:42Z",
+          "by": "claude-code-db07",
+          "text": "Plan: quitar la sección 'Desglose por dimensiones' del dashboard (JS/CSS) y el campo dimensions del payload (_dimensions, columna en la query); scoring/schema intactos; README ES/EN; comparar dashboard antes/después sobre copia de la base."
+        },
+        {
+          "at": "2026-11-04T15:36:09Z",
+          "by": "claude-code-db07",
+          "text": "Qué cambia: al abrir una fila ya no aparece 'Desglose por dimensiones' ni la nota 'sin desglose en esta evaluación'; el cuerpo queda en una columna (como ya se veía en casi todas las filas). Fuera del payload el campo dimensions y su parser; fuera su CSS (.dims/.dim/.bar/.nodims) y JS. Scoring, schema y dimensions_json en la base sin tocar; prompt igual. README ES/EN actualizados. Prueba: dashboard generado desde copia de la base antes y después (data/dash-before.html, data/dash-after.html en el worktree): payload idéntico salvo dimensions (solo 1 oferta la tenía) y age_days por el minuto entre ambas; HTML solo pierde ese CSS/JS. Tests de dimensiones sustituidos por uno que comprueba que la sección ya no se pinta. Suite: 1287 passed. Comprobar: abrir una fila con justificación y salario, se ve igual que antes. Sin commit."
+        }
+      ],
+      "started": {
+        "at": "2026-11-04T15:33:42Z",
+        "by": "claude-code-db07"
+      }
     },
     {
       "id": "KW-01",
@@ -509,11 +538,32 @@
     {
       "id": "EIA-01",
       "title": "career.md: perfil con evidencias y su fuente",
-      "state": "proposed",
+      "state": "doing",
       "group": "EIA",
       "at": "2026-11-03T09:26:03Z",
       "by": "claude-code",
-      "desc": "Idea de amble.fyi: un perfil donde cada afirmación cita de dónde sale (una línea del CV, un repo, un proyecto), más una lista de 'lo que aún no sé'. Se genera a partir de ~/vault/cv.md y tus repos públicos, y tú lo corriges a mano.\nDespués se puntúa una muestra con y sin career.md sobre una copia de la base (mismo método que BR-02) y se compara con tus decisiones apply/reject.\nHecho: career.md revisado por ti y la comparación escrita. El scorer solo lo usa de forma permanente si tú lo decides."
+      "desc": "Idea de amble.fyi: un perfil donde cada afirmación cita de dónde sale (una línea del CV, un repo, un proyecto), más una lista de 'lo que aún no sé'. Se genera a partir de ~/vault/cv.md y tus repos públicos, y tú lo corriges a mano.\nDespués se puntúa una muestra con y sin career.md sobre una copia de la base (mismo método que BR-02) y se compara con tus decisiones apply/reject.\nHecho: career.md revisado por ti y la comparación escrita. El scorer solo lo usa de forma permanente si tú lo decides.",
+      "notes": [
+        {
+          "at": "2026-11-04T14:17:06Z",
+          "by": "claude-code-eia01",
+          "text": "Plan: career.md desde cv.md (copia del repo, ~/vault/cv.md no existe) + repos públicos, con fuente por afirmación; pedir revisión; luego 3 pasadas (sin/con/sin) sobre las 47 ofertas con feedback en una copia de la base, script en data/eia01/, informe en reports/eia01-career-comparison.md."
+        },
+        {
+          "at": "2026-11-04T14:18:57Z",
+          "by": "claude-code-eia01",
+          "text": "Question: career.md listo en ~/vault/career.md: revísalo y corrígelo; avísame cuando esté. Nota: ~/vault/cv.md no existe hoy; he usado la copia del 2026-10-23 (/home/adrian/jobscout/cv.md). Mira sobre todo 'Lo que aún no sé' (12 preguntas): lo que contestes ahí entra como evidencia."
+        },
+        {
+          "at": "2026-11-04T15:37:00Z",
+          "by": "claude-code-eia01",
+          "text": "Orquestador (por el dueño): career.md revisado; el dueño respondió las 12 preguntas y el orquestador integró sus respuestas y fuentes del vault. Lanzo las 3 pasadas (sin, con, sin) sobre las 47 ofertas."
+        }
+      ],
+      "started": {
+        "at": "2026-11-04T14:17:06Z",
+        "by": "claude-code-eia01"
+      }
     },
     {
       "id": "EIA-02",
@@ -537,7 +587,7 @@
     {
       "id": "WF-04",
       "title": "Extraer el salario de las descripciones de Tecnoempleo",
-      "state": "review",
+      "state": "done",
       "group": "WF",
       "at": "2026-11-04T13:10:52Z",
       "by": "claude-code",
@@ -572,11 +622,27 @@
     {
       "id": "FU-04",
       "title": "Tecnoempleo: 393 fichas sin página guardada por el filtro de credenciales",
-      "state": "proposed",
+      "state": "done",
       "group": "FU",
       "at": "2026-11-04T13:56:43Z",
       "by": "claude-code",
-      "desc": "De las 542 fichas de Tecnoempleo descargadas, 393 no guardan la página: el filtro que evita guardar secretos (`src/jobscout/config.py:306`) cree que contienen una credencial. Para esas solo queda la descripción, así que se pierden la evidencia y el campo «Salario» de la ficha (WF-04).\nAveriguar qué dispara el filtro en esas páginas. Si es un falso positivo (un token de formulario, un id con forma de clave), ajustarlo sin dejar pasar credenciales reales; si es un secreto de verdad, guardar la página sin él.\nHecho: causa explicada; si se arregla, test con una ficha real, y las fichas nuevas se guardan enteras. Volver a descargar las 393 lo decides tú aparte (son peticiones de red)."
+      "desc": "De las 542 fichas de Tecnoempleo descargadas, 393 no guardan la página: el filtro que evita guardar secretos (`src/jobscout/config.py:306`) cree que contienen una credencial. Para esas solo queda la descripción, así que se pierden la evidencia y el campo «Salario» de la ficha (WF-04).\nAveriguar qué dispara el filtro en esas páginas. Si es un falso positivo (un token de formulario, un id con forma de clave), ajustarlo sin dejar pasar credenciales reales; si es un secreto de verdad, guardar la página sin él.\nHecho: causa explicada; si se arregla, test con una ficha real, y las fichas nuevas se guardan enteras. Volver a descargar las 393 lo decides tú aparte (son peticiones de red).",
+      "notes": [
+        {
+          "at": "2026-11-04T14:06:40Z",
+          "by": "claude-code-fu04",
+          "text": "Plan: copiar la BD (backup API), ver qué patrón de _SECRET_PATTERNS dispara sobre capturas/descripciones de Tecnoempleo, comparar fechas 393 vs 149; si es falso positivo, excepción estrecha como la de Cloudflare + test con ficha real; sin red."
+        },
+        {
+          "at": "2026-11-04T14:08:18Z",
+          "by": "claude-code-fu04",
+          "text": "Causa: el script público de Cloudflare Web Analytics de Tecnoempleo (data-cf-beacon='{...\"token\":\"<32 hex>\"...}') coincidía con el patrón genérico de token etiquetado. No es un secreto. Ya está arreglado desde afa279a (26-sep), con la excepción _without_cloudflare_beacon_tokens y sus tests (test_config.py:237-265 y test_tecnoempleo_details.py:389, adaptador con ficha que lleva el beacon). Las 393 fichas vacías (más 94 páginas de búsqueda) se descargaron entre el 18 y el 25 de sep, todas antes de esa fecha; todas las de después del 29-sep se guardaron (149/149 fichas, 209/209 búsquedas). Comprobado sin red sobre una copia de la BD: las 358 páginas guardadas llevan el beacon, sin la excepción las 358 caerían en ese mismo patrón y con ella no salta ningún otro. Sin cambios de código; test_config + test_tecnoempleo_details: 138 passed. Fichas nuevas: se guardan enteras el 100 %. Para recuperar las 393: son 257 ofertas distintas (1 ya se volvió a bajar), de las que 156 siguen activas y 101 no (probablemente den 404). Habría que lanzar fetch-tecnoempleo-details --confirm-network --job-id ... con esas 156, en lotes de 250 como máximo: unos 25 min a 8 s. Lo decides tú. Qué comprobar: nada en el código; si lo apruebas, después del re-fetch las 156 deberían tener body y Salario."
+        }
+      ],
+      "started": {
+        "at": "2026-11-04T14:06:40Z",
+        "by": "claude-code-fu04"
+      }
     }
   ]
 }
