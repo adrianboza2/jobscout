@@ -371,33 +371,6 @@ unresolved counts, and the `overall_score` distribution by human decision. A
 decision with no valid evaluation (`status = 'ok'`) is counted separately and
 stays out of the agreement math.
 
-### Link evidence (detail)
-
-The payload classifies each offer's **link evidence**, kept apart from the two
-decision axes. It is a stored fact, not a recommendation: it is computed only from
-that offer's latest `fetch-details` attempt, and it never changes scores,
-recommendations, or the database. Since the redesign (DR-3) the row no longer
-shows it: the owner found it irrelevant for reviewing offers.
-
-| State | Meaning |
-|-------|---------|
-| `unchecked` | No detail attempt has been recorded. |
-| `skipped` | The latest attempt was deliberately skipped. |
-| `ok` | The latest attempt succeeded (ok/partial) within the 21-day window. |
-| `stale` | The latest attempt succeeded but is older than the 21-day window. |
-| `definitive_missing` | The latest attempt returned HTTP 404/410. |
-| `retryable_failure` | The latest attempt failed without receiving an HTTP response. |
-| `failed` | The latest attempt failed with another recorded HTTP response. |
-
-- The 21-day window is explicit; evidence with no usable date is reported as
-  `stale`, never as current.
-- A redirect's `final_url` is kept only as safe evidence of a successful
-  attempt, goes through the same URL validation as every other link, and only
-  when it differs from the requested URL. It is never presented as a broken link.
-- If a visible offer has a 404/410 and a later re-sighting exists, the
-  payload marks it: the evidence was refuted. Brokenness is never invented or inferred
-  from a redirect.
-
 ### Preference filters (exclusions)
 
 Next to the professional-fit score, every offer is checked against the user's

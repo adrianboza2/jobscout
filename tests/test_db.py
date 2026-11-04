@@ -30,7 +30,6 @@ from jobscout.db import (
     job_detail_fetch_count,
     jobs_needing_evaluation,
     latest_detail_fetch,
-    latest_detail_fetches_for_jobs,
     latest_evaluation,
     list_jobs,
     profile_evidence,
@@ -1065,87 +1064,6 @@ def test_detail_fetch_final_url_round_trip(conn, stored_job) -> None:
     history = detail_fetches_for_job(conn, stored_job.id)
     assert history[0].final_url is None
     assert history[1].final_url == "https://www.linkedin.com/jobs/view/3909999999/"
-
-
-def test_latest_detail_fetches_for_jobs_is_batched_and_latest_only(conn) -> None:
-    first, _ = store_posting(conn, _posting(), now="2026-09-15T10:00:00Z")
-    second, _ = store_posting(
-        conn,
-        _posting(
-            source_job_id="5555555555",
-            url="https://www.linkedin.com/jobs/view/5555555555/other",
-            title="Data Engineer",
-            company="Beta Corp",
-        ),
-        now="2026-09-15T11:00:00Z",
-    )
-    never_fetched, _ = store_posting(
-        conn,
-        _posting(
-            source_job_id="6666666666",
-            url="https://www.linkedin.com/jobs/view/6666666666/third",
-            title="Platform Engineer",
-            company="Gamma LLC",
-        ),
-        now="2026-09-15T12:00:00Z",
-    )
-    # Two attempts for one job: the reader must report only the highest id.
-    insert_detail_fetch(
-        conn,
-        JobDetailFetch(
-            job_id=first.id,
-            status=DetailFetchStatus.OK,
-            http_status=200,
-            fetched_at="2026-09-14T10:00:00Z",
-            stored_at="2026-09-14T10:00:00Z",
-        ),
-    )
-    insert_detail_fetch(
-        conn,
-        JobDetailFetch(
-            job_id=first.id,
-            status=DetailFetchStatus.SKIPPED,
-            stored_at="2026-09-15T09:00:00Z",
-        ),
-    )
-    insert_detail_fetch(
-        conn,
-        JobDetailFetch(
-            job_id=second.id,
-            status=DetailFetchStatus.FAILED,
-            http_status=410,
-            stored_at="2026-09-15T09:00:00Z",
-        ),
-    )
-
-    # The reader costs exactly one statement, even across several jobs.
-    statements: list[str] = []
-    conn.set_trace_callback(statements.append)
-    try:
-        latest = latest_detail_fetches_for_jobs(
-            conn, [first.id, second.id, never_fetched.id, first.id]
-        )
-    finally:
-        conn.set_trace_callback(None)
-
-    assert set(latest) == {first.id, second.id}
-    assert latest[first.id].status == DetailFetchStatus.SKIPPED
-    assert latest[second.id].http_status == 410
-    # The full history still holds both attempts for the first job.
-    assert len(detail_fetches_for_job(conn, first.id)) == 2
-    detail_statements = [item for item in statements if "job_detail_fetches" in item]
-    assert len(detail_statements) == 1
-    # Read-only by construction.
-    assert detail_statements[0].strip().lower().startswith("select")
-
-
-def test_latest_detail_fetches_for_jobs_handles_empty_and_unfetched(conn) -> None:
-    job, _ = store_posting(conn, _posting(), now="2026-09-15T10:00:00Z")
-
-    assert latest_detail_fetches_for_jobs(conn, []) == {}
-    # A job with no attempts is absent, so callers can tell "never checked".
-    assert latest_detail_fetches_for_jobs(conn, [job.id]) == {}
-    assert latest_detail_fetches_for_jobs(conn, [job.id, job.id]) == {}
 
 
 # ---------------------------------------------------------------------------

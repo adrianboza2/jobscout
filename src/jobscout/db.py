@@ -2013,38 +2013,6 @@ def latest_successful_detail_fetch_source(
     return str(source) if source else None
 
 
-def latest_detail_fetches_for_jobs(
-    conn: sqlite3.Connection, job_ids: Sequence[int]
-) -> dict[int, JobDetailFetch]:
-    """Latest detail-fetch attempt per job, in one read-only SELECT.
-
-    The dashboard needs one evidence row per visible offer. Calling
-    :func:`latest_detail_fetch` per offer would cost one query per row (N+1);
-    this reader instead groups the history in SQL and joins the single highest
-    ``id`` per job, the same attempt :func:`latest_detail_fetch` reports.
-    Read-only by construction: it runs a single SELECT and never writes.
-    Jobs with no fetch rows are simply absent from the mapping, so callers can
-    tell "never checked" apart from "checked and failed".
-    """
-    ids = [int(job_id) for job_id in job_ids]
-    if not ids:
-        return {}
-    placeholders = ",".join("?" for _ in ids)
-    rows = conn.execute(
-        f"""
-        SELECT f.* FROM job_detail_fetches f
-        JOIN (
-            SELECT job_id, MAX(id) AS latest_id
-            FROM job_detail_fetches
-            WHERE job_id IN ({placeholders})
-            GROUP BY job_id
-        ) latest ON latest.latest_id = f.id
-        """,
-        ids,
-    ).fetchall()
-    return {int(row["job_id"]): _row_to_detail_fetch(row) for row in rows}
-
-
 def job_detail_fetch_count(conn: sqlite3.Connection) -> int:
     return int(conn.execute("SELECT COUNT(*) FROM job_detail_fetches").fetchone()[0])
 

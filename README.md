@@ -377,33 +377,6 @@ muestras comparables, el acuerdo exacto, la matriz de confusión, los conteos no
 resueltos y la distribución de `overall_score` por decisión humana. Una decisión
 sin evaluación válida (`status = 'ok'`) se cuenta aparte y queda fuera del cálculo.
 
-### Evidencia del enlace (detalle)
-
-El payload clasifica para cada oferta la **evidencia del enlace**, separada de
-los dos ejes de decisión. Es un hecho guardado, no una recomendación: se calcula
-solo con el último intento de `fetch-details` de esa oferta y nunca altera
-puntajes, recomendaciones ni la base. Desde el rediseño (DR-3) la fila ya no la
-muestra: el dueño la consideró irrelevante para revisar ofertas.
-
-| Estado | Significado |
-|--------|-------------|
-| `unchecked` | No hay ningún intento de detalle registrado. |
-| `skipped` | El último intento se omitió a propósito. |
-| `ok` | El último intento tuvo éxito (ok/partial) dentro de la ventana de 21 días. |
-| `stale` | El último intento tuvo éxito pero es anterior a la ventana de 21 días. |
-| `definitive_missing` | El último intento respondió 404/410. |
-| `retryable_failure` | El último intento falló sin recibir una respuesta HTTP. |
-| `failed` | El último intento falló con otra respuesta HTTP registrada. |
-
-- La ventana de 21 días es explícita; una evidencia sin fecha utilizable se
-  informa como `stale`, nunca como vigente.
-- Un `final_url` de redirección se guarda solo como evidencia segura de un
-  intento exitoso, con la misma validación de URL que el resto de enlaces, y
-  solo si difiere de la URL solicitada. Nunca se presenta como enlace roto.
-- Si una oferta visible tiene un 404/410 y hubo un re-avistamiento posterior, el
-  payload lo marca: la evidencia fue refutada. La rotura no se inventa ni se
-  deduce de una redirección.
-
 ### Filtros de preferencia (exclusiones)
 
 Además del puntaje de encaje profesional, cada oferta se contrasta con las
