@@ -560,13 +560,15 @@ def _fetch_job_keyword_keys(
 
 def _fetch_imported_feedback(
     conn: sqlite3.Connection, job_ids: Sequence[int]
-) -> dict[int, str]:
+) -> dict[int, tuple[str, str | None]]:
     """Batched read-only read of the imported human decision per shown job id.
 
     Returns only the ids that actually have a ``job_feedback`` row, so an offer
     with no imported decision is *absent* from the mapping rather than defaulted
-    to a value. Only the stored ``decision`` is read: the free-text reason stays
-    in SQLite and is never serialized into the report.
+    to a value. Each value is ``(decision, decision_updated_at)``: the timestamp
+    lets the browser drop a local copy the database already holds. Only those
+    two columns are read: the free-text reason stays in SQLite and is never
+    serialized into the report.
 
     ``search_runs.cycle_id`` is not consulted here: the imported decision is
     keyed only by job, so the absence of a ``job_feedback`` row is the only
@@ -578,27 +580,85 @@ def _fetch_imported_feedback(
         return {}
     placeholders = ",".join("?" for _ in job_ids)
     rows = conn.execute(
-        f"SELECT job_id, decision FROM job_feedback WHERE job_id IN ({placeholders})",
+        f"SELECT job_id, decision, decision_updated_at FROM job_feedback"
+        f" WHERE job_id IN ({placeholders})",
         [int(job_id) for job_id in job_ids],
     ).fetchall()
-    decisions: dict[int, str] = {}
+    decisions: dict[int, tuple[str, str | None]] = {}
     for row in rows:
         decision = row["decision"]
         if decision:
-            decisions[int(row["job_id"])] = str(decision)
+            updated_at = row["decision_updated_at"]
+            decisions[int(row["job_id"])] = (
+                str(decision),
+                str(updated_at) if updated_at else None,
+            )
     return decisions
 
 
-def _imported_review(decisions: dict[int, str], job_id: int) -> dict[str, Any]:
+# The importer rewrites every timestamp with exactly six fractional digits
+# (``feedback._canonical_timestamp``); a value that does not fully match was
+# written by something else and is not compared against the browser's clock.
+_IMPORTED_TIMESTAMP_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$"
+)
+
+
+def _imported_timestamp_ms(value: str | None) -> str | None:
+    """The stored timestamp truncated to milliseconds, or ``None``.
+
+    The browser writes ``new Date().toISOString()`` with three fractional
+    digits, so truncating the stored six is what makes the two comparable
+    exactly instead of through float parsing.
+    """
+    if not value or _IMPORTED_TIMESTAMP_RE.fullmatch(value) is None:
+        return None
+    return value[:23] + "Z"
+
+
+def _fetch_all_imported_feedback(
+    conn: sqlite3.Connection,
+) -> dict[int, tuple[str, str | None]]:
+    """Every imported decision, inactive offers included, for the browser prune.
+
+    The prune has to see decisions on offers the report no longer lists;
+    otherwise their local copies would keep the export button visible forever.
+    Like :func:`_fetch_imported_feedback`, the reason is never read.
+    """
+    rows = conn.execute(
+        "SELECT job_id, decision, decision_updated_at FROM job_feedback"
+    ).fetchall()
+    return {
+        int(row["job_id"]): (
+            str(row["decision"]),
+            str(row["decision_updated_at"]) if row["decision_updated_at"] else None,
+        )
+        for row in rows
+        if row["decision"]
+    }
+
+
+def _imported_review(
+    decisions: dict[int, tuple[str, str | None]], job_id: int
+) -> dict[str, Any]:
     """Serializable imported-decision state for one offer (never the reason).
 
     ``reviewed`` is true only when a ``job_feedback`` row exists, so "not
     imported" is never confused with a stored value. ``decision`` carries the
     stored value (including a legacy ``consider``) and stays ``None`` when no row
-    exists; the reason is intentionally omitted.
+    exists; ``updated_at`` is its date in the browser's millisecond form (or
+    ``None`` when it cannot be read that way). The reason is intentionally
+    omitted.
     """
-    decision = decisions.get(job_id)
-    return {"reviewed": bool(decision), "decision": decision or None}
+    stored = decisions.get(job_id)
+    if not stored:
+        return {"reviewed": False, "decision": None, "updated_at": None}
+    decision, updated_at = stored
+    return {
+        "reviewed": True,
+        "decision": decision,
+        "updated_at": _imported_timestamp_ms(updated_at),
+    }
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
@@ -943,6 +1003,7 @@ def build_payload(
     # The imported decision read does not consult ``cycle_id``; the latest sweep
     # is dated from it separately, so the two concerns stay independent.
     imported_decisions = _fetch_imported_feedback(conn, job_ids)
+    all_imported = _fetch_all_imported_feedback(conn)
     # Same helper as ``score``, so the report and the scorer never disagree on
     # which offers are still waiting for a description.
     awaiting_details = jobs_awaiting_details(conn)
@@ -1065,6 +1126,12 @@ def build_payload(
         "status": status,
         "warnings": _warnings(summary, keyword_count=len(keyword_stats)),
         "offers": offers,
+        # Keyed by job id, in the ``imported_review`` shape, so the browser can
+        # forget local decisions the database already holds, listed or not.
+        "imported_feedback": {
+            str(job_id): _imported_review(all_imported, job_id)
+            for job_id in sorted(all_imported)
+        },
         "keywords": active_keyword_stats,
         "retired_keywords": retired_keyword_stats,
     }
@@ -1599,6 +1666,20 @@ _SCRIPT = r"""
   var STORAGE_KEY = payload.feedback_schema + ":" + payload.project_id;
 
   var feedback = loadFeedback();
+  // Forget what the database already holds: after ``import-feedback`` the
+  // export button would otherwise stay forever. Anything still unsent (another
+  // decision, a newer edit, no date to compare) is kept, so no local decision
+  // is lost by opening the report.
+  var pruned = false;
+  var importedFeedback = payload.imported_feedback || {};
+  Object.keys(importedFeedback).forEach(function (jobId) {
+    if (alreadyImported(feedback[jobId], importedFeedback[jobId])) {
+      delete feedback[jobId];
+      pruned = true;
+    }
+  });
+  if (pruned) { saveFeedback(); }
+
   var filters = { text: "", recommendation: "", isNew: false, showSeniority: false, minScore: null, keyword: "", sort: "score" };
 
   function labelFrom(map, value, fallback) {
@@ -1686,6 +1767,18 @@ _SCRIPT = r"""
     var match = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(?::\d{2})?(?:\.\d+)?Z?$/
       .exec(value.trim());
     return match ? (match[1] + " " + match[2] + " UTC") : value;
+  }
+
+  // A local entry is forgotten only when the database already holds the same
+  // decision with a timestamp at least as new: re-importing it would be a no-op.
+  // Anything else (no timestamp, different value, newer local edit) is kept.
+  function alreadyImported(entry, imported) {
+    if (!entry || !entry.decision || !imported || !imported.reviewed) { return false; }
+    if (entry.decision !== imported.decision) { return false; }
+    var localAt = Date.parse(entry.updated_at);
+    var importedAt = Date.parse(imported.updated_at);
+    if (isNaN(localAt) || isNaN(importedAt)) { return false; }
+    return importedAt >= localAt;
   }
 
   function loadFeedback() {
@@ -1854,7 +1947,7 @@ _SCRIPT = r"""
     box.setAttribute("role", "group");
     box.setAttribute("aria-label", "Mi decisión sobre la oferta: " + offerLabel);
     box.title = "Se guarda solo en este navegador; no postula ni escribe en la base de datos.";
-    var entry = feedback[offer.id] || { decision: "", reason: "" };
+    var entry = feedback[offer.id] || { decision: importedDecision(offer), reason: "" };
     var controls = el("div", "feedback-controls");
     controls.setAttribute("role", "group");
     controls.setAttribute("aria-label", "Marca esta oferta: " + offerLabel);
@@ -1948,8 +2041,16 @@ _SCRIPT = r"""
     if (reason) { reason.hidden = !entry.decision; }
   }
 
+  function importedDecision(offer) {
+    // The database's decision is the starting point of the controls; a local
+    // entry, even one without a decision, still wins over it.
+    return (offer.imported_review && offer.imported_review.reviewed &&
+      offer.imported_review.decision) || "";
+  }
+
   function isReviewed(offer) {
-    return Boolean(feedback[offer.id] && feedback[offer.id].decision);
+    var entry = feedback[offer.id];
+    return Boolean(entry ? entry.decision : importedDecision(offer));
   }
 
   function scoreStateText(status) {

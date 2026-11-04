@@ -11,7 +11,9 @@ import hashlib
 import itertools
 import json
 import re
+import shutil
 import sqlite3
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -2362,9 +2364,21 @@ def test_unreviewed_view_isolates_offers_without_imported_decision(db_file: Path
     payload = _payload(db_file)
     by_id = {offer["id"]: offer for offer in payload["offers"]}
 
-    assert by_id[jobs["job1"]]["imported_review"] == {"reviewed": True, "decision": "apply"}
-    assert by_id[jobs["job2"]]["imported_review"] == {"reviewed": False, "decision": None}
-    assert by_id[jobs["job3"]]["imported_review"] == {"reviewed": False, "decision": None}
+    assert by_id[jobs["job1"]]["imported_review"] == {
+        "reviewed": True,
+        "decision": "apply",
+        "updated_at": "2026-09-15T11:00:00.000Z",
+    }
+    assert by_id[jobs["job2"]]["imported_review"] == {
+        "reviewed": False,
+        "decision": None,
+        "updated_at": None,
+    }
+    assert by_id[jobs["job3"]]["imported_review"] == {
+        "reviewed": False,
+        "decision": None,
+        "updated_at": None,
+    }
 
     isolated = [
         offer["id"]
@@ -2394,13 +2408,14 @@ def test_imported_review_is_a_single_readonly_select(db_file: Path) -> None:
     finally:
         conn.close()
 
-    assert decisions == {jobs["job1"]: "apply"}
+    assert decisions == {jobs["job1"]: ("apply", "2026-09-15T11:00:00.000000Z")}
     assert len(statements) == 1, statements
     statement = statements[0]
     assert statement.lstrip().upper().startswith("SELECT")
     assert "job_feedback" in statement
+    # Word boundaries keep the ``decision_updated_at`` column from matching UPDATE.
     for verb in ("INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "PRAGMA"):
-        assert verb not in statement.upper(), statement
+        assert re.search(rf"\b{verb}\b", statement, re.IGNORECASE) is None, statement
 
 
 def test_unreviewed_view_is_honest_when_no_feedback_is_imported(db_file: Path) -> None:
@@ -2409,7 +2424,11 @@ def test_unreviewed_view_is_honest_when_no_feedback_is_imported(db_file: Path) -
 
     assert payload["summary"]["human_reviewed_jobs"] == 0
     assert all(
-        offer["imported_review"] == {"reviewed": False, "decision": None}
+        offer["imported_review"] == {
+            "reviewed": False,
+            "decision": None,
+            "updated_at": None,
+        }
         for offer in payload["offers"]
     )
     # No fabricated backlog, and no metric derived from the free-form cycle_id.
@@ -2456,7 +2475,11 @@ def test_reviewed_view_keeps_consider_legacy_and_binary_buttons(db_file: Path) -
 
     payload = _payload(db_file)
     legacy = next(offer for offer in payload["offers"] if offer["id"] == jobs["job1"])
-    assert legacy["imported_review"] == {"reviewed": True, "decision": "consider"}
+    assert legacy["imported_review"] == {
+        "reviewed": True,
+        "decision": "consider",
+        "updated_at": "2026-09-15T11:00:00.000Z",
+    }
 
     html_text = render_dashboard_html(payload)
     assert 'var FEEDBACK_DECISIONS = ["apply", "reject"];' in html_text
@@ -2500,7 +2523,11 @@ def test_imported_review_never_serializes_the_imported_reason(db_file: Path) -> 
     payload = _extract_payload(html_text)
     offer = next(item for item in payload["offers"] if item["id"] == jobs["job1"])
 
-    assert offer["imported_review"] == {"reviewed": True, "decision": "apply"}
+    assert offer["imported_review"] == {
+        "reviewed": True,
+        "decision": "apply",
+        "updated_at": "2026-09-15T11:00:00.000Z",
+    }
     assert "reason" not in offer["imported_review"]
     assert reason not in html_text
     assert reason not in json.dumps(payload)
@@ -2523,6 +2550,140 @@ def test_imported_review_read_leaves_the_database_unchanged(db_file: Path) -> No
     assert _database_fingerprint(db_file) == before
     assert db_file.read_bytes() == before_bytes
     assert '"imported_review":{"reviewed":true' in html_text
+
+
+def test_imported_review_carries_the_decision_date_in_browser_form(db_file: Path) -> None:
+    """The date is truncated to milliseconds so the browser can compare it exactly."""
+    jobs = _seed_dashboard_db(db_file)
+    conn = connect(db_file)
+    try:
+        _import_decision(
+            conn,
+            jobs["job1"],
+            FeedbackDecision.APPLY,
+            updated_at="2026-09-15T11:00:00.431987Z",
+        )
+        # A date outside the importer's normalized form is not guessed at: the
+        # browser gets ``None`` and keeps its local entry instead.
+        _import_decision(
+            conn,
+            jobs["job2"],
+            FeedbackDecision.REJECT,
+            updated_at="2026-09-15T11:05:00Z",
+        )
+    finally:
+        conn.close()
+
+    payload = _payload(db_file)
+    by_id = {offer["id"]: offer for offer in payload["offers"]}
+
+    assert by_id[jobs["job1"]]["imported_review"] == {
+        "reviewed": True,
+        "decision": "apply",
+        "updated_at": "2026-09-15T11:00:00.431Z",
+    }
+    assert by_id[jobs["job2"]]["imported_review"]["updated_at"] is None
+    assert by_id[jobs["job3"]]["imported_review"]["updated_at"] is None
+
+
+def test_imported_feedback_covers_offers_the_report_no_longer_lists(
+    db_file: Path,
+) -> None:
+    """An inactive offer's decision still reaches the browser prune, without its reason."""
+    jobs = _seed_dashboard_db(db_file)
+    reason = "motivo privado que nunca sale de SQLite"
+    conn = connect(db_file)
+    try:
+        _import_decision(conn, jobs["job1"], FeedbackDecision.APPLY, reason=reason)
+        conn.execute("UPDATE jobs SET is_active = 0 WHERE id = ?", (jobs["job1"],))
+        conn.execute("UPDATE job_variants SET is_active = 0 WHERE job_id = ?", (jobs["job1"],))
+        conn.commit()
+    finally:
+        conn.close()
+
+    html_text = generate_and_read(db_file)
+    payload = _extract_payload(html_text)
+
+    assert jobs["job1"] not in {offer["id"] for offer in payload["offers"]}
+    assert payload["imported_feedback"] == {
+        str(jobs["job1"]): {
+            "reviewed": True,
+            "decision": "apply",
+            "updated_at": "2026-09-15T11:00:00.000Z",
+        }
+    }
+    assert reason not in html_text
+
+
+def _extract_js_function(html_text: str, name: str) -> str:
+    start = html_text.index("function " + name + "(")
+    end = html_text.index("\n  }", start) + len("\n  }")
+    return html_text[start:end]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_browser_forgets_only_decisions_the_database_already_holds(
+    db_file: Path,
+) -> None:
+    """``alreadyImported`` drops a local entry only when a re-import is a no-op."""
+    source = _extract_js_function(generate_and_read(db_file), "alreadyImported")
+    local = {"decision": "apply", "updated_at": "2026-09-15T11:00:00.000Z"}
+    imported = {
+        "reviewed": True,
+        "decision": "apply",
+        "updated_at": "2026-09-15T11:00:00.000Z",
+    }
+    cases = [
+        # Same decision, the database is newer: a re-import would be a no-op.
+        (local, {**imported, "updated_at": "2026-09-15T11:00:00.500Z"}, True),
+        # Same decision at the same instant: still a no-op.
+        (local, dict(imported), True),
+        # The local edit is newer than what was imported: keep it.
+        (local, {**imported, "updated_at": "2026-09-14T09:00:00.000Z"}, False),
+        # Another decision is unsent work.
+        (local, {**imported, "decision": "reject"}, False),
+        # No local date means nothing to compare, so nothing is dropped.
+        ({"decision": "apply"}, dict(imported), False),
+        (local, {**imported, "updated_at": None}, False),
+        (local, {"reviewed": False, "decision": None, "updated_at": None}, False),
+        ({"decision": "", "updated_at": "2026-09-15T11:00:00.000Z"}, dict(imported), False),
+        (None, dict(imported), False),
+    ]
+    script = (
+        source
+        + "\nvar cases = " + json.dumps(cases) + ";\n"
+        + "console.log(JSON.stringify(cases.map(function (item) {\n"
+        + "  return alreadyImported(item[0], item[1]);\n"
+        + "})));\n"
+    )
+    completed = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, timeout=30
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [case[2] for case in cases]
+
+
+def test_report_prunes_local_decisions_the_database_already_holds(db_file: Path) -> None:
+    """The prune runs on load, before the first render, and only saves once."""
+    html_text = generate_and_read(db_file)
+
+    assert "var importedFeedback = payload.imported_feedback || {};" in html_text
+    assert "if (alreadyImported(feedback[jobId], importedFeedback[jobId])) {" in html_text
+    assert "delete feedback[jobId];" in html_text
+    assert "if (pruned) { saveFeedback(); }" in html_text
+    # It runs on load, before the first render and before the count is shown.
+    assert (
+        html_text.index("var feedback = loadFeedback();")
+        < html_text.index("if (alreadyImported(feedback[jobId]")
+        < html_text.index("  renderStatusLine();")
+    )
+    assert "function importedDecision(offer) {" in html_text
+    assert (
+        'feedback[offer.id] || { decision: importedDecision(offer), reason: "" }'
+        in html_text
+    )
+    assert "return Boolean(entry ? entry.decision : importedDecision(offer));" in html_text
 
 
 def test_imported_decision_survives_a_blocked_localstorage(db_file: Path) -> None:

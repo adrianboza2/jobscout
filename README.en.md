@@ -274,8 +274,11 @@ accepts nothing more at the cap). The active decision is binary:
 not apply, do not touch LinkedIn, and write nothing to SQLite. **Exportar N
 decisiones** downloads `jobscout-feedback.json` (`jobscout.feedback.v1` schema). N
 counts the decisions stored in this browser (a legacy `consider` included), not the
-imported ones; exporting or importing does not clear the browser, so the button
-stays visible after an import.
+imported ones. After `import-feedback`, regenerating the report (the sweep does
+it) and reopening it makes the browser forget the local decisions the database
+already holds with the same value and date, so **Exportar N decisiones**
+disappears; a decision edited after the export, or not yet imported, stays and
+keeps the button visible.
 
 Historical compatibility: `consider` decisions (the old *Revisar* label) are not
 deleted or silently converted. An offer with a stored `consider` shows it as a

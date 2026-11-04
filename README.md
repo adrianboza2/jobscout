@@ -279,8 +279,11 @@ binaria: *Aplicar* o *Descartar*. Los botones son **solo del navegador**: no
 postulan, no tocan LinkedIn y no escriben en SQLite. **Exportar N decisiones**
 descarga `jobscout-feedback.json` con el esquema `jobscout.feedback.v1`. N cuenta
 las decisiones guardadas en este navegador (incluido un `consider` histórico), no
-las importadas; exportar o importar no vacía el navegador, así que el botón sigue
-visible después de importar.
+las importadas. Tras `import-feedback`, al regenerar el informe (lo hace el
+barrido) y volver a abrirlo, el navegador olvida las decisiones locales que la
+base ya guarda con el mismo valor y la misma fecha, así que **Exportar N
+decisiones** desaparece. Una decisión editada después de la exportación, o aún
+sin importar, se conserva y mantiene el botón visible.
 
 Compatibilidad con el histórico: las decisiones `consider` (histórico *Revisar*
 del tablero anterior) no se borran ni se convierten solas. Una oferta con
