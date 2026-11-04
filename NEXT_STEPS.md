@@ -5,6 +5,19 @@ only on the Kanvas board (`kanvas.json`)** since 2026-10-31; the "Pending",
 "Next" and "Priority" lists below are history, and anything still open from
 them is a card on the board. Do not add new pending items here.
 
+## Session 2026-11-04 — scoring with and without career.md (EIA-01)
+
+- Same method as BR-02, no repo code changed: the 47 offers with an owner decision scored on DB
+  copies without, with, and again without `~/vault/career.md` appended to the prompt.
+- Result: career.md makes the scorer stricter and further from the owner's decisions. Mean score
+  −7.2 against −1.4 of run-to-run noise; owner 'apply' offers recommended 'apply' 8 → 3; exact
+  agreement 14 → 10 of 47. Rationales almost never cite it; it acts as a list of gaps (Azure and
+  Terraform "unproven", "sin guardias" read as a hard rule, "título en trámite" as a missing degree).
+- Recommendation: keep career.md out of the scorer; it stays as verified source for CV/letter
+  drafts (BR-03). Two owner facts may belong in `profile.yaml` instead: whether "sin guardias" is
+  a dealbreaker, and the master/CTIC dates for availability. Report:
+  `reports/eia01-career-comparison.md`; scripts and per-offer detail: `data/eia01/`.
+
 ## Session 2026-11-04 — board cleanup, Tecnoempleo refetch, DB-01/DB-07/DB-03
 
 - Board decisions (owner): DB-04 (decision UI) withdrawn, the UI stays because EIA-01/EIA-03
