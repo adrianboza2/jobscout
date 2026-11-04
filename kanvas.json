@@ -356,7 +356,7 @@
     {
       "id": "DB-01",
       "title": "Decidir si quitar offer.detail del payload",
-      "state": "review",
+      "state": "done",
       "group": "DB",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
@@ -381,7 +381,7 @@
     {
       "id": "DB-03",
       "title": "Limpiar localStorage al importar decisiones",
-      "state": "review",
+      "state": "done",
       "group": "DB",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
@@ -433,7 +433,7 @@
     {
       "id": "DB-07",
       "title": "Dimensions vacías: pedirlas al scorer o quitar la sección",
-      "state": "review",
+      "state": "done",
       "group": "DB",
       "at": "2026-10-28T08:55:14Z",
       "by": "claude",
@@ -538,7 +538,7 @@
     {
       "id": "EIA-01",
       "title": "career.md: perfil con evidencias y su fuente",
-      "state": "doing",
+      "state": "review",
       "group": "EIA",
       "at": "2026-11-03T09:26:03Z",
       "by": "claude-code",
@@ -558,6 +558,11 @@
           "at": "2026-11-04T15:37:00Z",
           "by": "claude-code-eia01",
           "text": "Orquestador (por el dueño): career.md revisado; el dueño respondió las 12 preguntas y el orquestador integró sus respuestas y fuentes del vault. Lanzo las 3 pasadas (sin, con, sin) sobre las 47 ofertas."
+        },
+        {
+          "at": "2026-11-04T16:31:00Z",
+          "by": "claude-code-eia01",
+          "text": "Qué cambia para ti: ~/vault/career.md existe (revisado por ti y el orquestador) y la comparación está en reports/eia01-career-comparison.md (detalle por oferta en data/eia01/detail.md). Sin cambios en src/ ni en git: data/ y reports/ están ignorados.\nResultado: career.md vuelve al scorer más severo y lo aleja de tus decisiones. Media 55,0 → 47,8 (Δ −7,2, |Δ| 10,0) frente a un ruido de −1,4 (|Δ| 5,9); 22 ofertas caen por debajo de la banda de ruido y 2 suben. Tus 35 apply: 8 → 3 recomendadas apply y 2–4 → 7 skip; acuerdo exacto 14/13 → 10 de 47. Las razones no citan career.md literalmente (1/47), pero lo usan como lista de carencias (\"Azure/Terraform unproven\", \"sin guardias\", \"título\").\nRecomendación: no meter career.md en el scorer tal como está; usarlo como fuente verificada para EIA-02 y los borradores de CV. Decisiones tuyas: 1) \"sin guardias\", ¿dealbreaker duro en profile.yaml?; 2) ¿poner las fechas del máster y del CTIC en profile.yaml para la disponibilidad? Si quieres reintentarlo: solo experiencia y proyectos, sin la tabla de grado de evidencia y pidiendo citas [cv:N] (sería otra tarjeta, con código).\nCómo lo probé: 3 pasadas sobre copias de la base (API de backup de sqlite3) con opencode-go/deepseek-v4.1-flash, 47/47 ok cada una; puerta pytest 1299 passed.\nQué comprobar: lee la tabla de acuerdo y las 7 ofertas que más bajan en el informe. Nota: ~/vault/cv.md no existía; se usó /home/adrian/jobscout/cv.md (copia del 2026-10-23). No he añadido entrada en NEXT_STEPS.md (no commit): queda para el orquestador."
         }
       ],
       "started": {
