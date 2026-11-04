@@ -6,6 +6,7 @@ Commands
 ``ingest-fixture``   ingest a JSON fixture offline (default development path)
 ``search-linkedin``  bounded, explicitly opted-in LinkedIn guest search
 ``fetch-details``    bounded, explicitly opted-in job-detail enrichment
+``backfill-salary``  fill a missing LinkedIn salary from stored descriptions (offline)
 ``list``             recent jobs with their latest score
 ``rank``             jobs ordered by score
 ``score``            evaluate jobs via OpenCode CLI (default), offline, or an LLM endpoint
@@ -55,6 +56,7 @@ from .collectors.linkedin import LinkedInSearchConfig, plan_search_urls, search_
 from .collectors.linkedin_details import (
     DetailFetchConfig,
     fetch_linkedin_details,
+    parse_description_salary,
     plan_detail_targets,
 )
 from .collectors.tecnoempleo import (
@@ -94,9 +96,11 @@ from .db import (
     job_detail_fetch_count,
     jobs_awaiting_details,
     jobs_needing_evaluation,
+    jobs_needing_salary_backfill,
     list_feedback,
     list_jobs,
     list_search_runs,
+    set_job_salary_if_empty,
     variant_job_for_source,
     variants_needing_details,
     variants_needing_refresh,
@@ -617,6 +621,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--label", default=None, help="human label for the run"
     )
     getmanfred_details_parser.set_defaults(handler=cmd_fetch_getmanfred_details)
+
+    backfill_parser = add_common(
+        subparsers.add_parser(
+            "backfill-salary",
+            help=(
+                "fill a missing LinkedIn salary from the stored description "
+                "(offline, one-off)"
+            ),
+        )
+    )
+    backfill_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report what would be filled without writing data",
+    )
+    backfill_parser.set_defaults(handler=cmd_backfill_salary)
 
     list_parser = add_common(subparsers.add_parser("list", help="list recent jobs"))
     list_parser.add_argument("--limit", type=int, default=20)
@@ -1581,6 +1601,72 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
         provider="getmanfred",
         collect_kwargs={"robots_text": robots_text},
     )
+
+
+def cmd_backfill_salary(args: argparse.Namespace, settings: Settings) -> int:
+    """Fill a missing LinkedIn salary from the already-stored description.
+
+    Offline and one-off: no request is made, and only offers of
+    ``source = linkedin`` with a non-empty description and no salary are
+    examined. An existing salary is never overwritten: the selection skips it
+    and the UPDATE repeats that condition. ``--dry-run`` opens an existing
+    database read-only and writes nothing.
+    """
+    db_path = Path(settings.db_path)
+    dry_run = bool(getattr(args, "dry_run", False))
+    missing_message = (
+        f"no database found at {db_path}; run 'jobscout init-db', ingest a "
+        "fixture or a search, and enrich some offers before backfilling salaries"
+    )
+    if not dry_run and str(db_path) != ":memory:" and not db_path.is_file():
+        _write_line(missing_message, stream=sys.stderr)
+        return EXIT_ERROR
+
+    if dry_run:
+        conn = _open_existing_readonly(db_path)
+        if conn is None:
+            _write_line(missing_message, stream=sys.stderr)
+            return EXIT_ERROR
+    else:
+        conn = connect(db_path)
+    try:
+        if not dry_run:
+            init_db(conn)
+        jobs = jobs_needing_salary_backfill(conn)
+        matches = [
+            (int(job.id), value)
+            for job in jobs
+            if (value := parse_description_salary(job.description or ""))
+        ]
+        if dry_run:
+            applied = matches
+        else:
+            applied = [
+                (job_id, value)
+                for job_id, value in matches
+                if set_job_salary_if_empty(conn, job_id, value)
+            ]
+    finally:
+        conn.close()
+
+    verb = "would get" if dry_run else "got"
+    text = (
+        f"examined {len(jobs)} LinkedIn offer(s), {len(applied)} {verb} a salary"
+        + "".join(f"\n#{job_id} {value}" for job_id, value in applied)
+    )
+    _emit(
+        {
+            "examined": len(jobs),
+            "filled": len(applied),
+            "dry_run": dry_run,
+            "offers": [
+                {"job_id": job_id, "salary": value} for job_id, value in applied
+            ],
+        },
+        as_json=getattr(args, "as_json", False),
+        text=text,
+    )
+    return EXIT_OK
 
 
 def cmd_list(args: argparse.Namespace, settings: Settings) -> int:

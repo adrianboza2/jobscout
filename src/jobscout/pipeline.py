@@ -462,9 +462,9 @@ def _merge_detail_description(
 def _detail_extra_fields(item: Any) -> dict[str, Any]:
     """Structured fields a provider detail item contributes to the stored job.
 
-    LinkedIn's :class:`DetailItem` exposes none of these, so the returned mapping
-    is empty and the LinkedIn path stays byte-for-byte compatible. The
-    Tecnoempleo adapter exposes ``company``/``location``/``posted_at`` and a
+    The LinkedIn detail fetcher exposes ``salary`` when the description states a
+    euro pay range, so it is propagated like the other providers' fields.
+    The Tecnoempleo adapter exposes ``company``/``location``/``posted_at`` and a
     ``technologies`` list; the GetManfred adapter additionally exposes
     ``employment_type`` and ``salary``. Only non-empty values are propagated, and
     a field the existing row already carries is never overwritten with an empty

@@ -1868,6 +1868,34 @@ def update_job_content(
         )
 
 
+def jobs_needing_salary_backfill(
+    conn: sqlite3.Connection, *, source: str = "linkedin"
+) -> list[Job]:
+    """Jobs of one provider that have a description but no stored salary."""
+    sql = (
+        "SELECT * FROM jobs WHERE source = ? AND description IS NOT NULL"
+        " AND TRIM(description) != '' AND (salary IS NULL OR salary = '')"
+        " ORDER BY id"
+    )
+    return [_row_to_job(row) for row in conn.execute(sql, (str(source),)).fetchall()]
+
+
+def set_job_salary_if_empty(
+    conn: sqlite3.Connection, job_id: int, salary: str
+) -> bool:
+    """Write ``salary`` only into a row that still has none; True when written.
+
+    The empty check is repeated in the UPDATE, not just in the selection, so a
+    value that appeared between the two is never overwritten.
+    """
+    with conn:
+        cursor = conn.execute(
+            "UPDATE jobs SET salary = ? WHERE id = ? AND (salary IS NULL OR salary = '')",
+            (salary, int(job_id)),
+        )
+    return cursor.rowcount > 0
+
+
 def deactivate_job(conn: sqlite3.Connection, job_id: int) -> bool:
     """Mark one job inactive without deleting it or any of its history.
 

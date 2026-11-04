@@ -450,6 +450,7 @@ subcomando) y `--version`.
 | `search-tecnoempleo (--keywords K [--location L] \| --browse) [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Búsqueda pública server-rendered de Tecnoempleo. `--browse` recorre las ofertas de Madrid por función profesional; es mutuamente excluyente con `--keywords` y `--location`. Respeta `robots.txt` en tiempo de ejecución. Deshabilitada sin `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | Lista las familias de palabras clave y el comando exacto por consulta (sin red, sin base de datos). |
 | `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas de LinkedIn con la descripción completa. Por defecto, las que aún no están enriquecidas; `--refresh` vuelve sobre las ya consultadas con evidencia obsoleta o reintentable. |
+| `backfill-salary [--dry-run]` | Rellena el salario de ofertas LinkedIn ya enriquecidas a partir de su descripción (una vez, sin red). |
 | `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enriquece ofertas de Tecnoempleo desde su página de detalle pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
 | `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enriquece ofertas de GetManfred desde el JSON-LD `JobPosting` reconocido de su página pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje; `[needs re-score]` marca los puntajes desactualizados. |
@@ -568,7 +569,13 @@ python -m jobscout fetch-details --fixture tests/fixtures/linkedin_detail_respon
 python -m jobscout fetch-details --max-items 5 --confirm-network                      # real, acotado
 python -m jobscout fetch-details --all --max-items 10 --confirm-network               # re-extrae todo
 python -m jobscout fetch-details --refresh --stale-days 14 --dry-run                  # plan de refresco, offline
+python -m jobscout backfill-salary --dry-run                                          # salarios ya enriquecidos, sin red
 ```
+
+Cuando la descripción de un detalle de LinkedIn indica un rango salarial en euros,
+`fetch-details` rellena `salary` con ese texto; `backfill-salary [--dry-run]` hace
+lo mismo una sola vez, sin red, sobre las ofertas ya enriquecidas que aún no
+tienen salario y nunca sobrescribe uno existente.
 
 Toda selección de `fetch-details` — la ruta por defecto, `--all`, `--refresh` y un
 `--job-id` explícito — se restringe a ofertas de LinkedIn (`source = linkedin`).

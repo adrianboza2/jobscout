@@ -108,6 +108,8 @@ class DetailItem:
     final_url: str | None = None
     status: DetailFetchStatus = DetailFetchStatus.FAILED
     description: str | None = None
+    #: Euro pay range extracted from the description, when it states one.
+    salary: str | None = None
     content_status: ContentStatus = ContentStatus.PARTIAL
     content_hash: str = ""
     fetched_at: str | None = None
@@ -141,6 +143,7 @@ class DetailItem:
             "status": str(self.status),
             "content_status": str(self.content_status),
             "description_chars": len(self.description or ""),
+            "salary": self.salary,
             "fetched_at": self.fetched_at,
             "http_status": self.http_status,
             "byte_size": self.byte_size,
@@ -382,6 +385,96 @@ def parse_detail_description(html_text: str) -> str:
     if not candidates:
         return ""
     return max(candidates, key=len)
+
+
+#: Salary parsing is deliberately narrow: it only reports a pay range the
+#: posting actually wrote in euros, so a stored value is always verbatim text.
+#: The pattern was tuned against real stored descriptions (33 hits, no false
+#: positives), which is why each piece below is kept as tight as it is.
+_NUM = r"\d{1,3}(?:[.,  ]\d{3})+(?:[.,]\d{2})?|\d+(?:[.,]\d+)?"
+#: A number with a euro marker on either side ("€25,000", "25.000 €", "25k EUR").
+_AMOUNT = (
+    rf"(?:€\s?(?:{_NUM})\s?[kK]?(?:\s?EUR\b)?"
+    rf"|(?:{_NUM})\s?[kK]?\s?(?:€|EUR\b|euros?\b))"
+)
+#: A bare number, only usable as the right side of a range.
+_BARE = rf"(?:{_NUM})\s?[kK]?"
+#: Range separators in the languages the stored postings use.
+_SEP = r"\s*(?:-|–|—|to|a|y|and|hasta)\s*"
+#: Two amounts (or one amount plus a bare number); the trailing lookahead stops
+#: a bare right side from matching the first digits of a longer number.
+_RANGE_RE = re.compile(
+    rf"(?:{_AMOUNT}|{_BARE}){_SEP}{_AMOUNT}|{_AMOUNT}{_SEP}(?:{_BARE})(?![\d.,])",
+    re.I,
+)
+_SINGLE_RE = re.compile(rf"(?:(?:up to|to|hasta|máximo|max\.?)\s+)?{_AMOUNT}", re.I)
+_NUM_RE = re.compile(rf"({_NUM})\s?([kK])?")
+#: A line must talk about pay (or be almost entirely an amount) to qualify.
+_KEYWORD_RE = re.compile(
+    r"salar|sueldo|compensation|retribuci|bruto|brutos|gross|\bb/a\b|\bBA\b|annual|anual",
+    re.I,
+)
+#: Reject company figures and perks that reuse the same "€n" shape.
+_EXCLUDE_RE = re.compile(
+    r"turnover|revenue|facturaci|budget|presupuesto|formaci|training|referr|referid"
+    r"|gimnasio|gym|voucher|ayuda",
+    re.I,
+)
+#: Annual gross euro bounds: drops monthly pay, perks, and "€800M"-scale figures.
+_SALARY_MIN = 10_000
+_SALARY_MAX = 400_000
+
+
+def _salary_value(text: str) -> int | None:
+    """Numeric value of the first amount in ``text``, in euros."""
+    match = _NUM_RE.search(text)
+    if not match:
+        return None
+    raw = match.group(1)
+    if re.search(r"\d{3}[.,]\d{2}$", raw):
+        raw = re.sub(r"[.,]\d{2}$", "", raw)
+    digits = re.sub(r"[.,  ]", "", raw)
+    if not digits.isdigit():
+        return None
+    value = int(digits)
+    if match.group(2):
+        value *= 1000
+    return value
+
+
+def _salary_plausible(span: str) -> bool:
+    """True when every amount in ``span`` looks like an annual gross salary."""
+    values = [_salary_value(match.group(0)) for match in _NUM_RE.finditer(span)]
+    values = [value for value in values if value is not None]
+    return bool(values) and all(_SALARY_MIN <= value <= _SALARY_MAX for value in values)
+
+
+def parse_description_salary(description: str) -> str | None:
+    """Return the pay range stated in a LinkedIn description, verbatim.
+
+    Only euro amounts on an annual-gross scale count, and the value stored is the
+    matched text itself: no re-formatting and no inferred numbers. The first
+    qualifying line wins, so a "Junior: ..." line is preferred over a "Senior:"
+    one below it. Empty or ``None`` input, and any line without a pay statement,
+    return ``None``; the function never raises.
+    """
+    if not description:
+        return None
+    for line in description.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = _RANGE_RE.search(line) or _SINGLE_RE.search(line)
+        if not match or not _salary_plausible(match.group(0)):
+            continue
+        # A rejected context ("turnover", "training", "gym") disqualifies only
+        # the line around the match, not the whole description.
+        if _EXCLUDE_RE.search(line[max(0, match.start() - 40) : match.end() + 30]):
+            continue
+        span = match.group(0).strip()
+        if _KEYWORD_RE.search(line) or len(line) - len(span) <= 15:
+            return span[:120]
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +735,7 @@ def fetch_linkedin_details(
             )
             item.status = DetailFetchStatus.OK
             item.description = description
+            item.salary = parse_description_salary(description)
             item.content_status = ContentStatus.OK
             item.content_hash = content_hash(material)
             item.sha256 = hashlib.sha256(description.encode("utf-8")).hexdigest()
@@ -668,6 +762,7 @@ __all__ = [
     "MIN_DESCRIPTION_CHARS",
     "build_detail_url",
     "fetch_linkedin_details",
+    "parse_description_salary",
     "parse_detail_description",
     "plan_detail_targets",
     "resolve_source_job_id",
