@@ -804,6 +804,25 @@ def test_top_at_the_maximum_is_accepted(db_file: Path) -> None:
     assert summary.offers == 3
 
 
+def test_top_cap_is_5000_so_the_sweep_can_ask_for_every_active_offer(
+    db_file: Path,
+) -> None:
+    # The sweep passes the active-offer count, which is already above 1000.
+    assert MAX_TOP == 5000
+
+    for top in (1200, 5000):
+        output = db_file.parent / f"top-{top}.html"
+        summary = generate_dashboard(db_file, output, top=top)
+        assert output.is_file()
+        assert summary.offers == 3
+
+    output = db_file.parent / "top-5001.html"
+    with pytest.raises(DashboardError) as excinfo:
+        generate_dashboard(db_file, output, top=5001)
+    assert str(excinfo.value) == "--top must be <= 5000, got 5001"
+    assert not output.exists()
+
+
 def test_default_dashboard_includes_every_active_offer_and_no_top_limit(
     tmp_path: Path,
 ) -> None:

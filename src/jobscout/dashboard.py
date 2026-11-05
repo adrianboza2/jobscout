@@ -77,8 +77,9 @@ DEFAULT_TOP: int | None = None
 #: file, so an unbounded *explicit* value would let a typo build a report large
 #: enough to freeze a browser. It deliberately does not apply to the default,
 #: which includes every active offer. Raising it is a deliberate, reviewable
-#: change.
-MAX_TOP = 1000
+#: change: it went from 1000 to 5000 because the Hermes sweep passes the count
+#: of active offers as ``--top`` and that count already exceeds 1000.
+MAX_TOP = 5000
 
 #: Payload schema written into the HTML and used to shape the localStorage key.
 DASHBOARD_SCHEMA = "jobscout.dashboard.v1"
