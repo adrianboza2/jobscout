@@ -1,0 +1,1152 @@
+# jobscout
+
+Herramienta **local-first** para buscar empleo: recolecta resultados públicos de
+búsqueda de LinkedIn a muy bajo volumen, los normaliza y deduplica en SQLite, y
+puntúa cada oferta contra un perfil estructurado local. El puntuador
+predeterminado reutiliza tu CLI de OpenCode ya autenticada con el modelo gratuito deepseek-v4.1-flash; también hay un puntuador determinista offline y otro compatible con OpenAI.
+
+Nada sale de tu equipo salvo las solicitudes que autorizas explícitamente.
+**jobscout no envía postulaciones automáticas.**
+
+**Idiomas:** Español (este archivo) · [English version](MANUAL.en.md)
+
+## Qué hace y qué no hace
+
+| Hace | No hace |
+|------|---------|
+| Recolecta tarjetas públicas de búsqueda (opt-in y acotado) | No inicia sesión, no usa cookies, no resuelve CAPTCHA, no evade antibots |
+| Enriquece ofertas con la descripción completa (opt-in y acotado) | No postula, no contacta a nadie, no automatiza candidaturas |
+| Deduplica y guarda todo en SQLite local | No envía datos a ningún servidor propio |
+| Puntúa con heurística, LLM compatible con OpenAI u OpenCode CLI | No programa ejecuciones ni envía notificaciones remotas (solo avisos locales opt-in, manuales) |
+| Genera un tablero HTML local en español | No escribe el feedback humano en la base por su cuenta |
+
+## Inicio rápido (solo fixtures, sin red)
+
+Requisitos: **Python 3.11+** y `PyYAML` (solo para perfiles YAML; los perfiles
+JSON no necesitan dependencias). El puntuador heurístico y la suite de pruebas no
+necesitan red ni claves.
+
+Instalación editable:
+
+```bash
+# POSIX (bash/zsh)
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+```
+
+```powershell
+# Windows PowerShell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e ".[dev]"
+```
+
+Sin instalar el paquete también funciona: antepón `PYTHONPATH=src` (POSIX) o
+define `$env:PYTHONPATH = "src"` una vez en PowerShell.
+
+Copia las plantillas (`.env` y `profile.yaml` quedan ignorados por Git):
+
+```bash
+cp .env.example .env
+cp profile.example.yaml profile.yaml
+```
+
+```powershell
+Copy-Item .env.example .env
+Copy-Item profile.example.yaml profile.yaml
+```
+
+Recorrido completo con datos sintéticos, de punta a punta:
+
+```bash
+python -m jobscout init-db
+python -m jobscout ingest-fixture tests/fixtures/linkedin_search_cards_sample.json
+python -m jobscout fetch-details --fixture tests/fixtures/linkedin_detail_responses.json
+python -m jobscout score --all --rescore --scorer heuristic --profile profile.example.yaml
+python -m jobscout rank --top 10
+python -m jobscout dashboard --top 10
+```
+
+Todos los comandos se ejecutan desde la raíz del repositorio y solo escriben
+dentro de `data/` y `reports/` (ambos ignorados por Git).
+
+El fixture `tests/fixtures/linkedin_search_sample.json` ya contiene
+descripciones completas, así que `fetch-details` no encuentra nada que
+enriquecer si lo usas en lugar de `linkedin_search_cards_sample.json`.
+
+**Verificación esperada:** `ingest-fixture` informa ofertas nuevas y duplicadas;
+`score` termina con `N job(s), M succeeded`; `rank` lista ofertas con puntaje; el
+tablero imprime la ruta del HTML escrito.
+
+## Aviso de seguridad para uso real
+
+La recolección real está **deshabilitada por defecto** y exige
+`--confirm-network`. Antes de usarla:
+
+- **Es tu responsabilidad** cumplir los términos de servicio del sitio y la ley
+  local aplicable.
+- El volumen es deliberadamente bajo: 2 páginas, 40 elementos, ~8 s entre
+  solicitudes (±2 s de jitter), 20 s de timeout.
+- **No ejecutes recolección real en CI** ni en entornos automatizados.
+- Usa `--dry-run` primero: imprime las URLs exactas y no realiza ninguna
+  solicitud ni escritura.
+- Para probar sin red, usa `--fixture`: nunca toca la red.
+
+## Flujo operativo recomendado (uso real)
+
+Este es el ciclo manual, de punta a punta, para pasar de un perfil a ofertas
+revisadas. Ninguna etapa se ejecuta sola y **jobscout nunca postula**: cada
+comando que toca la red o el modelo lo lanzas tú.
+
+Prepara el perfil real antes de cualquier barrido:
+
+- Tu perfil local es **`profile.yaml`**, seleccionado con `JOBSCOUT_PROFILE_PATH`
+  en `.env` (el valor por defecto es `profile.example.yaml`).
+- `profile.example.yaml` es **solo una plantilla**: cópialo a `profile.yaml` y
+  edítalo. No conviertas la plantilla en tu perfil real ni la subas a Git.
+
+| # | Etapa | Comando seguro | Qué hace | ¿Automático? |
+|---|-------|----------------|----------|--------------|
+| 0 | Preparar perfil | `cp profile.example.yaml profile.yaml` (POSIX) o `Copy-Item profile.example.yaml profile.yaml` (PowerShell), y `JOBSCOUT_PROFILE_PATH=profile.yaml` en `.env` | Defines rol objetivo, seniority, skills, dealbreakers y exclusiones. | Decisión humana |
+| 1 | Barrido controlado | `python -m jobscout keyword-plan` y luego `python -m jobscout search-linkedin --keywords "..." --dry-run`; para ejecutarlo, cambia `--dry-run` por `--confirm-network` | Descubre ofertas nuevas. `keyword-plan` es offline; cada búsqueda real es un acto humano explícito. | Semiautomático: autorizas cada consulta |
+| 2 | Enriquecer | `python -m jobscout fetch-details --max-items 10 --confirm-network` (o `fetch-getmanfred-details` / `fetch-tecnoempleo-details` según la plataforma, o `--fixture` para trabajar offline) | Trae la descripción completa de cada oferta, acotado en volumen. Solo sube a `ok` cuando reconoce el detalle. | Semiautomático: autorizas cada corrida |
+| 3 | Puntuar con deepseek-v4.1-flash | `python -m jobscout score --all --scorer opencode` | El puntuador predeterminado (OpenCode + deepseek-v4.1-flash) evalúa solo las ofertas que aún no tienen evaluación. | El puntaje es automático; la decisión de postular no |
+| 4 | Generar dashboard | `python -m jobscout dashboard` | Escribe un HTML local con todas las ofertas activas, puntajes, justificación del modelo y avisos de preferencia. | Automático y de solo lectura |
+| 5 | Revisar ofertas | Abre `reports/jobscout-dashboard.html` | Tú marcas **Aplicar** o **Descartar** en el navegador. | Decisión humana exclusivamente |
+| 6 | Exportar/importar feedback | Exporta el JSON desde el tablero y ejecuta `python -m jobscout import-feedback jobscout-feedback.json` | Tus decisiones pasan de `localStorage` a la tabla `job_feedback` de SQLite. | Importar es automático una vez que lo invocas |
+| 7 | Calibrar | `python -m jobscout calibrate --scorer opencode` | Compara la recomendación del modelo con tu decisión humana importada. Solo lectura; no ajusta nada. | Automático y de solo lectura |
+| 8 | Analizar keywords | `python -m jobscout dashboard` → sección *rendimiento de palabras clave* | Tras varios ciclos, decides qué familias de búsqueda rinden y cuáles descartar. | Decisión humana |
+| 9 | Notificar ofertas de alto puntaje (opt-in) | `python -m jobscout notify` (vista previa) o `python -m jobscout notify --deliver` | Lista ofertas activas con puntaje ≥ umbral, sin feedback humano importado y, si lo configuras, con el resultado de preferencia elegido. Solo lee SQLite; nunca escribe, no usa red ni modelo. | Manual y desactivado por defecto |
+
+Notas del ciclo:
+
+- **Nunca se postula automáticamente.** Tampoco hay programador de tareas; las
+  notificaciones locales son opt-in y manuales (`jobscout notify`), y cada
+  corrida la invocas tú.
+- `--rescore` **no es un paso diario**: re-evalúa todas las ofertas activas
+  aunque su entrada no haya cambiado. Para las ofertas nuevas, el ciclo normal
+  es `score --all --scorer opencode`, que evalúa justo las que todavía no
+  tienen puntaje.
+- `fetch-details` no vuelve a puntuar por sí solo; el paso 3 cierra el
+  enriquecimiento.
+- **Sin detalles no hay puntaje:** `score --all` (con o sin
+  `--rescore`) descarta antes de `--limit` las ofertas activas que todavía no
+  tienen descripción completa y aún les quedan intentos de detalle. Imprime
+  `skipped N offer(s) waiting for details` y expone `skipped_pending_details` en
+  `--json`; `--job-id` fuerza el puntaje igual. El tablero las marca como
+  «Pendiente de detalles». La excepción evita el limbo: tras dos intentos de
+  detalle fallidos que no sean 404/410, la oferta se puntúa con su tarjeta.
+- **Se detiene si el proveedor está caído:** `score` corta la tanda tras 3
+  errores de proveedor seguidos, contando el estado final de cada oferta (ya con
+  el reintento de reserva si tienes configurado `JOBSCOUT_OPENCODE_FALLBACK_MODEL`).
+  Un `parse_error` es salida del modelo, no del proveedor, y reinicia la racha.
+  Las ofertas falladas conservan su fila y el resto no se intenta: la próxima
+  corrida las recoge. Imprime `stopped after 3 consecutive provider errors: A of
+  S offer(s) attempted, R left for the next run`, expone `stopped_early` y
+  `not_attempted` en `--json`, y sale con código 1 aunque alguna oferta se haya
+  puntuado, para que el log del sweep lo muestre como fallo.
+- Cada evaluación queda versionada: guarda el `prompt_version` del puntuador y el
+  `input_fingerprint` del perfil, así que un cambio de política es distinguible
+  sin reescribir el historial. Para el puntuador de OpenCode, el `prompt_version`
+  además lleva la variante de razonamiento efectiva como sufijo
+  `<version>+<variant>` (por defecto `+low`), así que una corrida `low` y una
+  `max` se distinguen después. Un `JOBSCOUT_OPENCODE_VARIANT=` explícitamente
+  vacío conserva el string histórico sin sufijo. El modelo forma parte de la
+  huella de entrada, así que cambiarlo re-puntúa las ofertas poco a poco.
+- La reevaluación **sí mira la huella de entrada**: `score --all` vuelve a
+  evaluar una oferta cuando cambia su huella (publicación, perfil, prompt o
+  modelo) y omite las que ya tienen una evaluación exitosa con la huella
+  actual. Primero puntúa las ofertas que nunca tuvieron una evaluación exitosa
+  y después las que solo necesitan re-score, cada grupo de la más reciente a la
+  más antigua; así un cambio de modelo, prompt o perfil no deja las ofertas
+  nuevas de un sweep detrás del tope de `--limit`. Usa `--rescore` para forzar
+  una corrida nueva sobre todas las ofertas activas.
+- `list`, `rank` y el dashboard **marcan el puntaje desactualizado**: una oferta
+  cuyo puntaje visible viene de un puntuador que ya no tiene ninguna evaluación
+  exitosa con la huella actual (cambió el modelo, el prompt, el perfil o el
+  texto de la oferta) sale con `[needs re-score]` en texto, `needs_rescore:
+  true` en `--json` y «Re-score pendiente» junto al puntaje del dashboard. Es la
+  misma comparación que usa `score --all`, así que la marca desaparece cuando la
+  siguiente corrida la re-puntúa. Si el perfil no se puede leer, `list` sigue
+  funcionando sin la marca (`needs_rescore: null`).
+- **Cada oferta tiene un estado** (`stage`), calculado en un solo sitio
+  (`jobscout/stage.py`) a partir de los datos guardados, nunca almacenado:
+  `inactive` → `pending_details` → `ready_to_score` → `scored` →
+  `needs_rescore`. Un puntaje visible manda sobre los detalles que faltan, y una
+  puntuación fallida es una marca (`score_failed`) dentro de `ready_to_score`.
+  `list --json` y `rank --json` lo incluyen en cada oferta, y el dashboard
+  (cabecera, filas y resumen) lo lee de ahí. Sin perfil, una oferta puntuada se
+  queda en `scored`.
+
+### Criterio de seniority y tecnologías (prompt v5)
+
+El prompt de OpenCode está versionado como **`opencode-v5-seniority-aware`**. La
+política que aplica deepseek-v4.1-flash es:
+
+- **Penaliza fuerte, y usa `skip` cuando define el rol:** 5 o más años de
+  experiencia exigidos, títulos explícitos `senior`, `staff`, `principal`,
+  `lead` o `manager`, y liderazgo u ownership arquitectónico como
+  responsabilidad central. Una mención de pasada de "senior" en una oferta por lo
+  demás junior o *stretch* no es un `skip` duro.
+- **No bloquea por una o dos tecnologías faltantes:** si el rol principal sigue
+  siendo Cloud / DevOps / DevSecOps / Platform, esas ausencias se tratan como
+  brechas aprendibles.
+- **Sí bloquea el stack principal equivocado:** si la mayoría del stack central
+  pedido no coincide con tu perfil, es un *mismatch* material y la recomendación y
+  el puntaje bajan mucho.
+- **Distingue requisitos duros de preferencias:** un rol junior o *stretch*
+  razonable tiende a `consider` o `apply` aunque pida más experiencia que la
+  disponible, salvo los umbrales fuertes anteriores.
+- **Mantiene los dealbreakers** y las exclusiones de SOC/turnos rotativos, que
+  además se calculan aparte en los **filtros de preferencia** (offline y sin tocar
+  el puntaje ni la evaluación guardada).
+
+El formato de salida no cambia: un único objeto JSON con `overall_score`,
+`recommendation`, `confidence` y `rationale`.
+
+## Tablero local (dashboard)
+
+`dashboard` lee la base SQLite existente y escribe **un solo archivo HTML**
+autocontenido (CSS, JavaScript y datos embebidos). No usa CDN, no pide assets
+externos, no necesita servidor y no hace ninguna solicitud de red. Toda la
+interfaz visible está en español neutro/profesional; las claves internas del
+esquema y los comandos de CLI permanecen en inglés para no divergir de la base
+de datos. La cabecera fija resume el último barrido (fecha, ofertas nuevas,
+detalles pendientes y fallos; las nuevas sin evaluar y los fallos salen en rojo).
+«Detalles pendientes» cuenta ofertas, no publicaciones, cada una bajo el
+proveedor que la vio primero, así que suma lo mismo que las filas marcadas
+«Pendiente de detalles». Ofrece dos pestañas, **Ofertas** y **Palabras
+clave**, y a la derecha **Exportar N decisiones**, que solo aparece cuando este
+navegador guarda alguna decisión. La vista de
+ofertas usa una única barra de herramientas horizontal, con búsqueda por texto,
+la recomendación del modelo, **Solo nuevas** (ofertas vistas por primera vez en
+el último barrido) y un selector de score mínimo (`Score ≥ 0`, `≥ 50`, `≥ 70`);
+ya no hay rail lateral ni tarjetas KPI. Las tipografías (Charis SIL, Inter y DM Mono,
+licencia OFL, en `src/jobscout/fonts/`) también van embebidas como `data:` URIs, así que el archivo se ve igual desde `file://` sin instalar
+fuentes ni pedir nada a la red.
+
+Cada oferta es **una fila de una línea**: puntaje con barra coloreada por banda
+(≥ 70 / ≥ 50), título, empresa y ubicación, etiquetas (recomendación, `nueva`,
+`⚠ flag` o `veto` de la preferencia), salario con su procedencia (`indicado` o
+`sin dato`; nunca se inventa una cifra) y antigüedad. Una evaluación fallida se
+muestra como `sin evaluar (error)`, nunca como 0. Las filas se pintan de 50 en 50
+(**Mostrar 50 más**) y el detalle se construye solo al abrir la fila:
+justificación completa del modelo (ya no se recorta), salario indicado, Puntos fuertes / Carencias
+/ Bloqueos / Incógnitas cuando la evaluación las trae, y un pie con modelo,
+confianza, fecha, la decisión importada, los botones **✓ aplicar** / **✕
+descartar** (el motivo, de hasta 500 caracteres, se abre al elegir) y **Ver la
+oferta ↗**. Los avisos del
+informe son líneas discretas al final, junto a los metadatos.
+
+El salario indicado por la oferta se muestra en verde y con la etiqueta
+`indicado`. Cuando la oferta no lo indica, la fila muestra la estimación del
+modelo en gris, precedida de `≈` y con la etiqueta `estimado`: es un bruto anual
+orientativo para España, solo informativo, y nunca cambia el score ni la
+recomendación.
+
+```bash
+# POSIX
+python -m jobscout dashboard --output reports/jobscout-dashboard.html
+xdg-open reports/jobscout-dashboard.html   # Linux
+open reports/jobscout-dashboard.html       # macOS
+```
+
+```powershell
+# Windows PowerShell
+python -m jobscout dashboard --output reports\jobscout-dashboard.html
+Start-Process reports\jobscout-dashboard.html
+```
+
+- Ruta de salida predeterminada: `reports/jobscout-dashboard.html` (ignorada por
+  Git). Por defecto el informe embebe **todas las ofertas activas**; `--top N`
+  limita el informe a las `N` mejores y sigue teniendo el mismo tope explícito de
+  siempre. Las ofertas desactivadas siguen guardadas en SQLite pero quedan fuera
+  por `is_active = 1`. Las barras inclinadas también funcionan en
+  Windows: `--output reports/dashboard.html`.
+- El informe nunca embebe la descripción de la oferta, payloads crudos, el
+  perfil, datos de contacto, claves de API ni rutas locales absolutas.
+- Abre la base con `PRAGMA query_only`: generar el informe no puede insertar,
+  actualizar ni borrar filas.
+- Una base inexistente es un error; una base vacía o sin puntajes igual genera
+  el informe, con una advertencia visible que explica por qué está vacío.
+
+### Recomendación del modelo vs. feedback humano
+
+Son dos señales distintas y el informe las mantiene separadas:
+
+| | Recomendación del modelo | Feedback humano |
+|---|---|---|
+| Lo produce | `score` (heurística, LLM u OpenCode) | tú, haciendo clic en el informe |
+| Se guarda en | tabla `evaluations` de SQLite, con procedencia completa | `localStorage` del navegador, indexado por proyecto + id de oferta; luego, la tabla `job_feedback` de SQLite |
+| ¿`jobscout` lo lee? | sí | solo con `import-feedback`, que copia una exportación a `job_feedback` |
+| ¿Es portable? | sí, está en la base | con **Exportar N decisiones** más `import-feedback` |
+
+Cada oferta tiene **dos** botones de feedback local (**Aplicar / Descartar**,
+almacenados como `apply` / `reject`) y un motivo opcional de hasta 500
+caracteres (al llegar al tope el campo no admite más). La decisión activa es
+binaria: *Aplicar* o *Descartar*. Los botones son **solo del navegador**: no
+postulan, no tocan LinkedIn y no escriben en SQLite. **Exportar N decisiones**
+descarga `jobscout-feedback.json` con el esquema `jobscout.feedback.v1`. N cuenta
+las decisiones guardadas en este navegador (incluido un `consider` histórico), no
+las importadas. Tras `import-feedback`, al regenerar el informe (lo hace el
+barrido) y volver a abrirlo, el navegador olvida las decisiones locales que la
+base ya guarda con el mismo valor y la misma fecha, así que **Exportar N
+decisiones** desaparece. Una decisión editada después de la exportación, o aún
+sin importar, se conserva y mantiene el botón visible. Sobre una decisión ya
+importada, volver a pulsar el mismo botón no la quita (el import no borra
+decisiones de la base): solo se puede cambiar a la otra. Al abrir el informe se
+limpian las marcas locales vacías que tapaban una decisión importada.
+
+Compatibilidad con el histórico: las decisiones `consider` (histórico *Revisar*
+del tablero anterior) no se borran ni se convierten solas. Una oferta con
+`consider` guardado lo muestra como **decisión histórica (legacy)** y permite
+reemplazarlo con Aplicar o Descartar; la exportación mantiene el esquema `v1` y
+el valor legacy tal cual, y el importador lo sigue aceptando. La recomendación
+del modelo conserva su propio vocabulario (`apply` / `consider` / `skip` /
+`need_more_info`), separado de tu decisión.
+
+Importa esa exportación para que las decisiones queden guardadas:
+
+```bash
+python -m jobscout import-feedback jobscout-feedback.json
+```
+
+- Escribe una fila por oferta en `job_feedback`, junto a la recomendación del
+  modelo en `evaluations`, nunca en su lugar.
+- Valida primero el envoltorio: un esquema ajeno, la falta de `project_id` o un
+  `project_id` que no coincide con esta base hacen fallar el comando sin escribir
+  nada. `--project-id ID` acepta el id de la exportación de forma explícita, para
+  una base que se movió de lugar.
+- Rechaza entradas individuales (id de oferta desconocido, decisión desconocida,
+  marca de tiempo mal formada) con un mensaje en stderr, mientras las entradas
+  válidas sí se importan, igual que `score --job-id` con una oferta inexistente.
+- Es idempotente: reimportar el mismo archivo no cambia nada y una entrada más
+  antigua que la decisión guardada nunca la sobrescribe. Una entrada sin decisión
+  (el estado "sin revisar" del tablero) se omite y nunca borra una decisión
+  guardada.
+
+Todavía no hay programación automática: importar es un comando que ejecutas tú.
+
+### Decisiones importadas
+
+Las decisiones humanas importadas con `import-feedback` se muestran en el pie
+de cada oferta abierta, pero el tablero ya no ofrece un filtro para aislar las
+ofertas sin decisión, para que la barra de herramientas quepa en una línea. El
+backlog de revisión se consulta en SQLite, no como un
+contador inventado por el HTML.
+
+- La decisión importada se lee con un único `SELECT` de solo lectura sobre la
+  conexión `mode=ro` y es un eje distinto de las marcas locales de
+  `localStorage`. La cabecera solo cuenta estas últimas y nunca las mezcla con
+  el feedback importado.
+- La razón de texto libre de una decisión importada **nunca** entra al HTML.
+- Si no hay decisiones importadas, el pie simplemente no muestra esa línea.
+
+**Limitación explícita:** `search_runs.cycle_id` es opcional y de formato libre
+(una convención humana), y las corridas de distintas plataformas o ciclos no son
+comparables de forma garantizada. Por eso hoy **no** existe una vista de "nuevas
+en el último ciclo": no se puede calcular de forma confiable y no se aproxima.
+
+### Filtro previo de seniority por título
+
+Las ofertas con un título claramente senior (`senior`, `sr`, `lead`, `principal`,
+`architect`, `arquitecto`, `arquitecta`, `manager`, `head`, `director`, `staff`,
+`jefe`) se marcan como filtradas al leer los datos, sin cambiar el esquema. Las
+excepciones junior (`junior`, `jr`, `trainee`, `beca`, `becario`, `becaria`,
+`prácticas`/`practicas`, `intern`, `internship`) cancelan el filtro. `score` las
+omite antes de aplicar `--limit` y muestra `skipped N offer(s) filtered by
+seniority`; `--job-id` las puntúa igual. El dashboard conserva todas las ofertas
+activas (`jobs_shown == len(offers)`) pero las oculta por defecto, muestra el
+contador «N ocultas por seniority» y un botón `#filter-show-seniority` para
+mostrarlas; el reinicio de filtros las vuelve a ocultar. Una oferta mostrada
+enseña el motivo en su fila. Nada se borra ni se desactiva.
+
+Una vez importado el feedback, `calibrate` produce la evidencia de qué tan bien
+coincide el modelo contigo:
+
+```bash
+python -m jobscout calibrate                    # última evaluación válida de cada oferta vs. feedback
+python -m jobscout calibrate --scorer opencode  # solo evaluaciones de ese puntuador
+python -m jobscout calibrate --json             # informe legible por máquina
+```
+
+`calibrate` es de **solo lectura y sin red**: abre la base en modo lectura
+(`mode=ro`, `PRAGMA query_only`), solo ejecuta `SELECT` y no crea la base. Nunca
+ajusta prompts, pesos ni puntuaciones: solo produce evidencia. Compara la
+recomendación del modelo con la decisión humana con un mapeo explícito:
+
+| Modelo | Humano |
+|--------|--------|
+| `apply` | `apply` |
+| `consider` | `consider` (legacy) |
+| `skip` | `reject` |
+
+La fila `consider` es **legacy**: el tablero binario ya no la ofrece, pero una
+decisión histórica se sigue contando y el informe la marca como legacy
+(`legacy_total` / `"legacy": true` en cada muestra) en lugar de descartarla.
+
+`need_more_info` **no** forma parte del acuerdo three-way: se informa aparte como
+categoría no resuelta y nunca se convierte en `skip`. El informe muestra las
+muestras comparables, el acuerdo exacto, la matriz de confusión, los conteos no
+resueltos y la distribución de `overall_score` por decisión humana. Una decisión
+sin evaluación válida (`status = 'ok'`) se cuenta aparte y queda fuera del cálculo.
+
+### Filtros de preferencia (exclusiones)
+
+Además del puntaje de encaje profesional, cada oferta se contrasta con las
+**exclusiones explícitas** del usuario. Es un eje separado: no edita el puntaje,
+la recomendación ni la evaluación guardada, y se recalcula al leer la oferta, no
+se persiste como una segunda sentencia versionada. La clasificación es
+determinista y **sin conexión**; no hay ninguna llamada a un modelo.
+
+| Resultado | Significado |
+|-----------|-------------|
+| `pass` | No se encontró ninguna coincidencia con una exclusión. |
+| `flag` | Coincidencia dudosa (por ejemplo "turnos" sin decir que rotan, o un rol SOC sin evidencia operativa); se muestra para revisión humana. |
+| `fail` | Coincidencia clara con una exclusión: turnos rotativos o SOC operativo. |
+
+Exclusiones implementadas:
+
+- **Turnos rotativos** en español e inglés (`turnos rotativos`, `rotación de
+  turnos`, `rotating shifts`, `shift rotation`, `24/7 shifts`). Un `24/7` sin
+  turnos solo se marca `flag`, y un horario flexible o unas guardias puntuales
+  nunca producen `fail`.
+- **SOC operativo** solo cuando el término implica monitorización, operaciones,
+  guardias/turnos o vigilancia continua (por ejemplo `SOC Analyst` con `24/7`,
+  `SIEM monitoring`, `incident monitoring`). Un SOC genérico, un requisito de
+  conocimiento o `SOC 2` (cumplimiento) quedan elegibles; un rol SOC sin
+  evidencia operativa se marca `flag`.
+
+En el informe, la fila lleva una etiqueta `⚠ flag` (ocre) o `veto` (rojo, porque
+es un bloqueo); al abrirla, la razón y la evidencia son el primer punto de
+Incógnitas (`flag`) o de Bloqueos (`fail`). El resumen agrega cuántas ofertas quedan excluidas y
+cuántas por revisar. El CLI expone el mismo veredicto en `list`, `rank` y `score`
+(marcador `[preference=...]` en texto y un objeto `preference` en `--json`).
+
+## Referencia de CLI
+
+Opciones globales: `--db PATH`, `--profile PATH`, `--json` (antes o después del
+subcomando) y `--version`.
+
+| Comando | Propósito |
+|---------|-----------|
+| `init-db` | Crea o verifica el esquema. Idempotente. |
+| `ingest-fixture PATH [--source S] [--label L]` | Normaliza, deduplica y guarda un fixture JSON (sin red). |
+| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Búsqueda pública acotada. Deshabilitada sin `--confirm-network`. |
+| `search-getmanfred [--keywords K] [--max-age-days N] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Inventario del sitemap público de GetManfred. `--keywords` aplica un filtro **local** (título/slug), sin fan-out ni endpoint privado. `--max-age-days` descarta las entradas cuyo `lastmod` sea más antiguo que N días (por defecto 120; `0` = sin corte). Sin ranking. Deshabilitado sin `--confirm-network`. |
+| `search-tecnoempleo (--keywords K [--location L] \| --browse) [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Búsqueda pública server-rendered de Tecnoempleo. `--browse` recorre las ofertas de Madrid por función profesional; es mutuamente excluyente con `--keywords` y `--location`. Respeta `robots.txt` en tiempo de ejecución. Deshabilitada sin `--confirm-network`. |
+| `keyword-plan [--family ID…] [--location L] [--remote]` | Lista las familias de palabras clave y el comando exacto por consulta (sin red, sin base de datos). |
+| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enriquece ofertas de LinkedIn con la descripción completa. Por defecto, las que aún no están enriquecidas; `--refresh` vuelve sobre las ya consultadas con evidencia obsoleta o reintentable. |
+| `backfill-salary [--dry-run]` | Rellena el salario de ofertas LinkedIn y Tecnoempleo ya enriquecidas a partir de su descripción o de la página de detalle guardada (una vez, sin red). |
+| `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enriquece ofertas de Tecnoempleo desde su página de detalle pública, incluido el salario cuando la página lo publica. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
+| `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enriquece ofertas de GetManfred desde el JSON-LD `JobPosting` reconocido de su página pública. Vuelve a leer `robots.txt`; sin login ni cookies. Deshabilitado sin `--confirm-network`. |
+| `list [--limit N] [--min-score S] [--include-inactive]` | Ofertas recientes con su último puntaje; `[needs re-score]` marca los puntajes desactualizados. |
+| `rank [--top N] [--min-score S]` | Ofertas con puntaje exitoso, mejor primero; misma marca `[needs re-score]`. |
+| `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--scorer-model MODEL] [--effort EFFORT] [--limit N] [--rescore]` | Evalúa ofertas e imprime el resultado explicable. `--all` omite, antes de `--limit`, las de título senior y las que esperan detalles; `--job-id` fuerza ambas. |
+| `dossier (--job-id ID… \| --apply) [--refresh] [--timeout S]` | Investiga la empresa de cada oferta con OpenCode y escribe un dossier Markdown por empresa en `data/dossiers/`. Nunca consulta ni cita LinkedIn. |
+| `runs [--limit N]` | Ejecuciones de búsqueda recientes y conteos almacenados. |
+| `dashboard [--output PATH] [--top N]` | Escribe un informe HTML local autocontenido (solo lectura, sin red). |
+| `import-feedback PATH [--project-id ID]` | Guarda una exportación de feedback del tablero en SQLite (sin red, idempotente). |
+| `calibrate [--scorer heuristic\|llm\|opencode]` | Compara la última evaluación válida de cada oferta con el feedback humano importado (solo lectura, sin red). |
+| `prune [--apply]` | Planea el peor cuarto de ofertas con puntaje y series de palabras clave por proveedor (vista previa de solo lectura; `--apply` desactiva solo las ofertas seleccionadas). |
+| `notify [--deliver] [--min-score S]` | Ofertas activas con puntaje ≥ umbral, opt-in y de solo lectura (ver «Notificaciones locales»). |
+
+Códigos de salida: `0` éxito, `1` error, `2` rechazo (collector deshabilitado,
+acceso denegado o solicitud que no se realizó a propósito).
+
+Inspeccionar un plan sin ejecutarlo:
+
+```bash
+python -m jobscout search-linkedin --keywords "senior backend engineer" --location "Buenos Aires, Argentina" --max-pages 2 --dry-run
+```
+
+Otras fuentes públicas (opt-in, todas deshabilitadas por defecto):
+
+```bash
+python -m jobscout search-getmanfred --dry-run                       # plan, sin red: lee el sitemap público
+python -m jobscout search-getmanfred --max-items 40 --confirm-network
+python -m jobscout search-getmanfred --keywords "Platform Engineer" --max-items 40 --confirm-network  # filtro local
+python -m jobscout search-tecnoempleo --keywords "cloud security" --location madrid --dry-run
+python -m jobscout search-tecnoempleo --keywords "cloud security" --max-pages 2 --confirm-network
+python -m jobscout search-tecnoempleo --browse --dry-run                 # browse por función, Madrid
+python -m jobscout search-tecnoempleo --browse --max-pages 5 --max-items 150 --confirm-network
+```
+
+`search-getmanfred` es un **inventario**, no una búsqueda: no genera fan-out y
+cada posición observada se guarda como `position_kind = none` con rank `0`. El
+título se deriva del slug público de la URL y la empresa queda desconocida,
+porque el sitemap no la expone. Los postings quedan en estado `partial`.
+
+GetManfred no expone un endpoint de búsqueda por palabra clave. `--keywords`
+aplica el término **localmente** al sitemap en una sola descarga: solo se
+conservan las ofertas cuyo título/slug normalizado contiene todos los tokens del
+término (sensible a acentos y mayúsculas, coincidencia por token, nunca por
+substring: `front` no matchea `frontend`). No hay endpoint privado ni una
+petición por palabra clave. Cada oferta conserva en
+`extra['matched_keywords']` las keywords aprobadas que matcheó, de modo que una
+misma oferta observada bajo una o varias keywords no mezcla términos ni
+plataformas.
+
+El filtro es **coincidencia exacta por token**: cada token del término aprobado
+debe aparecer como token completo en el título/slug normalizado. No hay
+sinónimos, alias ni variantes de familia, así que `DevOps` no matchea
+`DevSecOps`, `Cloud` no matchea `Cloud Security` y una variante con otro orden
+tampoco amplía el resultado. Las variantes candidatas observadas en el sitemap
+son **DevOps, DevSecOps, Cloud Engineer, Cloud Security, Azure** y posiblemente
+**SRE**; ampliar el catálogo aprobado con esas variantes es una **decisión
+aparte** (revisión humana del catálogo), no un comportamiento automático de este
+adaptador.
+
+El sweep no manda las queries del catálogo a GetManfred: usa los términos cortos
+propios del proveedor que publica `keyword-plan --json` en el bloque `getmanfred`
+(`devops`, `devsecops`, `sre`, `cloud`, …). Los slugs del sitemap son cortos
+(`fcm-sre-devops-engineer-jul26`) y una query del catálogo exige **todos** sus
+tokens, así que casi nunca matchea; con esos términos basta uno para conservar la
+oferta. Además, el sitemap mantiene ofertas de años atrás: `--max-age-days` (por
+defecto 120; `0` = sin corte) descarta antes de contar `--max-items` las entradas
+cuyo `lastmod` supera esa antigüedad. Una entrada sin `lastmod` o con uno
+ilegible se conserva: una antigüedad desconocida no demuestra que esté obsoleta.
+
+GetManfred deja de ser un **inventario solo de título**: hay permiso previo por
+escrito de Manfred para las solicitudes automatizadas y el almacenamiento de las
+descripciones de ofertas en este proyecto. El gate técnico también se cumplió: la
+página de oferta publica un bloque JSON-LD `JobPosting` en el HTML estático, así
+que no hace falta JavaScript. Existe un adaptador de detalle
+(`fetch-getmanfred-details`), con fixture construido a partir de una captura real
+y sin reproducir aquí el texto de los términos ni el contenido de las páginas. El
+adaptador sigue releyendo `robots.txt` antes del primer request: si esa política
+cambia, la corrida falla cerrado en lugar de confiar solo en el permiso de hoy.
+
+`search-tecnoempleo` usa solo la búsqueda pública server-rendered bajo
+`/ofertas-trabajo/`. En modo texto construye la URL con la keyword como query
+param `te`, la ubicación como segmento de path y `pagina` solo desde la segunda
+página. En modo `--browse` recorre las ofertas de Madrid por función profesional
+(`pr=,263,&es=,34,43,40,39,8,45,19,`: DevOps, Técnico de Sistemas,
+Ciberseguridad, Redes, Soporte Técnico, Administrador y Helpdesk), con las comas
+literales porque así se verificó la URL en vivo; la etiqueta de procedencia
+guardada como `query` es `función: sistemas, devops y seguridad (Madrid)`. Antes
+del primer request vuelve a leer `robots.txt` y falla cerrado si la ruta está
+deshabilitada. No usa login, cookies, RSS privado ni API no autorizada. La forma
+de la URL fue verificada contra páginas reales del sitio; el parser sigue siendo
+conservador y falla cerrado ante HTML no reconocible.
+
+Convención de procedencia: `provider` (plataforma), `query` (palabra clave),
+`cycle_id` (ciclo de búsqueda comparable) y `position_kind`
+(`search_rank` = posición real en la búsqueda; `none` = inventario sin orden). La
+analítica de palabras clave del tablero identifica cada serie por
+`provider|keyword`: el ciclo es procedencia, no identidad, así que las ofertas del
+mismo `provider`/`keyword` observadas en varios ciclos se agregan en una sola
+fila y clave de filtro compartida, y la procedencia por oferta conserva su
+`cycle_id` real en SQLite. El tablero solo embebe las claves de serie distintas de
+cada oferta (lo que lee el filtro de palabra clave), no una entrada por
+avistamiento. El mismo término en LinkedIn, GetManfred y Tecnoempleo nunca se
+mezcla. Los ciclos cuyo ID empieza con `smoke` (recortado, sin distinguir
+mayúsculas) se excluyen de la tabla de analítica; no se borran filas ni la
+procedencia por oferta.
+
+InfoJobs queda **bloqueado**: `https://www.infojobs.net/candidate/my-infojobs.xhtml`
+es una página privada autenticada y solo podrá añadirse tras una autorización de
+API oficial y credenciales de app explícitas. No hay comando CLI ni ruta de red.
+
+Enriquecimiento de detalles:
+
+```bash
+python -m jobscout fetch-details --dry-run                                            # plan, sin red ni escrituras
+python -m jobscout fetch-details --fixture tests/fixtures/linkedin_detail_responses.json
+python -m jobscout fetch-details --max-items 5 --confirm-network                      # real, acotado
+python -m jobscout fetch-details --all --max-items 10 --confirm-network               # re-extrae todo
+python -m jobscout fetch-details --refresh --stale-days 14 --dry-run                  # plan de refresco, offline
+python -m jobscout backfill-salary --dry-run                                          # salarios ya enriquecidos, sin red
+```
+
+Cuando la descripción de un detalle de LinkedIn indica un salario en euros,
+`fetch-details` rellena `salary` con ese texto. En Tecnoempleo,
+`fetch-tecnoempleo-details` elige por este orden: el rango (dos cifras) que da la
+descripción; si no, el campo «Salario» de la página, una banda redondeada que
+elige la empresa; y si tampoco hay campo, la cifra suelta de la descripción
+(«hasta 45.000 €»). `backfill-salary [--dry-run]` hace lo mismo una sola vez, sin
+red, sobre las ofertas ya enriquecidas que aún no tienen salario —en Tecnoempleo
+lee el campo de la página de detalle guardada— y nunca sobrescribe uno
+existente.
+
+Toda selección de `fetch-details` — la ruta por defecto, `--all`, `--refresh` y un
+`--job-id` explícito — se restringe a ofertas de LinkedIn (`source = linkedin`).
+Un id que no sea de LinkedIn se informa y nunca se planifica, así que un id
+numérico de GetManfred o Tecnoempleo jamás se lee dentro del espacio de ids de
+LinkedIn.
+
+La ruta por defecto (y la de Tecnoempleo y GetManfred) omite las
+republicaciones: cuando un proveedor publica la misma oferta con un id nuevo, se
+guarda como otra variante de la misma oferta, y no se vuelve a descargar si la
+oferta ya tiene la descripción completa y su último detalle correcto vino de ese
+mismo proveedor. Una variante de otro proveedor se sigue descargando.
+
+`--refresh` es una selección mutuamente excluyente con `--job-id` y `--all`. Solo
+considera ofertas activas que ya tienen historial de fetch y cuyo último intento
+es uno de estos:
+
+- un `ok`/`partial` anterior al cutoff (`--stale-days`, por defecto `0`);
+- un `failed` que nunca recibió respuesta HTTP (`http_status` y `raw_document_id`
+  nulos), es decir un fallo transitorio reintentable;
+- un `404`/`410` refutado por un re-avistamiento posterior.
+
+Quedan fuera las inactivas, las que nunca se consultaron, los intentos `skipped`
+y los fallos que sí registraron una respuesta HTTP. Con `--stale-days 0` no hay
+piso de antigüedad. El presupuesto de `--max-items` se gasta primero en la
+evidencia más vieja.
+
+`--refresh --dry-run` es de solo lectura y sin red: nunca crea la base ni escribe
+filas. Un refresco real conserva sus mismas barreras de red que el resto de
+`fetch-details` (`--confirm-network`, o `--fixture` para trabajar offline).
+
+`fetch-details` no vuelve a puntuar por sí solo: ejecuta
+`score --all --rescore` después de enriquecer.
+
+Enriquecimiento de detalles de Tecnoempleo:
+
+```bash
+python -m jobscout fetch-tecnoempleo-details --dry-run                       # plan, sin red ni escrituras
+python -m jobscout fetch-tecnoempleo-details --max-items 10 --confirm-network # real, acotado
+python -m jobscout fetch-tecnoempleo-details --all --max-items 20 --confirm-network
+```
+
+Selecciona por defecto las ofertas **activas de Tecnoempleo** que todavía no
+tienen descripción completa (`--all` amplía a todas las activas de esa
+plataforma). Reutiliza el mismo modelo de seguridad que la búsqueda: sin login,
+sin cookies, sin RSS privado ni API; vuelve a leer `robots.txt` y falla cerrado si
+la ruta de detalle está deshabilitada; límites, pacing y techo de descarga
+conservadores.
+
+Extrae descripción, empresa, ubicación, fecha, tecnologías y salario **solo de
+markup reconocido** (`itemprop`/clases estables; la fecha prefiere
+`<time datetime>`, y el salario sigue el orden descrito arriba: rango de la
+descripción, campo «Salario» de la página, cifra suelta de la descripción).
+Un detalle reconocido deja la oferta en `content_status = ok` con descripción no
+vacía. Un detalle no reconocido, un 403 o un cuerpo truncado quedan en
+`partial`/`failed` con un error honesto: nunca se inventa un `ok`. La decisión de
+no reemplazar una descripción completa previa por un intento parcial o fallido la
+aplica el pipeline al persistir.
+
+Flujo completo: **búsqueda → enriquecimiento de detalle → scoring**.
+`fetch-tecnoempleo-details` no vuelve a puntuar por sí solo; ejecuta
+`score --all --rescore` (o `score --job-id ID`) después de enriquecer.
+
+Enriquecimiento de detalles de GetManfred:
+
+```bash
+python -m jobscout fetch-getmanfred-details --dry-run                        # plan, sin red ni escrituras
+python -m jobscout fetch-getmanfred-details --max-items 10 --confirm-network # real, acotado
+python -m jobscout fetch-getmanfred-details --all --max-items 20 --confirm-network
+```
+
+Existe permiso previo por escrito de Manfred para las solicitudes automatizadas y
+el almacenamiento de las descripciones de ofertas en este proyecto. Selecciona por
+defecto las ofertas **activas de GetManfred** que todavía no tienen descripción
+completa (`--all` amplía a todas las activas de esa plataforma; cada ruta —
+por defecto, `--all` y `--job-id`— se restringe a `source = getmanfred`).
+Reutiliza el mismo modelo de seguridad que la búsqueda: sin login, sin cookies,
+sin RSS privado ni API; vuelve a leer `robots.txt` y falla cerrado si la ruta de
+detalle está deshabilitada; límites, pacing y techo de descarga conservadores.
+
+Extrae descripción, empresa, ubicación, fecha, tipo de empleo y salario **solo
+del JSON-LD `JobPosting` reconocido** de la página. Un campo que la página no
+expone queda `NULL`: la empresa nunca se deriva del slug y una localidad vacía no
+se reemplaza por un valor inferido. Un detalle reconocido deja la oferta en
+`content_status = ok` con descripción no vacía. Un detalle no reconocido, un 403 o
+un cuerpo truncado quedan en `partial`/`failed` con un error honesto: nunca se
+inventa un `ok`. La decisión de no reemplazar una descripción completa previa por
+un intento parcial o fallido la aplica el pipeline al persistir.
+
+`fetch-getmanfred-details` no vuelve a puntuar por sí solo; ejecuta
+`score --all --rescore` (o `score --job-id ID`) después de enriquecer.
+
+Importación de feedback:
+
+```bash
+python -m jobscout import-feedback jobscout-feedback.json            # importa la exportación de esta base
+python -m jobscout import-feedback jobscout-feedback.json --json     # informe legible por máquina
+python -m jobscout import-feedback old-export.json --project-id ID   # acepta la exportación de una base movida
+```
+
+Informe de calibración (offline, solo lectura):
+
+```bash
+python -m jobscout calibrate                          # todo el feedback importado
+python -m jobscout calibrate --scorer heuristic       # solo evaluaciones de un puntuador
+python -m jobscout calibrate --json                   # informe legible por máquina
+```
+
+### Dossiers de empresa (OpenCode, bajo demanda)
+
+`dossier` pide a OpenCode (la misma invocación aislada que el puntuador) que
+investigue la empresa de una oferta con `webfetch` y escribe un fichero Markdown
+por empresa en `<directorio de la base>/dossiers/<slug>.md`. Consume cuota de
+OpenCode y red vía el modelo; no lo ejecuta el sweep periódico.
+
+```bash
+python -m jobscout dossier --job-id 42                       # una oferta
+python -m jobscout dossier --apply                           # todas las ofertas activas con decisión 'apply'
+python -m jobscout dossier --apply --refresh                 # regenera los dossiers existentes
+python -m jobscout dossier --job-id 42 --timeout 900         # más margen por empresa (por defecto 600 s)
+```
+
+Se escribe **un dossier por empresa**: si varias ofertas comparten empresa, se
+usa la primera seleccionada. Un dossier existente se omite salvo `--refresh`.
+Las ofertas sin empresa se saltan con un aviso, y un fallo en una empresa no
+detiene las demás (el comando termina con código 1 si alguna falló). El modelo
+tiene prohibido consultar o citar `linkedin.com`; cualquier línea que aún lo
+mencione se elimina antes de guardar y se avisa de cuántas se quitaron. Se guarda
+solo la respuesta final, desde su último `## Sector` (el flujo de OpenCode trae
+también las páginas descargadas); una respuesta sin esa sección cuenta como fallo
+y no se escribe. Como ese flujo incluye las páginas descargadas, `dossier` sube
+el límite de salida a 8 MiB como mínimo (`JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES`
+solo cuenta si es mayor); el puntuador sigue con su 1 MiB. El dashboard incrusta el texto del dossier en cada oferta de esa empresa (dentro de
+un bloque plegable), sin peticiones externas ni enlaces a ficheros: el informe
+sigue siendo autocontenido y seguro sobre `file://`.
+
+### Notificaciones locales (opt-in, sin programación)
+
+`notify` es una vista previa manual y de solo lectura de las ofertas de alto
+puntaje. Está **desactivado por defecto** (`JOBSCOUT_NOTIFY_ENABLED=false`) y,
+cuando está desactivado, no crea ni abre la base de datos.
+
+```bash
+# Vista previa (solo imprime; nunca envía nada)
+python -m jobscout notify
+python -m jobscout notify --limit 10 --json
+
+# Entrega local explícita (opt-in); stdout por defecto
+python -m jobscout notify --deliver
+
+# Solo las que el filtro de preferencia marca para revisar
+JOBSCOUT_NOTIFY_PREFERENCE_OUTCOME=flag python -m jobscout notify
+```
+
+Selecciona ofertas **activas** que tienen una evaluación exitosa almacenada con
+puntaje ≥ `JOBSCOUT_NOTIFY_SCORE_THRESHOLD` (0–100, por defecto 80), que
+opcionalmente coinciden con `JOBSCOUT_NOTIFY_PREFERENCE_OUTCOME`
+(`pass`/`flag`/`fail`, vacío = sin filtro) y que **no tienen ninguna fila de
+feedback humano importado**. Reutiliza la evaluación y la preferencia guardadas:
+no vuelve a puntuar, no llama a un modelo y no hace ninguna solicitud de red.
+`--limit` usa el tope existente de 250.
+
+La entrega es una acción separada: sin `--deliver` solo imprime. Con `--deliver`
+usa `JOBSCOUT_NOTIFY_DELIVERY` (`stdout` por defecto o `system`). `system` usa
+solo un notificador local ya instalado (`notify-send` en Linux o
+`terminal-notifier` en macOS) descubierto con `shutil.which`; si no existe,
+vuelve a stdout. **No hay programador, daemon, cron, servicio en segundo plano,
+ejecución automática, entrega remota ni postulación.**
+
+### Poda de catálogo (sin red, vista previa por defecto)
+
+`prune` es un plan determinista y sin red para el peor cuarto del catálogo. Usa
+solo métricas que jobscout ya guarda, no agrega ningún puntaje compuesto y no
+cambia nada salvo que se lo pidas explícitamente.
+
+```bash
+# Vista previa: solo lectura, nunca crea ni escribe la base
+python -m jobscout prune
+python -m jobscout prune --json
+
+# Acción explícita: desactiva solo las ofertas que el plan seleccionó
+python -m jobscout prune --apply
+```
+
+Qué reporta el plan:
+
+| Parte | Regla |
+|-------|-------|
+| Corte de ofertas | Ofertas activas con `latest_evaluations.overall_score` exitoso, ordenadas de forma ascendente; se seleccionan `floor(25% x cantidad)`, con desempate por id de oferta ascendente. Las ofertas sin puntaje y las inactivas nunca se seleccionan. |
+| Candidatos de palabras clave | Series por **proveedor** (`provider` + consulta literal) ordenadas por `avg_score` ascendente; `floor(25% x series elegibles)` por proveedor, con desempate por consulta. Un proveedor con menos de cuatro series elegibles no se poda. |
+| Costo de ofertas únicas | Para cada serie del peor cuarto, `unique_offers` cuenta las ofertas activas que **ninguna otra consulta del mismo proveedor** trajo, y `unique_good_offers` cuenta las que puntúan al menos `45`. |
+| Columnas de contexto | `avg_score`, `top5_avg_score`, `top10_avg_score`, `duplicate_rate` y `human_apply_rate`, tal como están. Una tasa de aprobación humana ausente se muestra como no disponible, nunca `0`. |
+
+Garantías de seguridad:
+
+- **La vista previa no muta nada.** La ejecución por defecto abre la base
+  existente en modo lectura (SQLite `mode=ro` más `PRAGMA query_only`) y no
+  escribe ninguna fila; una base ausente es un error claro, no un archivo nuevo.
+- **`--apply` es acotado y conserva el historial.** Desactiva exactamente las
+  ofertas seleccionadas mediante el camino existente `deactivate_job`, así que
+  las evaluaciones, el feedback y los registros de consulta se mantienen. Nunca
+  borra una fila ni crea una base.
+- **La identidad por proveedor se preserva.** Cortar `query|tecnoempleo` nunca
+  puede tocar `query|linkedin`.
+- **Nunca costar una buena oferta (regla del propietario).** Una serie que por sí
+  sola trajo una oferta con puntaje `>= 45` no se propone: pasa a
+  `held_back_keywords` (texto y JSON) con sus `unique_offers`/`unique_good_offers`
+  medidos y el motivo.
+- **Solo recomendación.** Los candidatos de palabras clave nunca se aplican: el
+  catálogo no se muta y ninguna consulta futura se suprime automáticamente. No
+  existe ninguna compuerta por cantidad de ciclos.
+
+## Puntuación
+
+Los tres puntuadores devuelven la misma forma explicable: `overall_score` (0-100),
+`dimensions`, `blockers`, `strengths`, `gaps`, `unknowns`, `confidence` (0-1),
+`recommendation` (`apply` / `consider` / `skip` / `need_more_info`) y `rationale`.
+Cada evaluación guarda además el puntuador, el modelo, la versión del prompt, el
+id de la instantánea del perfil, un `input_fingerprint` y el documento crudo
+asociado, para que todo puntaje sea auditable después.
+
+Antes de puntuar, las ofertas con un título claramente senior se omiten mediante
+el filtro de seniority por título: `score --all` las descarta antes de aplicar
+`--limit`, imprime `skipped N offer(s) filtered by seniority` y expone
+`skipped_seniority` en `--json`. `--job-id` las puntúa igual, y las evaluaciones
+existentes de ofertas filtradas no se tocan.
+
+Sin detalles no se puntúa una tarjeta de búsqueda: `score --all` (con o sin
+`--rescore`) descarta también, antes de `--limit`, las ofertas activas que
+siguen sin descripción completa y a las que les quedan intentos de detalle.
+Imprime `skipped N offer(s) waiting for details` y expone
+`skipped_pending_details` en `--json`; `--job-id` fuerza el puntaje igual. Tras
+dos intentos de detalle fallidos que no sean 404/410 la oferta se puntúa con su
+tarjeta, para que nunca quede en el limbo.
+
+La tanda también se detiene cuando el proveedor está caído: tras 3 errores de
+proveedor seguidos (estado final de cada oferta, después del reintento de
+reserva), imprime `stopped after 3 consecutive provider errors: A of S offer(s)
+attempted, R left for the next run`, expone `stopped_early` y `not_attempted` en
+`--json`, y sale con código 1 aunque alguna oferta se haya puntuado. Las filas
+de error ya escritas se conservan y las ofertas restantes quedan para la próxima
+corrida. Un `parse_error` no cuenta: es salida del modelo, no del proveedor.
+
+| Puntuador | Cuándo usarlo | Requisitos |
+|-----------|---------------|------------|
+| `heuristic` | Siempre disponible, determinista y sin dependencias | ninguno |
+| `llm` | Cualquier endpoint `/chat/completions` compatible con OpenAI | `JOBSCOUT_LLM_BASE_URL` y `JOBSCOUT_LLM_API_KEY` |
+| `opencode` (predeterminado) | Ya usas OpenCode localmente y prefieres no manejar una clave | CLI `opencode` instalada y autenticada |
+
+### Heurístico (sin conexión)
+
+Determinista y sin dependencias. Dimensiones: `must_have_skills`, `skills`
+(deseables), `seniority`, `location`, `language`, `recency` y `compensation`. Los
+pesos salen del perfil y se renormalizan sobre las dimensiones aplicables.
+
+### LLM compatible con OpenAI
+
+```bash
+export JOBSCOUT_LLM_BASE_URL=https://api.example.com/v1
+export JOBSCOUT_LLM_API_KEY=...
+python -m jobscout score --all --scorer llm --profile profile.yaml
+```
+
+Sin `JOBSCOUT_LLM_BASE_URL` y `JOBSCOUT_LLM_API_KEY` el puntuador LLM se niega a
+ejecutarse y sugiere el heurístico. El modelo predeterminado es
+`deepseek-v4.1-flash` y siempre es configurable con `JOBSCOUT_LLM_MODEL`. Las
+respuestas se analizan de forma defensiva; una salida ilegible se registra como
+`parse_error` en lugar de cortar el lote.
+
+### CLI de OpenCode (sin clave de API)
+
+```bash
+# Una sola vez: autentica OpenCode con el proveedor del modelo
+opencode auth login
+
+# Modelo predeterminado incluido: opencode-go/deepseek-v4.1-flash
+python -m jobscout score --all --scorer opencode --profile profile.yaml
+```
+
+Si no pasás `--scorer`, se usa OpenCode con deepseek-v4.1-flash. Para una evaluación offline
+explícita, usá `--scorer heuristic`.
+
+Ejecuta `opencode run --standalone --model <modelo>#<variante> --format json
+<prompt>` como arreglo de argumentos, nunca a través de un shell. OpenCode 2.x
+eliminó `--pure` y `--variant`, así que el aislamiento vive en `--standalone` y la
+variante en el propio id del modelo. Con `JOBSCOUT_OPENCODE_PURE=true` (por
+defecto) además se usa un `XDG_CONFIG_HOME` privado en
+`<carpeta de la BD>/opencode-config` y se desactivan la configuración del
+proyecto, la autoupdate y las skills de Claude Code; el aislamiento es por
+entorno porque los plugins de OpenCode son código arbitrario. El
+`opencode.json` privado deniega las acciones que pueden cambiar la máquina o
+colgar una ejecución no interactiva (`shell`, `write`, `edit`, `execute`,
+`subagent`, `skill`, `question`, `websearch`, `external_directory`,
+`doom_loop`) y la lectura de ficheros de secretos (`*.env`, `*.env.*`, `*.pem`,
+`*.key`, `*auth.json`), de modo que el modelo solo conserva `read`, `grep`,
+`glob` y `webfetch`; un fichero de configuración antiguo se reescribe solo en
+la siguiente ejecución. Por defecto el CLI corre en un directorio privado y
+vacío junto a la BD (`<carpeta de la BD>/opencode-work`), no en el directorio
+temporal compartido; `JOBSCOUT_OPENCODE_WORKDIR` permite fijar otra ruta.
+
+La variante se configura con `JOBSCOUT_OPENCODE_VARIANT` (por defecto `low`).
+`JOBSCOUT_OPENCODE_FALLBACK_MODEL` es opcional y admite `#variante`: tras el
+primer `status=error` de una ejecución de `score`, el resto usa el respaldo y el
+JSON de `score` lo registra como `fallback_model`. Como el modelo forma parte de
+la huella de entrada, cambiarlo re-puntúa las ofertas poco a poco. La ruta al
+ejecutable se resuelve solo por ruta absoluta o búsqueda en `PATH`. La salida del
+proceso hijo se acota **mientras corre**: si supera
+`JOBSCOUT_OPENCODE_MAX_OUTPUT_BYTES` o vence el timeout, el proceso se termina.
+Reutiliza el mismo prompt endurecido que el puntuador HTTP, así que la oferta se
+trata como dato no confiable. Una salida incompleta queda como `parse_error` y
+**no se reintenta automáticamente**: jobscout nunca inventa un puntaje. Vuelve a
+ejecutar el puntuador para intentar de nuevo.
+
+`--scorer-model` y `--effort` fijan el modelo y el esfuerzo de una sola
+ejecución de `score`, útil para comparar dos configuraciones; `--effort ''` no
+envía variante. Ambos forman parte de la huella de entrada, así que cambiarlos
+re-puntúa las ofertas. Si no se define `JOBSCOUT_OPENCODE_TIMEOUT_SECONDS`, el
+timeout por oferta se deduce del esfuerzo: sin variante, `minimal` o `low`
+180 s; `medium` 240 s; `high` 360 s; `max` 600 s.
+
+## Flujo de optimización de palabras clave
+
+La cobertura de búsqueda vive en un catálogo explícito
+(`src/jobscout/keywords.py`): familias acotadas de consultas, sin generación
+automática ni expansión más allá de esa lista. Las familias `baseline` son las que
+ya funcionaban (`Junior Cloud Engineer`, `Junior DevOps Engineer`, `Platform
+Engineer`); las familias `security` agregan cobertura de Cloud Security y DevSecOps
+(`Cloud Security Engineer`, `Junior Cloud Security Engineer`, `DevSecOps Engineer`,
+`Junior DevSecOps Engineer`, `Azure Cloud Security`, `Azure Security Engineer`,
+`Azure DevSecOps`, y seguridad de infraestructura). Cada familia declara como
+máximo `HARD_MAX_QUERIES_PER_FAMILY` consultas.
+
+```bash
+python -m jobscout keyword-plan                          # todas las familias, sin red
+python -m jobscout keyword-plan --family cloud-security --family devsecops
+python -m jobscout keyword-plan --family cloud-security --location "Madrid, Spain" --remote
+python -m jobscout keyword-plan --json                   # informe legible por máquina
+```
+
+`keyword-plan --json` añade `retired_for` a cada entrada de `planned`: la lista
+ordenada de proveedores que retiraron esa consulta (`[]` si ninguno). En el texto,
+esas consultas se marcan como `- Platform Engineer (retired for: tecnoempleo)`.
+
+`keyword-plan --json` también publica el bloque de barrido de Tecnoempleo en la
+clave superior `tecnoempleo`: `browse` con `label`, `url`, `max_pages` (5) y
+`max_items` (150), más `text_queries` (`["prácticas"]`). El barrido de Hermes lee
+ese bloque en lugar de llevar la URL fija. En texto se imprimen las mismas dos
+líneas bajo la cabecera del plan. El modo texto (`--keywords`) de Tecnoempleo
+sigue igual.
+
+Cada línea impresa es un comando de vista previa (`--dry-run`). Convertirlo en una
+búsqueda real es reemplazar `--dry-run` por `--confirm-network`, siempre una
+acción humana explícita. `JOBSCOUT_KEYWORD_FAMILIES` fija qué familias se listan
+cuando no pasas `--family`; un id desconocido falla al iniciar.
+
+### Búsquedas retiradas (regla del propietario, 2026-09-30)
+
+Un par `(proveedor, consulta)` se retira solo cuando cortarlo no costaría **ninguna
+buena oferta**. El costo son las ofertas activas que ninguna otra consulta del
+mismo proveedor trajo; una oferta del costo es *buena* cuando puntúa al menos `45`.
+Catorce pares están retirados y ya no se pueden planificar ni ejecutar, ni
+siquiera en `--dry-run`:
+
+| Proveedor | Consultas retiradas |
+|-----------|---------------------|
+| Tecnoempleo | `Platform Engineer`, `Azure Security Engineer`, `IAM Engineer`, `Junior Cloud Security Engineer`, `Security Infrastructure Engineer`, `Junior Cloud Engineer`, `Junior DevOps Engineer`, `Cloud Security Engineer`, `DevSecOps Engineer`, `Junior DevSecOps Engineer`, `Azure Cloud Security`, `Azure DevSecOps` |
+| LinkedIn | `Identity and Access Management Engineer`, `IAM Engineer` |
+
+- **Restauradas.** `Cloud Security Engineer|linkedin` (0 ofertas únicas) y
+  `Platform Engineer|linkedin` (30 únicas, 4 buenas) vuelven a estar activas; la
+  auditoría mostró que retirar `Platform Engineer` costaría buenas ofertas.
+- **Retiradas por la función (2026-10-27).** Las siete búsquedas de texto que
+  seguían activas en Tecnoempleo (`Junior Cloud Engineer`, `Junior DevOps
+  Engineer`, `Cloud Security Engineer`, `DevSecOps Engineer`, `Junior DevSecOps
+  Engineer`, `Azure Cloud Security`, `Azure DevSecOps`) se sustituyen por el
+  browse por función: encontró 12 de las 13 ofertas buenas conocidas y la 13 es
+  el caso de `prácticas`, que sigue como única consulta de texto de Tecnoempleo.
+  LinkedIn conserva todas esas consultas. La regla CP-8 se mantiene: no se retiró
+  ninguna consulta que costara una buena oferta.
+- **Se mantienen activas.** `Identity and Access Management Engineer|tecnoempleo`
+  (8 únicas, 2 buenas) y `devops|tecnoempleo` (18 únicas, 2 buenas) **no** se
+  retiran: cada uno costaría buenas ofertas.
+- El registro durable vive en `RETIRED_SEARCHES` (`src/jobscout/keywords.py`) con
+  proveedor, consulta, fecha y motivo, y el mismo par queda bloqueado en el
+  constructor de la búsqueda de cada collector (llamadores directos, CLI y
+  `--dry-run`).
+- La coincidencia es **igualdad total normalizada** (mayúsculas, espacios y
+  acentos plegados), nunca subcadena: `Senior Platform Engineer` sigue permitido.
+- El mismo literal sigue disponible en cualquier proveedor no listado; por eso
+  `Azure Security Engineer` permanece en el catálogo de LinkedIn.
+- El historial de búsquedas y la analítica del tablero se conservan: no se borra
+  ninguna fila, y los pares retirados solo se omiten como candidatos de `prune`.
+- En el tablero, las series retiradas siguen en la tabla de palabras clave, en
+  gris y marcadas `· retirada`, y en el payload como `retired_keywords` (sin fecha
+  ni motivo, que están en `keyword-plan`). El filtro de origen de Ofertas solo
+  ofrece las series activas. `summary.keywords` sigue contando todas las series
+  analizadas, retiradas incluidas. La procedencia por oferta no cambia.
+
+La procedencia de cada palabra clave (qué búsqueda trajo cada oferta y en qué
+posición) se guarda en SQLite, y el tablero la agrega:
+
+1. Ejecuta búsquedas acotadas con las palabras clave del plan
+   (`search-linkedin ... --confirm-network`) o ingiere fixtures con etiquetas.
+2. Enriquece con `fetch-details` y puntúa con `score --all --rescore`.
+3. Exporta tu feedback desde el tablero e impórtalo con `import-feedback`. Sin
+   feedback importado, las columnas de decisión humana quedan en *sin dato*.
+4. Genera el tablero y abre la pestaña **Palabras clave**: una tabla ordenable con
+   una fila por par palabra clave/proveedor y las columnas *Keyword*, *Proveedor*,
+   *Vistas*, *Activas*, *Score medio*, *≥ 70* y *Aplicadas*. Se abre ordenada por
+   *Score medio* descendente; un clic en una cabecera reordena. Las series
+   retiradas aparecen en gris con `· retirada`. Sin ninguna serie, muestra
+   "Todavía no hay procedencia de palabras clave registrada.".
+5. Prioriza las palabras clave con mejor score medio, más ofertas ≥ 70 y más
+   decisiones de aplicar; descarta las que ya casi no producen ofertas activas.
+6. Ajusta las palabras clave y repite. **Cada corrida es manual**: no hay
+   programación automática. Las notificaciones locales son opt-in y manuales
+   (`jobscout notify`).
+
+Cómo leer las métricas:
+
+- *Vistas* son las ofertas distintas que trajo la búsqueda alguna vez, incluidas
+  las que jobscout ya desactivó; *Activas*, las que siguen activas. jobscout
+  **no** tiene una señal verificada de "oferta expirada en LinkedIn": la
+  diferencia entre ambas es solo lo que jobscout desactivó.
+- *Score medio* promedia las ofertas activas con evaluación exitosa, redondeado,
+  y muestra *sin dato* si no hay ninguna; *≥ 70* cuenta las que llegan a 70, el
+  mismo umbral que pinta una nota en color señal.
+- *Aplicadas* cuenta las decisiones `apply` importadas con `import-feedback`,
+  nunca la recomendación del modelo ni las marcas que solo están en el navegador.
+- El payload conserva el resto de métricas por serie (duplicados, frescura,
+  tasas humanas), que `keyword-plan` sigue usando.
+
+La posición observada es solo procedencia: el orden de resultados de LinkedIn
+**no** se trata como señal de calidad.
+
+## Privacidad y seguridad
+
+Estas garantías las aplica el código, no solo la documentación:
+
+- Datos locales (perfil, base SQLite y sus sidecars, capturas crudas, informes,
+  `.env*` distintos de `.env.example`) están ignorados por Git. Nunca los
+  publiques.
+- Las URLs configuradas de LinkedIn deben ser **HTTPS en `linkedin.com` o
+  `*.linkedin.com`**; la URL base del LLM debe ser HTTPS. Esquemas `file:`,
+  `ftp:`, `data:`, `http:`, hosts parecidos y credenciales embebidas se rechazan
+  al iniciar.
+- Las redirecciones se siguen solo al mismo host (o bajo el dominio padre de
+  LinkedIn); una redirección a otro host falla cerrado y nunca se reintenta.
+- Solo se reintentan fallas transitorias (timeouts, 5xx). 401/403/429 y estados
+  inesperados **fallan de inmediato**.
+- Los payloads crudos se guardan solo si están por debajo de
+  `JOBSCOUT_RAW_MAX_BYTES` y no parecen contener credenciales.
+- El texto de la oferta se trata como dato no confiable: el LLM recibe la
+  instrucción de no seguir instrucciones embebidas y los delimitadores de prompt
+  se neutralizan.
+
+### Riesgo residual: permisos de herramientas de OpenCode (H2)
+
+OpenCode 2.x sí acepta reglas `permissions` en su `opencode.json`. jobscout
+escribe un fichero privado que deniega las acciones capaces de cambiar la
+máquina o colgar una ejecución no interactiva y la lectura de ficheros de
+secretos (ver arriba); `--dangerously-skip-permissions` *amplía* el acceso, así
+que nunca se pasa. La política sigue viviendo en la configuración local de
+OpenCode, que jobscout no controla ni verifica más allá de ese fichero.
+
+Lo que sí hace hoy: ejecuta con `--standalone` y un `XDG_CONFIG_HOME` privado
+(aislamiento por entorno, no `--pure`, que OpenCode 2.x eliminó) por defecto,
+corre desde un directorio privado y vacío junto a la base de datos (para no
+cargar las instrucciones de este repositorio ni ver ficheros de otros procesos)
+y neutraliza la falsificación de delimitadores en el prompt.
+
+Lo que queda: un modelo inyectado por prompt o con comportamiento errático aún
+podría intentar las herramientas permitidas (`read`, `grep`, `glob`,
+`webfetch`) dentro del directorio de trabajo, y `webfetch` podría exfiltrar lo
+que lea. **Es un riesgo residual aceptado (H2).** Si necesitas una garantía
+dura, configura un agente restrictivo en tu OpenCode local o no uses el
+puntuador de OpenCode con ofertas no confiables.
+
+### Alcance del tablero
+
+El tablero no incluye descripciones, payloads crudos, el perfil ni datos de
+contacto, claves de API o rutas locales absolutas. El feedback del navegador se
+indexa por un hash de la ruta de la base (no por la ruta en sí). Algunos
+navegadores restringen `localStorage` en páginas `file://`; si el tuyo lo hace, el
+informe igual se renderiza y filtra, pero el botón de exportación es la única
+forma de conservar tus decisiones.
+
+## Estructura del proyecto
+
+```text
+.
+├── .env.example              # Plantilla de configuración (todas las variables JOBSCOUT_*)
+├── profile.example.yaml      # Perfil de ejemplo
+├── pyproject.toml            # Metadatos, dependencias y configuración de pytest
+├── src/jobscout/
+│   ├── cli.py                # Comandos, validación de argumentos y códigos de salida
+│   ├── config.py             # Settings, validación de URLs y redacción de secretos
+│   ├── db.py                 # Esquema SQLite, consultas y conexión de solo lectura
+│   ├── keywords.py           # Catálogo acotado de familias y consultas de búsqueda
+│   ├── normalize.py          # Normalización de ofertas
+│   ├── dedupe.py             # Huellas y deduplicación exacta/probable
+│   ├── pipeline.py           # Ingesta de fixtures, búsquedas y detalles
+│   ├── preference.py         # Exclusiones de preferencia (offline, sin tocar el puntaje)
+│   ├── notify.py             # Selección y entrega local de notificaciones (opt-in, solo lectura)
+│   ├── dashboard.py          # Generador del informe HTML autocontenido
+│   ├── url_policy.py         # Validación de URLs y redirecciones
+│   ├── collectors/           # LinkedIn guest, fixtures, rate limit, transporte HTTP
+│   └── scoring/              # Heurístico, LLM, OpenCode, esquema y perfil
+└── tests/
+    ├── fixtures/             # Datos sintéticos de búsqueda, detalle y respuestas LLM
+    └── test_*.py             # Suite offline
+```
+
+## Pruebas
+
+```bash
+python -m pytest -q
+```
+
+La suite es totalmente offline: el transporte HTTP se reemplaza por un doble de
+prueba, las pruebas que deben demostrar que no hay red llegan a bloquear
+`socket.socket`, y el CLI de OpenCode se reemplaza por un runner falso inyectado.
+Ninguna prueba invoca un modelo ni el binario real de `opencode`.
+
+Prueba de humo con fixtures (la base vive en `data/`, ignorada por Git):
+
+```bash
+python -m jobscout --db data/smoke.sqlite3 init-db
+python -m jobscout --db data/smoke.sqlite3 ingest-fixture tests/fixtures/linkedin_search_cards_sample.json
+python -m jobscout --db data/smoke.sqlite3 fetch-details --fixture tests/fixtures/linkedin_detail_responses.json
+python -m jobscout --db data/smoke.sqlite3 --profile tests/fixtures/profile_test.yaml score --all --rescore
+python -m jobscout --db data/smoke.sqlite3 rank --top 5
+python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/smoke.html
+```
+
+## Notas de publicación y desarrollo
+
+- El repositorio **no incluye pipeline de publicación ni CI**. La instalación
+  prevista es local y editable (`pip install -e ".[dev]"`), o directamente con
+  `PYTHONPATH=src`.
+- Versión actual: `0.1.0`.
+- Antes de cualquier publicación o PR, verifica que no se cuelen datos locales:
+  `data/`, `reports/`, `profile.yaml` y `.env` están en `.gitignore`, pero conviene
+  revisar `git status` igualmente.
+- Mensajes de commit en estilo convencional; no agregues atribución de IA.
+- Este proyecto es una herramienta de investigación local, no un servicio.
+
+## Limitaciones conocidas y próximos pasos
+
+- La extracción de detalles solo reconoce contenedores de marcado guest conocidos
+  (`show-more-less-html__markup`, `description__text` y similares). Un marcado
+  nuevo produce `partial` con un motivo explícito en lugar de una descripción
+  inventada.
+- `fetch-details` no vuelve a puntuar: hay que ejecutar `score --all --rescore`
+  después.
+- El parser de búsqueda soporta dos formas de tarjeta; una respuesta 200 con
+  cuerpo no vacío pero sin tarjetas se registra como nota de diagnóstico y nunca
+  corta la ejecución.
+- El puntuador de OpenCode requiere un binario `opencode` instalado y autenticado
+  localmente; jobscout no gestiona esa autenticación.
+- `JOBSCOUT_OPENCODE_COMMAND` debe ser ruta absoluta o un nombre resoluble por
+  `PATH`; una ruta relativa se rechaza.
+- El parseo de salario es heurístico y solo se usa cuando el perfil define un
+  mínimo.
+- El tablero embebe por defecto todas las ofertas activas; `--top N` limita el
+  informe a las `N` mejores, pero la analítica de palabras clave se calcula sobre
+  toda la base. Las ofertas desactivadas siguen guardadas pero no se muestran.
+- `keyword-plan` no ejecuta búsquedas: imprime el plan acotado, el bloque de
+  Tecnoempleo (`browse` + `prácticas`) y el comando por consulta. No existe una
+  corrida por lote que dispare varias búsquedas en vivo; cada query es un
+  `search-linkedin` explícito con `--confirm-network`, y Tecnoempleo se ejecuta
+  como browse o como consulta de texto explícita.
+- Las métricas humanas del tablero (frecuencia de aprobación) requieren importar
+  la exportación de feedback; mientras no se importe, quedan en *sin dato*. La
+  comparación entre recomendación del modelo y decisión humana está disponible con
+  `calibrate` (solo lectura, sin ajustar prompts ni puntajes).
+- **No hay programador de tareas ni postulación automática** — por diseño. Las
+  notificaciones locales son opt-in, manuales y de solo lectura
+  (`jobscout notify`, desactivadas por defecto). La importación de feedback
+  existe, pero solo se ejecuta cuando invocas
+  `import-feedback`.

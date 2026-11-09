@@ -9,7 +9,7 @@ available — a deterministic offline scorer and an OpenAI-compatible endpoint.
 Nothing leaves your machine except the requests you explicitly authorize.
 **jobscout never submits job applications.**
 
-**Languages:** English (this file) · [Versión en español](README.md)
+**Languages:** English (this file) · [Versión en español](MANUAL.md)
 
 ## What it does and does not do
 

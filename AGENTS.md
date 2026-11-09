@@ -168,9 +168,10 @@ do not push them. Do not push at all unless the user asks.
 
 ## Style
 
-- Code, docstrings, comments and commit messages in English; the READMEs are bilingual
-  (`README.md` in Spanish, `README.en.md` in English) — update both when documented behaviour
-  changes.
+- Code, docstrings, comments and commit messages in English. The technical manual is bilingual
+  (`docs/MANUAL.md` in Spanish, `docs/MANUAL.en.md` in English) — update both when documented
+  behaviour changes. `README.md` is a short plain-Spanish overview for non-technical readers:
+  touch it only when what the tool does, or why, changes.
 - Comments explain why, not what. Blank line inside functions to break logical blocks, short
   docstrings, no speculative abstractions.
 - Conventional commit subjects, no AI attribution. Code + tests + docs go in the same commit.
