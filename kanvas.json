@@ -33,6 +33,14 @@
     {
       "id": "EIA",
       "name": "Evidencias (idea Amble)"
+    },
+    {
+      "id": "DPA",
+      "name": "Demo para Ana"
+    },
+    {
+      "id": "EO",
+      "name": "Estado de la oferta"
     }
   ],
   "tasks": [
@@ -636,6 +644,148 @@
       "started": {
         "at": "2026-11-04T14:06:40Z",
         "by": "claude-code-fu04"
+      }
+    },
+    {
+      "id": "DB-08",
+      "title": "El barrido vuelve a regenerar el panel",
+      "state": "done",
+      "group": "DB",
+      "at": "2026-11-05T07:47:25Z",
+      "by": "claude-code",
+      "desc": "Desde el 31/10 los barridos (31/10, 1/11, 4/11) terminan con `dashboard error: --top must be <= 1000`: el script de Hermes pide todas las ofertas activas (hoy 1.003, el 4/11 eran 1.097) y el repo limita el panel a 1.000 (`MAX_TOP` en dashboard.py). El panel servido es del 3/11 y no trae el barrido del 4/11.\n\nPropuesta: subir el límite (p. ej. 5.000) o aceptar `--top all`, con test; luego un cambio de una línea en el script de Hermes si hace falta. Hecho cuando: suite verde, el panel se genera con todas las activas y el siguiente barrido ya no da el error.",
+      "notes": [
+        {
+          "at": "2026-11-05T07:59:31Z",
+          "by": "claude-code-db-08",
+          "text": "Qué cambia: `MAX_TOP` en src/jobscout/dashboard.py pasa de 1000 a 5000, con comentario del porqué (el barrido de Hermes pide como --top el número de activas, que ya pasa de 1000). Sin --top nada cambia (sigue sin tope). Test nuevo en tests/test_dashboard.py: 1200 y 5000 se aceptan, 5001 se rechaza con \"--top must be <= 5000, got 5001\". Los tests viejos usaban MAX_TOP simbólico, no hubo que tocarlos. Los README no citaban el 1000 (solo \"el mismo tope explícito\"), así que no cambian.\n\nComprobación: suite completa 1292 passed (47 s). En vivo con copia (backup API) de la BD real en un tmp fuera de data/: 1003 activas, `dashboard --top 1003` escribe 1003 ofertas (855 puntuadas), HTML de 1,38 MB, 3,97 s, 52 MB de RAM. Ni reports/ ni la BD real tocados.\n\nScript de Hermes: no necesita cambio; dashboard_top() seguirá funcionando hasta 5000 activas. Sin commit (rama db-08, cambios en el árbol de trabajo)."
+        }
+      ],
+      "started": {
+        "at": "2026-11-05T07:58:18Z",
+        "by": "claude-code-db-08"
+      }
+    },
+    {
+      "id": "SC-07",
+      "title": "Estimar el sueldo de las 172 ofertas puntuadas sin estimación",
+      "state": "done",
+      "group": "SC",
+      "at": "2026-11-05T07:47:25Z",
+      "by": "claude-code",
+      "desc": "De las 1.099 ofertas puntuadas, 172 tienen la última nota de antes de que existiera la estimación de sueldo, así que en el panel no tienen ni sueldo publicado ni estimado. En las capturas se notaría.\n\nPropuesta: volver a puntuarlas (unos 45 min de cuota de DeepSeek a 16 s cada una), primero las de nota más alta. Ojo: al re-puntuar también puede moverse algo la nota. Hecho cuando: 0 ofertas activas puntuadas sin estimación (salvo las que fallen, listadas).",
+      "notes": [
+        {
+          "at": "2026-11-05T07:58:56Z",
+          "by": "claude-code-sc-07",
+          "text": "Cifra real: 172 = 151 inactivas + 21 activas con la última evaluación ok sin salary_estimate_mid (latest_evaluations). El panel solo muestra activas y el criterio es 'activas', así que re-puntúo las 21 (modelo .env opencode-go/deepseek-v4.1-flash, sin variante). Backup en data/pre-sc07-2026-11-05.sqlite3 (integrity ok)."
+        },
+        {
+          "at": "2026-11-05T08:05:32Z",
+          "by": "claude-code-sc-07",
+          "text": "Qué cambia: las ofertas activas puntuadas sin estimación de sueldo han pasado de 21 a 0. Las \"172\" del tablero eran 151 inactivas, que el panel no enseña, más 21 activas, así que solo se re-puntuaron las 21 activas. Se usó el modelo de .env (opencode-go/deepseek-v4.1-flash, sin variante), con --rescore, de la nota más alta a la más baja, en una sola tanda (08:58-09:05, unos 18 s por oferta). Puntuaron bien 21 de 21: no falló ninguna.\n\nMovimiento de la nota: cambiaron las 21. El cambio medio es +0,6 y el cambio medio en valor absoluto, 4,2 puntos. Mayores movimientos:\n- #626 GrayHair: 30 → 22\n- #935 Catalina FOOD: 12 → 20\n- #647 Idoven: 15 → 22\n- #908 Flexcompute: 18 → 12\n- #803 Devoteam GCP Architect: 15 → 20\nNinguna entra ni sale del top 20: todas siguen por debajo de 46.\n\nCómo lo comprobé: conté sobre la vista latest_evaluations (activas con salary_estimate_mid NULL) antes y después: 21 → 0. La última evaluación de cada una tiene status ok, el modelo nuevo y low/mid/high rellenos.\n\nQué mirar:\n- Backup previo: data/pre-sc07-2026-11-05.sqlite3 (integrity ok).\n- No se ha cambiado código ni regenerado el panel.\n- Las 151 inactivas siguen sin estimación. Re-puntuarlas no se ve en el panel; si se reactivan, el barrido las re-puntuará.\n- Varias de las 21 son anuncios antiguos de GetManfred (sufijos jul24, dic22...) que siguen activos. Puede ser tema aparte."
+        }
+      ],
+      "started": {
+        "at": "2026-11-05T07:58:15Z",
+        "by": "claude-code-sc-07"
+      }
+    },
+    {
+      "id": "DPA-01",
+      "title": "Mensaje y capturas para Ana",
+      "state": "done",
+      "group": "DPA",
+      "deps": ["DB-08", "SC-07"],
+      "at": "2026-11-05T07:47:25Z",
+      "by": "claude-code",
+      "desc": "Dejar el mensaje con cifras verificadas y sacar dos capturas del panel recién generado.\n- Cifra: '1.250 recogidas, ~1.100 puntuadas' en vez de '1.250 analizadas'.\n- 'La estimación nunca cambia la nota' es una instrucción del prompt, no algo que el código impida: decir 'no cuenta para la nota'.\n- Los '336 ofertas' del cruce con el máster no están en el repo: comprobarlo en el vault.\n- Capturas sin datos privados (nada de tus notas ni motivos de descarte que no quieras enseñar).\nHecho cuando: tienes el texto final y las dos capturas.",
+      "notes": [
+        {
+          "at": "2026-11-05T08:12:13Z",
+          "by": "claude-code-dpa-01",
+          "text": "![captura-1-lista](kanvas-files/4821002c505c1ba6.png)\n\n![captura-2-detalle](kanvas-files/207ce1cb3a82156c.png)"
+        },
+        {
+          "at": "2026-11-05T08:12:13Z",
+          "by": "claude-code-dpa-01",
+          "text": "Texto final en /tmp/dpa-01/mensaje.md (mensaje + fuentes + cambios). Cifras (BD solo lectura, 2026-11-05): 1.247 recogidas (584 Tecnoempleo, 512 LinkedIn, 151 Manfred), 1.099 puntuadas (latest_evaluations); contexto: 1.003 activas, 855 activas puntuadas, las 855 con estimación. 336 = auditoría 25 sep 2026 (vault SESSION-RESUME_Master.md:21, plan_definitivo.md:79): 336 ofertas con descripción de la BD de entonces; el mensaje dice 'en septiembre'. Pesos y Guía Manfred: scoring/opencode.py:199-213; 'no cuenta para la nota' porque opencode.py:158 es solo instrucción del prompt. Cambio extra: el borrador decía que explica 'puntos fuertes, lo que me falta y bloqueos', pero el scorer actual solo da justificación (0 de 855 con strengths/gaps): ahora dice 'me dice en una frase por qué'. Borrador sacado de la sesión del vault del 4 nov (no estaba en ningún fichero). Capturas adjuntas (también en /tmp/dpa-01/): lista y primera oferta desplegada, con chrome-headless-shell de ~/.cache/ms-playwright sobre una copia del panel con perfil vacío (sin notas ni motivos); no se instaló nada."
+        }
+      ],
+      "started": {
+        "at": "2026-11-05T08:08:35Z",
+        "by": "claude-code-dpa-01"
+      }
+    },
+    {
+      "id": "EO-01",
+      "title": "Reposts de LinkedIn: dejar de re-descargar ofertas que ya tienen detalle",
+      "state": "done",
+      "group": "EO",
+      "at": "2026-11-09T09:47:02Z",
+      "by": "claude-code",
+      "desc": "**Qué consigue:** los lotes de detalles de LinkedIn dejan de gastar peticiones en ofertas que ya tienen el texto completo. Así las 93 ofertas de LinkedIn que de verdad esperan detalle se descargan y se puntúan antes.\n\n**Qué pasa hoy:** LinkedIn republica la misma oferta con un id nuevo cada pocos días, y cada republicación queda guardada como \"parcial\". El barrido de Hermes elige esas republicaciones, pero pasa el id de la oferta (`--job-id`), y ese id lleva siempre a la primera publicación, que ya está completa. La republicación nunca sale de \"parcial\" y vuelve a elegirse en cada lote.\n- 16 de las próximas 20 descargas de LinkedIn son ofertas ya completas.\n- En los cuatro últimos lotes fue entre el 65 % y el 80 % de las peticiones.\n- Bending Spoons \"Security engineer\" (#152) se ha descargado 16 veces.\n\n**Regla que propongo (decides tú):** una republicación del mismo proveedor de una oferta que ya tiene la descripción completa de ese proveedor no necesita detalle. Una oferta vista en otro proveedor se sigue descargando como hasta ahora. Descarto descargar cada republicación una sola vez: seguiría costando una petición por republicación, y la #152 ya lleva 9.\n\n**Hecho cuando:**\n- la selección de detalles del CLI excluye esas republicaciones, con test;\n- el barrido deja de copiar el SQL y llama a `fetch-details --max-items 20` (lo cambia el orquestador después del merge);\n- el siguiente lote de detalles de LinkedIn descarga ofertas pendientes de verdad (se ve en el log).",
+      "notes": [
+        {
+          "at": "2026-11-09T09:55:20Z",
+          "by": "claude-code-eo-01",
+          "text": "Plan: one shared SQL predicate in db.py excluding same-provider reposts of jobs whose full description came from that provider; tests for repost and other-provider cases; dry-run check on a DB copy; docs if described."
+        },
+        {
+          "at": "2026-11-09T09:58:22Z",
+          "by": "claude-code-eo-01",
+          "text": "Qué cambia: los lotes de detalles ya no eligen republicaciones (variante nueva del mismo proveedor) de una oferta que ya tiene la descripción completa obtenida de ese mismo proveedor. Las variantes de otro proveedor se siguen descargando. Vale para LinkedIn, Tecnoempleo y GetManfred (comparten selector), y la cabecera del panel cuenta lo mismo (un único predicado SQL, _variant_needs_details_predicate en db.py, usado por variants_needing_details y count_variants_needing_details).\nCriterio de proveedor: el source del último job_detail_fetches con status ok de la oferta (igual que latest_successful_detail_fetch_source), porque es lo que registra quién produjo el texto guardado. Descarté jobs.source (solo dice quién vio la oferta primero) y 'hay una variante hermana ok' (3 de Tecnoempleo tienen la hermana ok pero con description_chars 0 y se seguirían bajando; la #1314 lleva 9 descargas). En LinkedIn los tres criterios dan lo mismo hoy.\nPendientes en una copia de la base (variantes/ofertas), antes -> después: LinkedIn 169/140 -> 99/93; Tecnoempleo 169/166 -> 165/162.\nCómo lo probé: 2 tests nuevos en tests/test_job_variants.py (republicación del mismo proveedor no se elige ni se cuenta; variante de otro proveedor sí); el primero falla sin el cambio. Suite completa: 1294 passed. fetch-details --max-items 20 --dry-run --confirm-network sobre la copia (sin --job-id): las 20 son ofertas partial sin descripción, ninguna ya completa; quedan 79 fuera por --max-items.\nOjo, fuera de alcance: en ese plan sale dos veces la URL 4485465485 porque la misma oferta de LinkedIn (NTT DATA, Junior Data Platform Engineer GCP) está en dos ofertas distintas, #1046 (Madrid, Community of Madrid, Spain) y #1550 (Spain): dedupe la separó por la ubicación. Eso cuesta una petición duplicada por lote; propongo tarjeta aparte si quieres.\nQué comprobar: tras el merge, cambiar el barrido de Hermes a fetch-details --max-items 20 (sin copiar el SQL) y mirar en el siguiente log de detalles que las descargas de LinkedIn son ofertas pendientes. README.md y README.en.md describen la regla. Sin commit (lo hace el orquestador)."
+        }
+      ],
+      "started": {
+        "at": "2026-11-09T09:55:20Z",
+        "by": "claude-code-eo-01"
+      }
+    },
+    {
+      "id": "EO-02",
+      "title": "Un solo estado de la oferta, calculado en un sitio",
+      "state": "done",
+      "group": "EO",
+      "deps": ["EO-01"],
+      "at": "2026-11-09T09:47:02Z",
+      "by": "claude-code",
+      "desc": "**Qué consigue:** el panel, `list`/`rank`, `score` y el barrido dan la misma respuesta sobre en qué punto está cada oferta. Hoy \"pendiente de detalles\" se calcula de 4 maneras distintas y \"necesita re-score\" de 2. Por eso la cabecera del panel dice \"LinkedIn: 169 pendientes\" mientras las filas marcan 93.\n\n**Cómo:** un estado con nombre, calculado en una sola función:\ninactiva → pendiente de detalles → lista para puntuar → puntuada → necesita re-score\n(\"puntuación fallida\" es una marca dentro de \"lista para puntuar\").\nSe calcula a partir de los datos que ya existen; no es una columna nueva. Una columna guardada se desincroniza, que es justo lo que causa EO-01, y \"necesita re-score\" depende del perfil y del modelo de ahora, así que no se puede guardar. Los casos quedan fijados en una tabla de tests. El panel (cabecera, filas y resumen) y `list`/`rank` lo leen de ahí, y `list --json` lo incluye como `stage`, para que Hermes y los agentes lo pregunten en vez de copiar SQL.\n\n**Lo que verás cambiar:** \"Detalles pendientes\" en la cabecera pasa a contar ofertas, no publicaciones, y coincide con las filas.\n\n**Hecho cuando:** la suite pasa; en la base real, la cabecera coincide con las filas marcadas; ningún consumidor recalcula el estado por su cuenta.",
+      "notes": [
+        {
+          "at": "2026-11-09T10:15:13Z",
+          "by": "human",
+          "text": "Started in the board."
+        }
+      ],
+      "started": {
+        "at": "2026-11-09T10:15:13Z",
+        "by": "human"
+      }
+    },
+    {
+      "id": "DB-09",
+      "title": "Panel: quitar una decisión ya importada no llega a la base",
+      "state": "done",
+      "group": "DB",
+      "at": "2026-11-09T09:47:02Z",
+      "by": "claude-code",
+      "desc": "**Qué pasa:** si una oferta tiene tu decisión ya importada (aplicar o descartar) y pulsas ese mismo botón para quitarla, el panel la esconde en ese navegador. La base la conserva y el import ignora la decisión vacía. A partir de ahí el panel y la base no coinciden, y esa marca vacía no se limpia nunca.\n\n**Propuesta:** sobre una decisión importada, el botón solo cambia a la otra decisión, no la deja vacía; al abrir el panel se limpian las marcas vacías antiguas. Si quieres poder deshacer de verdad, el import tendría que borrar la fila de feedback: dímelo y lo planteo así.\n\n**Hecho cuando:** con una decisión importada, pulsar el mismo botón ya no la esconde; las marcas vacías antiguas desaparecen al abrir el panel; la suite pasa.",
+      "notes": [
+        {
+          "at": "2026-11-09T09:55:25Z",
+          "by": "claude-code-db-09",
+          "text": "Plan: en renderFeedback, sobre una decisión importada el mismo botón no la vacía (title lo explica); al cargar, purgar entradas locales vacías cuando hay decisión importada; tests de dashboard y READMEs si describen el toggle."
+        },
+        {
+          "at": "2026-11-09T09:58:28Z",
+          "by": "claude-code-db-09",
+          "text": "Qué cambia: si una oferta ya tiene decisión importada, pulsar el botón de esa misma decisión no hace nada (su title lo explica); solo puedes cambiar a la otra. Sin decisión importada, el botón sigue marcando y desmarcando como antes. Al abrir el panel se borran las marcas locales vacías que tapaban una decisión importada, así que esas ofertas vuelven a verse revisadas. README.md y README.en.md lo cuentan. Cómo lo probé: tests con node para nextDecision y emptyOverImported, y las comprobaciones estáticas del arranque actualizadas; suite completa 1294 passed. Sin cambios en el import ni en la base. Qué comprobar: regenera el panel y ábrelo en tu navegador; una oferta que tenías importada y 'desmarcada' debe volver a salir con su decisión, y pulsar ese mismo botón no la quita. Sin commit; worktree /home/adrian/jobscout-db-09, rama db-09."
+        }
+      ],
+      "started": {
+        "at": "2026-11-09T09:55:25Z",
+        "by": "claude-code-db-09"
       }
     }
   ]
