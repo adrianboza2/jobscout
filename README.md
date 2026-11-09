@@ -1,6 +1,6 @@
 # jobscout
 
-Es una herramienta que me he montado para buscar trabajo de junior en cloud, DevOps o ciberseguridad en Madrid. Recoge ofertas de LinkedIn, Tecnoempleo y GetManfred, quita las repetidas y una IA puntúa cada una de 0 a 100 según mi perfil. Yo leo las mejores y decido a cuáles me presento.
+Es una herramienta para buscar trabajo de junior en cloud, DevOps o ciberseguridad en Madrid. Recoge ofertas de LinkedIn, Tecnoempleo y GetManfred, quita las repetidas y una IA puntúa cada una de 0 a 100 según mi perfil. Yo leo las mejores y decido a cuáles me presento.
 
 Las candidaturas las envío yo; la herramienta no aplica a nada por su cuenta.
 
@@ -10,7 +10,7 @@ Las candidaturas las envío yo; la herramienta no aplica a nada por su cuenta.
 
 1. **Recoge ofertas.** Cada tres días, a primera hora, mi servidor busca ofertas nuevas en las tres webs con las búsquedas que tengo definidas (por ejemplo, «DevOps junior» o «cloud engineer»).
 2. **Quita repetidas y completa.** Si la misma oferta sale en dos sitios, se queda una. Después baja la descripción completa de cada una, porque con el título solo no se puede juzgar.
-3. **La IA la puntúa.** Lee la oferta y la compara con mi perfil: el puesto que busco, mi nivel, las tecnologías que sé y lo que descarto. Le pone una nota de 0 a 100 y explica por qué: qué encaja, qué me falta y qué no sabe.
+3. **Un modelo de IA puntúa.** Lee la oferta y la compara con mi perfil: el puesto que busco, mi nivel, las tecnologías que sé y lo que descarto. Le pone una nota de 0 a 100 y explica por qué: qué encaja, qué me falta y qué no sabe.
 4. **Estima el sueldo** si la oferta no lo pone (ver abajo).
 5. **Lo veo todo en un panel.** Una página con las ofertas ordenadas por nota. En cada una marco si aplico o la descarto, y por qué.
 6. **Compara con mis decisiones.** Mis «aplico» y «descarto» vuelven a la herramienta, que compara lo que recomendó la IA con lo que decidí yo. Así veo dónde se equivoca.
@@ -25,7 +25,7 @@ Así se ve una oferta abierta: la explicación de la nota, el sueldo que pone la
 
 **Solo mira lo público y va despacio.** No entra con mi cuenta de LinkedIn ni con ninguna otra. Deja unos 8 segundos entre una petición y la siguiente y trae pocas páginas cada vez, para no cargar las webs ni arriesgarme a un bloqueo.
 
-**La IA tiene que explicar su nota.** Un número suelto no me dice si fiarme. Con el porqué al lado veo rápido cuándo acierta y cuándo ha entendido mal la oferta.
+**El modelo tiene que explicar su nota.** Un número suelto no me dice si fiarme. Con el porqué al lado veo rápido cuándo acierta y cuándo ha entendido mal la oferta.
 
 **Busca un junior realista.** Penaliza las ofertas que piden 5 años o más, o que son de senior o jefe de equipo. Pero no descarta una oferta porque falten una o dos tecnologías: eso se aprende, y muchas ofertas piden más de lo que luego exigen.
 
