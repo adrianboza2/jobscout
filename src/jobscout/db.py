@@ -1538,6 +1538,31 @@ def _jobs_with_variant_identity(rows: Sequence[sqlite3.Row]) -> list[Job]:
     return jobs
 
 
+def _variant_needs_details_predicate() -> str:
+    """SQL for "variant ``v`` of job ``j`` still needs its detail page".
+
+    Shared by the selector and the counter so the dashboard header and the
+    batches agree. A provider reposts the same offer under a new id, and dedupe
+    folds it into the job as a new partial variant; fetching it again would
+    return the text the job already has. So a variant is skipped when the job
+    already holds a full description whose latest successful detail fetch came
+    from the variant's own provider. That fetch row, not ``jobs.source`` (only
+    the first provider that saw the offer) or a sibling variant (older rows may
+    be ``ok`` with ``description_chars = 0``), is what records who produced the
+    stored text, matching :func:`latest_successful_detail_fetch_source`.
+    """
+    job_has_full_description = f"NOT {_jobs_needing_details_predicate('j')}"
+    description_from_same_provider = (
+        "COALESCE((SELECT f.source FROM job_detail_fetches f"
+        " WHERE f.job_id = j.id AND f.status = 'ok'"
+        " ORDER BY f.id DESC LIMIT 1), '') = v.source"
+    )
+    return (
+        "(v.content_status != 'ok' OR v.description_chars <= 0)"
+        f" AND NOT ({job_has_full_description} AND {description_from_same_provider})"
+    )
+
+
 def variants_needing_details(
     conn: sqlite3.Connection,
     *,
@@ -1548,13 +1573,15 @@ def variants_needing_details(
     """Active variants for ``source`` whose own detail is still incomplete.
 
     Variant-scoped on purpose: a second provider's variant is enriched even when
-    the canonical job was already enriched from another provider.
+    the canonical job was already enriched from another provider. A repost from
+    the provider that already supplied the job's full description is not
+    selected (see :func:`_variant_needs_details_predicate`).
     """
     clauses = [
         "j.is_active = 1",
         "v.is_active = 1",
         "v.source = ?",
-        "(v.content_status != 'ok' OR v.description_chars <= 0)",
+        _variant_needs_details_predicate(),
     ]
     params: list[Any] = [str(source)]
     if job_ids:
@@ -1636,8 +1663,8 @@ def count_variants_needing_details(conn: sqlite3.Connection, *, source: str) -> 
     return int(
         conn.execute(
             "SELECT COUNT(*) FROM job_variants v JOIN jobs j ON j.id = v.job_id "
-            "WHERE j.is_active = 1 AND v.is_active = 1 AND v.source = ? "
-            "AND (v.content_status != 'ok' OR v.description_chars <= 0)",
+            "WHERE j.is_active = 1 AND v.is_active = 1 AND v.source = ? AND "
+            + _variant_needs_details_predicate(),
             (str(source),),
         ).fetchone()[0]
     )

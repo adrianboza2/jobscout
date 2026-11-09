@@ -14,6 +14,7 @@ from jobscout.db import (
     active_variants,
     connect,
     count_jobs,
+    count_variants_needing_details,
     deactivate_job_variant,
     get_job,
     init_db,
@@ -409,6 +410,51 @@ def test_ingest_links_the_fetch_to_the_chosen_variant(conn, settings) -> None:
     assert fetch.variant_id == variant.id
     assert outcome.enriched == 1
     # The enriched variant is no longer selected.
+    assert variants_needing_details(conn, source="linkedin") == []
+
+
+def _enrich_from_linkedin(conn, settings, job_id: int) -> None:
+    item = DetailItem(
+        job_id=job_id,
+        source_job_id="1111111111",
+        url="https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/1111111111",
+        status=DetailFetchStatus.OK,
+        description="A complete backend description fetched from LinkedIn.",
+        fetched_at="2026-09-15T12:00:00Z",
+    )
+    result = DetailResult(items=[item], planned_urls=[item.url], requested=1)
+    ingest_detail_results(conn, result, settings=settings, provider="linkedin")
+
+
+def test_same_provider_repost_of_an_enriched_job_is_not_selected(
+    conn, settings
+) -> None:
+    linkedin, _ = store_posting(conn, _partial(*LINKEDIN), now=NOW)
+    _enrich_from_linkedin(conn, settings, int(linkedin.id))
+
+    # LinkedIn reposts the offer under a new id; dedupe folds it into the job.
+    repost, _ = store_posting(
+        conn,
+        _partial("linkedin", "2222222222", "https://www.linkedin.com/jobs/view/2222222222/role"),
+        now="2026-09-20T10:00:00Z",
+    )
+    assert repost.id == linkedin.id
+    assert len(job_variants_for_job(conn, linkedin.id)) == 2
+
+    assert variants_needing_details(conn, source="linkedin") == []
+    assert count_variants_needing_details(conn, source="linkedin") == 0
+
+
+def test_other_provider_variant_of_an_enriched_job_is_still_selected(
+    conn, settings
+) -> None:
+    linkedin, _ = store_posting(conn, _partial(*LINKEDIN), now=NOW)
+    store_posting(conn, _partial(*GETMANFRED), now=NOW)
+    _enrich_from_linkedin(conn, settings, int(linkedin.id))
+
+    selection = variants_needing_details(conn, source="getmanfred")
+    assert [(job.id, job.source_job_id) for job in selection] == [(linkedin.id, "8383")]
+    assert count_variants_needing_details(conn, source="getmanfred") == 1
     assert variants_needing_details(conn, source="linkedin") == []
 
 

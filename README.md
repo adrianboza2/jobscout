@@ -563,6 +563,12 @@ Un id que no sea de LinkedIn se informa y nunca se planifica, así que un id
 numérico de GetManfred o Tecnoempleo jamás se lee dentro del espacio de ids de
 LinkedIn.
 
+La ruta por defecto (y la de Tecnoempleo y GetManfred) omite las
+republicaciones: cuando un proveedor publica la misma oferta con un id nuevo, se
+guarda como otra variante de la misma oferta, y no se vuelve a descargar si la
+oferta ya tiene la descripción completa y su último detalle correcto vino de ese
+mismo proveedor. Una variante de otro proveedor se sigue descargando.
+
 `--refresh` es una selección mutuamente excluyente con `--job-id` y `--all`. Solo
 considera ofertas activas que ya tienen historial de fetch y cuyo último intento
 es uno de estos:

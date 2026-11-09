@@ -550,6 +550,12 @@ explicit `--job-id` — is restricted to LinkedIn offers (`source = linkedin`). 
 non-LinkedIn id is reported and never planned, so a GetManfred or Tecnoempleo
 numeric id can never be read inside LinkedIn's id space.
 
+The default route (and Tecnoempleo's and GetManfred's) skips reposts: when a
+provider republishes the same offer under a new id, it is stored as another
+variant of the same offer, and it is not fetched again when the offer already
+has a full description whose latest successful detail came from that same
+provider. A variant from another provider is still fetched.
+
 `--refresh` is mutually exclusive with `--job-id` and `--all`. It only considers
 active offers that already have fetch history and whose latest attempt is one of:
 
