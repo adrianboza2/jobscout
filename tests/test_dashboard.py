@@ -2683,12 +2683,72 @@ def test_browser_forgets_only_decisions_the_database_already_holds(
     assert json.loads(completed.stdout) == [case[2] for case in cases]
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_imported_decision_cannot_be_emptied_from_the_browser(db_file: Path) -> None:
+    """Pressing the selected button over an imported decision keeps it (DB-09)."""
+    source = _extract_js_function(generate_and_read(db_file), "nextDecision")
+    cases = [
+        # No imported decision: the local toggle still works both ways.
+        ("", "apply", "", "apply"),
+        ("apply", "apply", "", ""),
+        ("apply", "reject", "", "reject"),
+        # Imported decision: the selected button keeps it, the other one switches.
+        ("apply", "apply", "apply", "apply"),
+        ("apply", "reject", "apply", "reject"),
+        ("reject", "reject", "apply", "reject"),
+        ("consider", "apply", "consider", "apply"),
+    ]
+    script = (
+        source
+        + "\nvar cases = " + json.dumps(cases) + ";\n"
+        + "console.log(JSON.stringify(cases.map(function (item) {\n"
+        + "  return nextDecision(item[0], item[1], item[2]);\n"
+        + "})));\n"
+    )
+    completed = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, timeout=30
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [case[3] for case in cases]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
+def test_browser_forgets_empty_marks_over_an_imported_decision(db_file: Path) -> None:
+    """An empty local mark that hides an imported decision is purged on load."""
+    source = _extract_js_function(generate_and_read(db_file), "emptyOverImported")
+    imported = {"reviewed": True, "decision": "apply", "updated_at": None}
+    cases = [
+        ({"decision": "", "reason": ""}, imported, True),
+        ({"reason": "x"}, imported, True),
+        ({"decision": "reject"}, imported, False),
+        ({"decision": ""}, {"reviewed": False, "decision": None}, False),
+        ({"decision": ""}, None, False),
+        (None, imported, False),
+    ]
+    script = (
+        source
+        + "\nvar cases = " + json.dumps(cases) + ";\n"
+        + "console.log(JSON.stringify(cases.map(function (item) {\n"
+        + "  return emptyOverImported(item[0], item[1]);\n"
+        + "})));\n"
+    )
+    completed = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, timeout=30
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [case[2] for case in cases]
+
+
 def test_report_prunes_local_decisions_the_database_already_holds(db_file: Path) -> None:
     """The prune runs on load, before the first render, and only saves once."""
     html_text = generate_and_read(db_file)
 
     assert "var importedFeedback = payload.imported_feedback || {};" in html_text
-    assert "if (alreadyImported(feedback[jobId], importedFeedback[jobId])) {" in html_text
+    assert "if (alreadyImported(feedback[jobId], importedFeedback[jobId]) ||" in html_text
+    assert "emptyOverImported(feedback[jobId], importedFeedback[jobId])) {" in html_text
+    assert "if (next === entry.decision) { return; }" in html_text
     assert "delete feedback[jobId];" in html_text
     assert "if (pruned) { saveFeedback(); }" in html_text
     # It runs on load, before the first render and before the count is shown.
@@ -2698,10 +2758,8 @@ def test_report_prunes_local_decisions_the_database_already_holds(db_file: Path)
         < html_text.index("  renderStatusLine();")
     )
     assert "function importedDecision(offer) {" in html_text
-    assert (
-        'feedback[offer.id] || { decision: importedDecision(offer), reason: "" }'
-        in html_text
-    )
+    assert "var imported = importedDecision(offer);" in html_text
+    assert 'feedback[offer.id] || { decision: imported, reason: "" }' in html_text
     assert "return Boolean(entry ? entry.decision : importedDecision(offer));" in html_text
 
 

@@ -283,7 +283,10 @@ las importadas. Tras `import-feedback`, al regenerar el informe (lo hace el
 barrido) y volver a abrirlo, el navegador olvida las decisiones locales que la
 base ya guarda con el mismo valor y la misma fecha, así que **Exportar N
 decisiones** desaparece. Una decisión editada después de la exportación, o aún
-sin importar, se conserva y mantiene el botón visible.
+sin importar, se conserva y mantiene el botón visible. Sobre una decisión ya
+importada, volver a pulsar el mismo botón no la quita (el import no borra
+decisiones de la base): solo se puede cambiar a la otra. Al abrir el informe se
+limpian las marcas locales vacías que tapaban una decisión importada.
 
 Compatibilidad con el histórico: las decisiones `consider` (histórico *Revisar*
 del tablero anterior) no se borran ni se convierten solas. Una oferta con

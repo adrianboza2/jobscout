@@ -1674,7 +1674,8 @@ _SCRIPT = r"""
   var pruned = false;
   var importedFeedback = payload.imported_feedback || {};
   Object.keys(importedFeedback).forEach(function (jobId) {
-    if (alreadyImported(feedback[jobId], importedFeedback[jobId])) {
+    if (alreadyImported(feedback[jobId], importedFeedback[jobId]) ||
+        emptyOverImported(feedback[jobId], importedFeedback[jobId])) {
       delete feedback[jobId];
       pruned = true;
     }
@@ -1780,6 +1781,20 @@ _SCRIPT = r"""
     var importedAt = Date.parse(imported.updated_at);
     if (isNaN(localAt) || isNaN(importedAt)) { return false; }
     return importedAt >= localAt;
+  }
+
+  // An empty local mark over an imported decision only hides it: the importer
+  // skips empty decisions, so the mark could never reach the database.
+  function emptyOverImported(entry, imported) {
+    return Boolean(entry && !entry.decision && imported && imported.reviewed &&
+      imported.decision);
+  }
+
+  // With a decision in the database, pressing the selected button keeps it:
+  // the database cannot be emptied from here, only switched to the other one.
+  function nextDecision(current, clicked, imported) {
+    if (current !== clicked) { return clicked; }
+    return imported ? clicked : "";
   }
 
   function loadFeedback() {
@@ -1948,7 +1963,8 @@ _SCRIPT = r"""
     box.setAttribute("role", "group");
     box.setAttribute("aria-label", "Mi decisión sobre la oferta: " + offerLabel);
     box.title = "Se guarda solo en este navegador; no postula ni escribe en la base de datos.";
-    var entry = feedback[offer.id] || { decision: importedDecision(offer), reason: "" };
+    var imported = importedDecision(offer);
+    var entry = feedback[offer.id] || { decision: imported, reason: "" };
     var controls = el("div", "feedback-controls");
     controls.setAttribute("role", "group");
     controls.setAttribute("aria-label", "Marca esta oferta: " + offerLabel);
@@ -1958,11 +1974,14 @@ _SCRIPT = r"""
       var button = el("button", "mini decision-btn", visibleText);
       button.type = "button";
       button.setAttribute("data-decision", decision);
-      button.title = "Marca esta oferta como: " + decisionText;
+      button.title = "Marca esta oferta como: " + decisionText +
+        (imported ? ". Ya está en la base: se puede cambiar a la otra decisión, no quitar." : "");
       button.setAttribute("aria-pressed", entry.decision === decision ? "true" : "false");
       if (entry.decision === decision) { button.classList.add("selected"); }
       button.addEventListener("click", function () {
-        entry.decision = (entry.decision === decision) ? "" : decision;
+        var next = nextDecision(entry.decision, decision, imported);
+        if (next === entry.decision) { return; }
+        entry.decision = next;
         entry.updated_at = new Date().toISOString();
         feedback[offer.id] = entry;
         var stored = saveFeedback();

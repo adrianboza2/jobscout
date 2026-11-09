@@ -278,7 +278,10 @@ imported ones. After `import-feedback`, regenerating the report (the sweep does
 it) and reopening it makes the browser forget the local decisions the database
 already holds with the same value and date, so **Exportar N decisiones**
 disappears; a decision edited after the export, or not yet imported, stays and
-keeps the button visible.
+keeps the button visible. Over an imported decision, pressing the same button
+again does not clear it (the import never deletes decisions from the database):
+it can only be switched to the other one. Opening the report also drops empty
+local marks that were hiding an imported decision.
 
 Historical compatibility: `consider` decisions (the old *Revisar* label) are not
 deleted or silently converted. An offer with a stored `consider` shows it as a
