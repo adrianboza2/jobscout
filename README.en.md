@@ -171,6 +171,13 @@ Cycle notes:
   comparison `score --all` uses, so the flag clears once the next run re-scores
   the offer. If the profile cannot be read, `list` still works without the flag
   (`needs_rescore: null`).
+- **Every offer has a stage** (`stage`), derived in one place
+  (`jobscout/stage.py`) from the stored rows, never stored itself:
+  `inactive` → `pending_details` → `ready_to_score` → `scored` →
+  `needs_rescore`. A shown score wins over missing details, and a failed
+  scoring is a mark (`score_failed`) on `ready_to_score`. `list --json` and
+  `rank --json` include it on every offer, and the dashboard (header, rows and
+  summary) reads it from there. Without a profile, a scored offer stays `scored`.
 
 ### Seniority and technology criterion (prompt v5)
 
@@ -206,7 +213,9 @@ external asset, needs no server, and makes no network request. All visible text
 is neutral/professional Spanish; internal schema keys and CLI command names stay
 English so the report never drifts from the database. The sticky header
 summarises the last sweep (date, new offers, pending details and failures;
-unscored new offers and failures show in red) and offers two tabs, **Ofertas** and **Palabras clave**, with **Exportar N
+unscored new offers and failures show in red).
+"Detalles pendientes" counts offers, not postings, each under the provider that
+first saw it, so it adds up to the rows marked "Pendiente de detalles". It offers two tabs, **Ofertas** and **Palabras clave**, with **Exportar N
 decisiones** on the right, shown only while this browser holds a decision. The offers view uses a single horizontal toolbar
 with text search, the model recommendation, **Solo nuevas** (offers first seen
 in the latest sweep) and a minimum-score select (`Score ≥ 0`, `≥ 50`, `≥ 70`);

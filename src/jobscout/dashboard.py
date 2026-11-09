@@ -47,11 +47,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Sequence
 
-from .db import (
-    connect_readonly,
-    count_variants_needing_details,
-    jobs_awaiting_details,
-)
+from .db import connect_readonly
 from .dossier import company_slug, load_dossiers
 from .keywords import retired_search
 from .models import (
@@ -61,6 +57,7 @@ from .models import (
 )
 from .preference import PreferenceOutcome, assess_text
 from .seniority import seniority_filter_reason
+from .stage import OfferStage, OfferState, offer_states
 from .timeutil import parse_datetime, utcnow, utcnow_iso
 
 #: Default report location. ``/reports/`` is git-ignored, so a generated report
@@ -439,7 +436,11 @@ def _is_new(first_seen_at: Any, last_sweep_at: str | None) -> bool:
 
 
 def _build_status(
-    conn: sqlite3.Connection, *, last_sweep_cycle: str | None, last_sweep_at: str | None
+    conn: sqlite3.Connection,
+    *,
+    last_sweep_cycle: str | None,
+    last_sweep_at: str | None,
+    states: dict[int, OfferState],
 ) -> dict[str, Any]:
     """Header status-line counts derived from stored rows only.
 
@@ -464,19 +465,17 @@ def _build_status(
         if row["score"] is not None:
             new_scored += 1
 
-    sources = conn.execute(
-        """
-        SELECT DISTINCT v.source AS source
-        FROM job_variants v
-        JOIN jobs j ON j.id = v.job_id
-        WHERE j.is_active = 1 AND v.is_active = 1
-        ORDER BY v.source
-        """
-    ).fetchall()
-    pending_details = {
-        str(row["source"]): count_variants_needing_details(conn, source=str(row["source"]))
-        for row in sources
-    }
+    # Offers, not provider variants, so the header matches the rows marked
+    # "Pendiente de detalles". Each offer counts once, under the provider that
+    # first saw it, so the per-provider parts add up to the marked rows.
+    pending_details: dict[str, int] = {}
+    for row in conn.execute(
+        "SELECT id, source FROM jobs WHERE is_active = 1 ORDER BY source"
+    ).fetchall():
+        source = str(row["source"] or "")
+        state = states.get(int(row["id"]))
+        pending = state is not None and state.stage is OfferStage.PENDING_DETAILS
+        pending_details[source] = pending_details.get(source, 0) + int(pending)
 
     failed_searches = 0
     failed_details = 0
@@ -901,10 +900,10 @@ def _summary(
     # The title filter is read-time only, so the count comes from the offers
     # themselves and never from a stored column.
     seniority_filtered = sum(1 for offer in offers if offer.get("seniority_filter"))
-    # Only scoreless offers are counted: an offer with a card-only score keeps it
-    # and is displayed like any other scored offer, even if its details are late.
+    # An offer with a card-only score keeps it and is displayed like any other
+    # scored offer, even if its details are late; its stage says so.
     pending_details = sum(
-        1 for offer in offers if offer["score"] is None and offer.get("pending_details")
+        1 for offer in offers if offer.get("stage") == OfferStage.PENDING_DETAILS.value
     )
     total = int(conn.execute("SELECT COUNT(*) FROM jobs WHERE is_active = 1").fetchone()[0])
     human_reviewed_jobs = int(conn.execute("SELECT COUNT(*) FROM job_feedback").fetchone()[0])
@@ -1005,10 +1004,9 @@ def build_payload(
     # is dated from it separately, so the two concerns stay independent.
     imported_decisions = _fetch_imported_feedback(conn, job_ids)
     all_imported = _fetch_all_imported_feedback(conn)
-    # Same helper as ``score``, so the report and the scorer never disagree on
-    # which offers are still waiting for a description.
-    awaiting_details = jobs_awaiting_details(conn)
-    stale = set(stale_job_ids or ())
+    # One stage per offer, from the same helper ``list``/``rank`` use; its
+    # "pending details" rule is the one ``score`` skips by.
+    states = offer_states(conn, stale_job_ids=stale_job_ids)
     last_sweep_cycle, last_sweep_at = _last_sweep(conn)
 
     offers: list[dict[str, Any]] = []
@@ -1020,6 +1018,7 @@ def build_payload(
         if age_days is None:
             age_days = _age_days(first_seen_at, now=reference)
         score = row["score"]
+        state = states[job_id]
         # Preference is a second, independent axis. It is recomputed from the
         # stored posting text on every payload build, never persisted alongside
         # (or instead of) the evaluation, so the model score and its history are
@@ -1047,9 +1046,13 @@ def build_payload(
                 "salary": _salary(row["salary"]),
                 "salary_est": _salary_est(row),
                 "score": round(float(score), 2) if score is not None else None,
+                # Where the offer stands; see :mod:`jobscout.stage`.
+                "stage": state.stage.value,
+                # The latest evaluation failed and the offer waits for a retry.
+                "score_failed": state.score_failed,
                 # The shown score is stale when it exists but no successful
                 # evaluation of its scorer carries the current input.
-                "needs_rescore": bool(score is not None and job_id in stale),
+                "needs_rescore": state.stage is OfferStage.NEEDS_RESCORE,
                 "recommendation": (
                     str(row["recommendation"])
                     if score is not None and row["recommendation"]
@@ -1079,8 +1082,8 @@ def build_payload(
                 "seniority_filter": seniority_filter,
                 # The scorer skips these offers until their description arrives
                 # (or their detail attempts run out), so the row shows a reason
-                # instead of a score. Only an unscored offer is rendered with it.
-                "pending_details": job_id in awaiting_details,
+                # instead of a score.
+                "pending_details": state.stage is OfferStage.PENDING_DETAILS,
                 # Only what the row and the text filter read; the schema tag and
                 # rule ids stay in ``PreferenceAssessment.to_dict``.
                 "preference": {
@@ -1114,6 +1117,7 @@ def build_payload(
         conn,
         last_sweep_cycle=last_sweep_cycle,
         last_sweep_at=last_sweep_at,
+        states=states,
     )
 
     return {
@@ -1849,8 +1853,7 @@ _SCRIPT = r"""
   function effectiveRecommendation(offer) {
     if (offer.recommendation) { return offer.recommendation; }
     if (offer.evaluation_status === "needs_more_info") { return "need_more_info"; }
-    if (offer.evaluation_status === "parse_error" || offer.evaluation_status === "error" ||
-        offer.evaluation_status === "not_configured") { return "failed"; }
+    if (offer.score_failed) { return "failed"; }
     return "unscored";
   }
 

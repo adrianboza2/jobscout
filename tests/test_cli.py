@@ -139,6 +139,7 @@ def test_list_flags_scores_that_no_longer_match_the_input(
     before = json.loads(capsys.readouterr().out)
     scored = [item for item in before["jobs"] if item["score"] is not None]
     assert scored and all(item["needs_rescore"] is False for item in scored)
+    assert all(item["stage"] == "scored" for item in scored)
     stale_id = scored[0]["job"]["id"]
 
     conn = connect(db_path)
@@ -157,6 +158,7 @@ def test_list_flags_scores_that_no_longer_match_the_input(
     )
     after = {item["job"]["id"]: item for item in json.loads(capsys.readouterr().out)["jobs"]}
     assert after[stale_id]["needs_rescore"] is True
+    assert after[stale_id]["stage"] == "needs_rescore"
     assert all(
         item["needs_rescore"] is False
         for job_id, item in after.items()
@@ -181,6 +183,8 @@ def test_list_with_a_missing_profile_still_works(db_path: Path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["jobs"]
     assert all(item["needs_rescore"] is None for item in payload["jobs"])
+    # Staleness is unknown without a profile, so no offer reads "needs_rescore".
+    assert all(item["stage"] != "needs_rescore" for item in payload["jobs"])
 
     assert (
         main(["--db", str(db_path), "--profile", "does-not-exist.yaml", "list"])

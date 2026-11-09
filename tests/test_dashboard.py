@@ -1155,15 +1155,32 @@ def test_failed_runs_split_searches_from_detail_runs(dr1_db: Path) -> None:
     assert status["failed_runs"] == {"searches": 2, "details": 1}
 
 
-def test_pending_details_lists_every_active_variant_source(dr1_db: Path) -> None:
-    """Behaviour 5: one sorted count per source, including zero."""
-    status = _dr1_payload(dr1_db)["status"]
+def test_pending_details_counts_offers_like_the_rows(dr1_db: Path) -> None:
+    """Behaviour 5: one count per source of pending *offers*, including zero.
 
+    Offer B lacks its description, so it is pending under its first provider.
+    Offer C's variant is partial but the offer already holds a description, so
+    it is ready to score and not counted: the header matches the marked rows.
+    """
+    jobs = _seed_dr1_db_ids(dr1_db)
+    conn = connect(dr1_db)
+    try:
+        conn.execute(
+            "UPDATE jobs SET content_status = 'partial' WHERE id = ?", (jobs["b"],)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    payload = _dr1_payload(dr1_db)
+    status = payload["status"]
+    marked = [offer["id"] for offer in payload["offers"] if offer["pending_details"]]
+    assert marked == [jobs["b"]]
     assert status["pending_details"] == {
         "getmanfred": 0,
         "linkedin": 1,
-        "tecnoempleo": 1,
+        "tecnoempleo": 0,
     }
+    assert sum(status["pending_details"].values()) == len(marked)
 
 
 def test_offer_payload_marks_offers_waiting_for_details(db_file: Path) -> None:
@@ -3444,6 +3461,11 @@ def test_scoreless_offers_expose_their_evaluation_state(tmp_path: Path) -> None:
     assert by_id[ids["failed"]]["score"] is None
     assert by_id[ids["failed"]]["evaluation_status"] == "parse_error"
     assert by_id[ids["never"]]["evaluation_status"] is None
+    # The failed bucket in the browser reads this mark, not the raw status.
+    assert by_id[ids["failed"]]["stage"] == "ready_to_score"
+    assert by_id[ids["failed"]]["score_failed"] is True
+    assert by_id[ids["unresolved"]]["score_failed"] is False
+    assert by_id[ids["good"]]["stage"] == "scored"
 
     states = payload["summary"]["evaluation_states"]
     assert states["ok"] == 1

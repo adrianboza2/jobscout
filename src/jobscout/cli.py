@@ -135,7 +135,8 @@ from .scoring import (
     load_profile,
     stale_job_ids,
 )
-from .scoring.profile import ProfileError
+from .scoring.profile import Profile, ProfileError
+from .stage import OfferStage, OfferState, offer_states
 from .timeutil import iso_days_ago
 
 EXIT_OK = 0
@@ -248,13 +249,17 @@ def _preference_marker(preference: PreferenceAssessment | None) -> str:
 def _job_line(
     item: Any,
     preference: PreferenceAssessment | None = None,
-    needs_rescore: bool | None = None,
+    state: OfferState | None = None,
 ) -> str:
     job = item.job
     score = "  n/a" if item.score is None else f"{item.score:5.1f}"
     recommendation = item.recommendation or "-"
     location = f" ({job.location})" if job.location else ""
-    stale = "  [needs re-score]" if needs_rescore else ""
+    stale = (
+        "  [needs re-score]"
+        if state is not None and state.stage is OfferStage.NEEDS_RESCORE
+        else ""
+    )
     return (
         f"#{job.id:<4} {score}  {recommendation:<14} {job.title or '(untitled)'}"
         f" @ {job.company or '(unknown company)'}{location}  [{job.content_status}]"
@@ -265,11 +270,23 @@ def _job_line(
 def _job_payload(
     item: Any,
     preference: PreferenceAssessment | None = None,
-    needs_rescore: bool | None = None,
+    state: OfferState | None = None,
+    profile_loaded: bool = True,
 ) -> dict[str, Any]:
-    """One list/rank entry, with the preference verdict attached when computed."""
+    """One list/rank entry, with its stage and preference verdict attached.
+
+    ``needs_rescore`` stays ``None`` without a profile: staleness is unknown, and
+    the stage then reads ``scored``.
+    """
     payload = item.to_dict()
-    payload["needs_rescore"] = needs_rescore
+    if state is not None:
+        payload["stage"] = state.stage.value
+        payload["score_failed"] = state.score_failed
+    payload["needs_rescore"] = (
+        (state is not None and state.stage is OfferStage.NEEDS_RESCORE)
+        if profile_loaded
+        else None
+    )
     if preference is not None:
         payload["preference"] = preference.to_dict()
     return payload
@@ -1687,6 +1704,17 @@ def cmd_backfill_salary(args: argparse.Namespace, settings: Settings) -> int:
     return EXIT_OK
 
 
+def _list_states(
+    conn: Any, items: Sequence[Any], profile: Profile | None, settings: Settings
+) -> dict[int, OfferState]:
+    """Stage of each listed offer, from the same function the dashboard uses."""
+    jobs = [item.job for item in items]
+    stale = (
+        stale_job_ids(conn, jobs, profile, settings) if profile is not None else None
+    )
+    return offer_states(conn, [job.id for job in jobs], stale_job_ids=stale)
+
+
 def cmd_list(args: argparse.Namespace, settings: Settings) -> int:
     try:
         profile = load_profile(settings.profile_path)
@@ -1703,21 +1731,11 @@ def cmd_list(args: argparse.Namespace, settings: Settings) -> int:
             include_inactive=args.include_inactive,
         )
         preferences = {item.job.id: assess_preference(item.job) for item in items}
-        stale = (
-            stale_job_ids(
-                conn, (item.job for item in items), profile, settings
-            )
-            if profile is not None
-            else set()
-        )
+        states = _list_states(conn, items, profile, settings)
     finally:
         conn.close()
-    rescore = {
-        item.job.id: (None if profile is None else item.job.id in stale)
-        for item in items
-    }
     text = "\n".join(
-        _job_line(item, preferences.get(item.job.id), rescore[item.job.id])
+        _job_line(item, preferences.get(item.job.id), states.get(item.job.id))
         for item in items
     ) or "no jobs stored yet"
     _emit(
@@ -1725,7 +1743,10 @@ def cmd_list(args: argparse.Namespace, settings: Settings) -> int:
             "count": len(items),
             "jobs": [
                 _job_payload(
-                    item, preferences.get(item.job.id), rescore[item.job.id]
+                    item,
+                    preferences.get(item.job.id),
+                    states.get(item.job.id),
+                    profile_loaded=profile is not None,
                 )
                 for item in items
             ],
@@ -1753,13 +1774,7 @@ def cmd_rank(args: argparse.Namespace, settings: Settings) -> int:
             rank_by_score=True,
         )
         preferences = {item.job.id: assess_preference(item.job) for item in items}
-        stale = (
-            stale_job_ids(
-                conn, (item.job for item in items), profile, settings
-            )
-            if profile is not None
-            else set()
-        )
+        states = _list_states(conn, items, profile, settings)
         # An imported human decision outranks the model: the offer leaves the
         # shortlist instead of re-appearing on every run.
         decided = _fetch_imported_feedback(conn, [item.job.id for item in items])
@@ -1770,12 +1785,8 @@ def cmd_rank(args: argparse.Namespace, settings: Settings) -> int:
     # if that ever matters.
     hidden_count = sum(1 for item in items if item.job.id in decided)
     items = [item for item in items if item.job.id not in decided]
-    rescore = {
-        item.job.id: (None if profile is None else item.job.id in stale)
-        for item in items
-    }
     text = "\n".join(
-        _job_line(item, preferences.get(item.job.id), rescore[item.job.id])
+        _job_line(item, preferences.get(item.job.id), states.get(item.job.id))
         for item in items
     ) or "no scored jobs yet"
     if hidden_count:
@@ -1789,7 +1800,10 @@ def cmd_rank(args: argparse.Namespace, settings: Settings) -> int:
             "hidden_decided": hidden_count,
             "jobs": [
                 _job_payload(
-                    item, preferences.get(item.job.id), rescore[item.job.id]
+                    item,
+                    preferences.get(item.job.id),
+                    states.get(item.job.id),
+                    profile_loaded=profile is not None,
                 )
                 for item in items
             ],

@@ -170,6 +170,14 @@ Notas del ciclo:
   misma comparación que usa `score --all`, así que la marca desaparece cuando la
   siguiente corrida la re-puntúa. Si el perfil no se puede leer, `list` sigue
   funcionando sin la marca (`needs_rescore: null`).
+- **Cada oferta tiene un estado** (`stage`), calculado en un solo sitio
+  (`jobscout/stage.py`) a partir de los datos guardados, nunca almacenado:
+  `inactive` → `pending_details` → `ready_to_score` → `scored` →
+  `needs_rescore`. Un puntaje visible manda sobre los detalles que faltan, y una
+  puntuación fallida es una marca (`score_failed`) dentro de `ready_to_score`.
+  `list --json` y `rank --json` lo incluyen en cada oferta, y el dashboard
+  (cabecera, filas y resumen) lo lee de ahí. Sin perfil, una oferta puntuada se
+  queda en `scored`.
 
 ### Criterio de seniority y tecnologías (prompt v5)
 
@@ -205,8 +213,10 @@ externos, no necesita servidor y no hace ninguna solicitud de red. Toda la
 interfaz visible está en español neutro/profesional; las claves internas del
 esquema y los comandos de CLI permanecen en inglés para no divergir de la base
 de datos. La cabecera fija resume el último barrido (fecha, ofertas nuevas,
-detalles pendientes y fallos; las nuevas sin evaluar y los fallos salen en rojo)
-y ofrece dos pestañas, **Ofertas** y **Palabras
+detalles pendientes y fallos; las nuevas sin evaluar y los fallos salen en rojo).
+«Detalles pendientes» cuenta ofertas, no publicaciones, cada una bajo el
+proveedor que la vio primero, así que suma lo mismo que las filas marcadas
+«Pendiente de detalles». Ofrece dos pestañas, **Ofertas** y **Palabras
 clave**, y a la derecha **Exportar N decisiones**, que solo aparece cuando este
 navegador guarda alguna decisión. La vista de
 ofertas usa una única barra de herramientas horizontal, con búsqueda por texto,
