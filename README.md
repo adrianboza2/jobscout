@@ -29,7 +29,7 @@ Así se ve una oferta abierta: la explicación de la nota, el sueldo que pone la
 
 **Busca un junior realista.** Penaliza las ofertas que piden 5 años o más, o que son de senior o jefe de equipo. Pero no descarta una oferta porque falten una o dos tecnologías: eso se aprende, y muchas ofertas piden más de lo que luego exigen.
 
-**Mis vetos van aparte de la nota.** Hay cosas que descarto por mi cuenta, como los turnos rotativos. La oferta sale igual, con un aviso, para que el filtro no me esconda algo que quizá sí me interesa.
+**Lo que no quiero me lo avisa, no me lo esconde.** Hay cosas que no quiero, como los turnos rotativos. Si una oferta las tiene, sale igual pero con un aviso, porque a veces el resto de la oferta compensa y prefiero decidirlo yo.
 
 **El sueldo no cambia la nota.** Si la oferta pone el sueldo, sale tal cual. Si no, la IA estima un rango bruto anual: primero mira qué tipo de empresa es (consultora pequeña, consultora grande, startup, empresa internacional…) y con eso elige una banda según el nivel que piden. Después ajusta por las tecnologías, el inglés, la experiencia y si hay guardias o presencialidad. Para no inventarse cifras, se apoya en la guía salarial de Manfred de 2026 y en las ofertas que sí publican sueldo. Por ejemplo, a un DevOps junior en Devoteam le saca entre 22.000 y 27.000 €. Es solo orientativo: lo separo de la nota para que una oferta no suba solo por pagar más.
 
