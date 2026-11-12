@@ -17,6 +17,7 @@ from .collectors.linkedin_details import DetailItem, DetailResult
 from .config import Settings, is_safe_to_store
 from .db import (
     _sync_job_active,
+    close_job_variant,
     create_search_run,
     deactivate_job,
     deactivate_job_variant,
@@ -634,7 +635,8 @@ def ingest_detail_results(
         # job stays active while any other provider variant is still active, so
         # one provider's disappearance does not hide a live listing elsewhere.
         if _listing_gone(item):
-            if deactivate_listing(conn, int(job.id), variant_id):
+            closed = bool(getattr(item, "closed", False))
+            if deactivate_listing(conn, int(job.id), variant_id, closed=closed):
                 outcome.deactivated += 1
 
         if item.status is DetailFetchStatus.OK:
@@ -669,10 +671,16 @@ def _listing_gone(item: Any) -> bool:
     return bool(item.is_definitive_missing or getattr(item, "closed", False))
 
 
-def deactivate_listing(conn: Any, job_id: int, variant_id: int | None) -> bool:
-    """Deactivate one provider listing; True when the canonical job turned inactive."""
+def deactivate_listing(
+    conn: Any, job_id: int, variant_id: int | None, *, closed: bool = False
+) -> bool:
+    """Deactivate one provider listing; True when the canonical job turned inactive.
+
+    ``closed`` marks the variant so a re-sighting cannot revive it; a 404/410
+    stays refutable by a re-sighting, as before.
+    """
     if variant_id is not None:
-        deactivate_job_variant(conn, variant_id)
+        (close_job_variant if closed else deactivate_job_variant)(conn, variant_id)
         return _sync_job_active(conn, job_id)
     return deactivate_job(conn, job_id)
 

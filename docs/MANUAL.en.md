@@ -574,7 +574,8 @@ it "No longer accepting applications" and GetManfred says `status: CLOSED` in
 the page data. The detail is still stored, the attempt's note reads `offer
 closed on the provider`, and the variant is deactivated as for a `404`/`410`
 (the offer stays active while another variant, such as a repost, is live).
-`deactivate-closed` applies the same rule offline to pages already stored:
+Unlike a `404`, closure is final: a later re-sighting (GetManfred's sitemap keeps
+listing closed offers) does not reactivate it. `deactivate-closed` applies the same rule offline to pages already stored:
 without `--apply` it only lists them.
 
 `--refresh` is mutually exclusive with `--job-id` and `--all`. It only considers

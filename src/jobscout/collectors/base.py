@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Mapping, Protocol
 from urllib.parse import urlsplit
 
-from ..models import JobPosting, RawDocument, SearchRunStatus
+from ..models import CLOSED_NOTE, JobPosting, RawDocument, SearchRunStatus
 from ..normalize import html_to_text
 from ..timeutil import utcnow_iso
 from ..url_policy import is_http_scheme, redirect_allowed
@@ -27,10 +27,6 @@ from .ratelimit import (
 
 #: Set by :class:`UrllibHttpClient` when a bounded read hit its ceiling.
 TRUNCATION_HEADER = "x-jobscout-truncated"
-
-#: Note recorded on a detail fetch whose page says the offer is closed. Such a
-#: page answers 200, so the pipeline treats it like a definitive 404/410.
-CLOSED_NOTE = "offer closed on the provider"
 
 
 class CollectorError(Exception):

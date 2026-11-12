@@ -265,3 +265,43 @@ def test_backfill_never_blames_a_repost_for_an_unattributed_old_page(conn, setti
     )
 
     assert closed_listings(conn) == []
+
+
+def test_resighting_does_not_revive_a_closed_listing(conn, settings) -> None:
+    job = _store_linkedin(conn)
+    ingest_detail_results(conn, _fetch_linkedin(job, settings, _linkedin_page(closed=True)), settings=settings)
+    assert get_job(conn, job.id).is_active is False
+
+    # GetManfred's sitemap keeps listing closed offers; a search can re-surface one.
+    _store_linkedin(conn)
+
+    assert get_job(conn, job.id).is_active is False
+
+
+def test_resighting_still_revives_a_404(conn, settings) -> None:
+    job = _store_linkedin(conn)
+    client = FakeHttpClient([response(404, "gone")])
+    result = fetch_linkedin_details(
+        [job], settings=settings, network_enabled=True, client=client, sleep=lambda _: None
+    )
+    ingest_detail_results(conn, result, settings=settings)
+    assert get_job(conn, job.id).is_active is False
+
+    _store_linkedin(conn)
+
+    assert get_job(conn, job.id).is_active is True
+
+
+def test_backfilled_closure_also_survives_a_resighting(settings) -> None:
+    db_path = settings.db_path
+    conn = connect(db_path)
+    init_db(conn)
+    job = _store_linkedin(conn)
+    _ingest_as_old_adapter(conn, job, settings, _linkedin_page(closed=True))
+    conn.close()
+    assert main(["--db", str(db_path), "deactivate-closed", "--apply"]) == EXIT_OK
+
+    conn = connect(db_path)
+    _store_linkedin(conn)
+    assert get_job(conn, job.id).is_active is False
+    conn.close()

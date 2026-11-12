@@ -26,6 +26,7 @@ from typing import Any, Callable, Sequence
 
 from .dedupe import DedupeDecision, decide_duplicate
 from .models import (
+    CLOSED_NOTE,
     ContentStatus,
     DetailFetchStatus,
     DimensionScore,
@@ -922,7 +923,9 @@ def ensure_job_variant(
             conn.execute(
                 """
                 UPDATE job_variants
-                SET last_seen_at = ?, is_active = 1,
+                SET last_seen_at = ?,
+                    is_active = CASE WHEN instr(COALESCE(notes, ''), ?) > 0
+                                     THEN is_active ELSE 1 END,
                     url = COALESCE(url, ?), source_job_id = COALESCE(source_job_id, ?),
                     content_status = CASE WHEN ? = 'ok' THEN ? ELSE content_status END,
                     content_hash = CASE WHEN ? = 'ok' THEN ? ELSE content_hash END,
@@ -932,6 +935,7 @@ def ensure_job_variant(
                 """,
                 (
                     timestamp,
+                    CLOSED_NOTE,
                     normalized_url,
                     normalized_id,
                     normalized_status,
@@ -1061,6 +1065,26 @@ def deactivate_job_variant(conn: sqlite3.Connection, variant_id: int) -> bool:
     return cursor.rowcount > 0
 
 
+def close_job_variant(conn: sqlite3.Connection, variant_id: int) -> bool:
+    """Deactivate a variant whose page says the offer is closed, for good.
+
+    The variant keeps a note, so a later re-sighting (GetManfred's sitemap keeps
+    listing closed offers) does not reactivate it. Returns ``True`` only when an
+    active variant changed.
+    """
+    with conn:
+        cursor = conn.execute(
+            "UPDATE job_variants SET is_active = 0 WHERE id = ? AND is_active = 1",
+            (int(variant_id),),
+        )
+        conn.execute(
+            "UPDATE job_variants SET notes = COALESCE(notes || '; ', '') || ? "
+            "WHERE id = ? AND instr(COALESCE(notes, ''), ?) = 0",
+            (CLOSED_NOTE, int(variant_id), CLOSED_NOTE),
+        )
+    return cursor.rowcount > 0
+
+
 def _sync_job_active(conn: sqlite3.Connection, job_id: int) -> bool:
     """Keep a canonical job active while at least one provider variant is.
 
@@ -1180,7 +1204,6 @@ def store_posting(
                 job.id,
             ),
         )
-    refreshed = get_job(conn, existing_id)
     # Record this provider's own identity even when the canonical row was first
     # seen from another provider: the new variant is what makes the second
     # provider selectable and enrichable.
@@ -1191,6 +1214,10 @@ def store_posting(
         timestamp=timestamp,
         raw_document_id=posting.raw_document_id,
     )
+    # A re-sighted closed listing stays inactive, and so does its job when no
+    # other listing is live.
+    _sync_job_active(conn, existing_id)
+    refreshed = get_job(conn, existing_id)
     return (refreshed or job), decision
 
 

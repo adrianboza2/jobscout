@@ -588,7 +588,9 @@ LinkedIn la marca con «No longer accepting applications» y GetManfred con
 `status: CLOSED` en los datos de la página. El detalle se guarda igual, la nota
 del intento dice `offer closed on the provider` y la variante se desactiva como
 con un `404`/`410` (la oferta sigue activa si otra variante, por ejemplo una
-republicación, sigue viva). `deactivate-closed` aplica lo mismo, sin red, a las
+republicación, sigue viva). A diferencia de un `404`, el cierre es definitivo: un
+re-avistamiento posterior (el sitemap de GetManfred sigue listando ofertas
+cerradas) no la reactiva. `deactivate-closed` aplica lo mismo, sin red, a las
 páginas ya guardadas: sin `--apply` solo lista.
 
 `--refresh` es una selección mutuamente excluyente con `--job-id` y `--all`. Solo

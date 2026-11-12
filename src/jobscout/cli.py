@@ -2587,7 +2587,9 @@ def cmd_deactivate_closed(args: argparse.Namespace, settings: Settings) -> int:
         changed = 0
         if apply:
             for listing in listings:
-                if deactivate_listing(conn, listing["job_id"], listing["variant_id"]):
+                if deactivate_listing(
+                    conn, listing["job_id"], listing["variant_id"], closed=True
+                ):
                     changed += 1
     except sqlite3.Error as exc:
         _write_line(f"database error at {db_path}: {exc}", stream=sys.stderr)

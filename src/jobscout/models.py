@@ -12,6 +12,12 @@ from enum import Enum
 from typing import Any
 
 
+#: Note recorded on a detail fetch, and on the provider variant, when the page
+#: says the offer is closed. Such a page answers 200, so the pipeline treats it
+#: like a definitive 404/410, and a later re-sighting does not reactivate it.
+CLOSED_NOTE = "offer closed on the provider"
+
+
 class StrEnum(str, Enum):
     """String enum whose ``str()`` is its value (3.11-compatible)."""
 
@@ -595,6 +601,7 @@ class ProfileSnapshot:
 
 
 __all__ = [
+    "CLOSED_NOTE",
     "ContentStatus",
     "DetailFetchStatus",
     "DimensionScore",
