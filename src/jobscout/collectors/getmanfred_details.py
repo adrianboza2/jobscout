@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from typing import Any, Callable, Sequence
@@ -73,6 +74,7 @@ from ..normalize import (
 from ..timeutil import parse_datetime, to_iso, utcnow_iso
 from ..url_policy import is_getmanfred_host, is_http_scheme
 from .base import (
+    CLOSED_NOTE,
     TRUNCATION_HEADER,
     AccessDeniedError,
     AttemptLog,
@@ -110,6 +112,14 @@ MIN_DESCRIPTION_CHARS = 10
 
 #: A JSON-LD ``@type`` comparator, case-insensitive and whitespace tolerant.
 _JOB_POSTING_TYPE = "jobposting"
+
+#: Next.js page data. A closed offer still answers 200 with its full posting;
+#: only ``props.pageProps.offer`` says ``status: CLOSED`` / ``active: false``
+#: (live pages: open offers carry ``ACTIVE`` / ``true``).
+_NEXT_DATA_RE = re.compile(
+    r"""<script[^>]*\bid\s*=\s*["']__NEXT_DATA__["'][^>]*>(.*?)</script>""",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _as_sequence(value: Any) -> list[Any]:
@@ -427,6 +437,28 @@ def _extract_salary(job: dict[str, Any]) -> str | None:
     return None
 
 
+def parse_detail_closed(html_text: str) -> bool:
+    """True when the page data marks the offer as closed. Never raises.
+
+    Missing or unreadable page data means "not known to be closed": only an
+    explicit ``CLOSED`` status or ``active: false`` deactivates an offer.
+    """
+    match = _NEXT_DATA_RE.search(html_text or "")
+    if match is None:
+        return False
+    try:
+        data = json.loads(match.group(1))
+    except ValueError:
+        return False
+    offer: Any = data
+    for key in ("props", "pageProps", "offer"):
+        offer = offer.get(key) if isinstance(offer, dict) else None
+    if not isinstance(offer, dict):
+        return False
+    status = offer.get("status")
+    return (isinstance(status, str) and status.strip().upper() == "CLOSED") or offer.get("active") is False
+
+
 @dataclass
 class GetManfredDetailFields:
     """Structured detail extracted from a recognized GetManfred offer page."""
@@ -578,6 +610,8 @@ class GetManfredDetailItem:
     posted_at: str | None = None
     employment_type: str | None = None
     salary: str | None = None
+    #: The page data says the offer is closed.
+    closed: bool = False
 
     @property
     def is_definitive_missing(self) -> bool:
@@ -909,6 +943,7 @@ def fetch_getmanfred_details(
             item=item,
         )
 
+        item.closed = parse_detail_closed(body)
         fields = parse_detail_fields(body)
         if fields.recognized:
             material = "\n".join(
@@ -934,6 +969,8 @@ def fetch_getmanfred_details(
             item.status = DetailFetchStatus.PARTIAL
             item.content_status = ContentStatus.PARTIAL
             item.error = "no recognized JobPosting JSON-LD description found in the response"
+        if item.closed:
+            item.notes = (item.notes + "; " if item.notes else "") + CLOSED_NOTE
         result.items.append(item)
 
     result.status = SearchRunStatus.COMPLETED
@@ -954,6 +991,7 @@ __all__ = [
     "GetManfredDetailTarget",
     "extract_json_ld_scripts",
     "fetch_getmanfred_details",
+    "parse_detail_closed",
     "parse_detail_company",
     "parse_detail_description",
     "parse_detail_employment_type",

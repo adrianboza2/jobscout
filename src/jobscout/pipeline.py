@@ -629,17 +629,13 @@ def ingest_detail_results(
             ),
         )
 
-        # A definitive 404/410 proves this provider's listing is gone: deactivate
-        # the variant. The canonical job stays active while any other provider
-        # variant is still active, so one provider's disappearance does not hide
-        # a live listing elsewhere. Only FAILED results carrying that
-        # machine-readable status qualify.
-        if item.is_definitive_missing and variant_id is not None:
-            deactivate_job_variant(conn, variant_id)
-            if _sync_job_active(conn, int(job.id)):
+        # A definitive 404/410, or a page that says the offer is closed, proves
+        # this provider's listing is gone: deactivate the variant. The canonical
+        # job stays active while any other provider variant is still active, so
+        # one provider's disappearance does not hide a live listing elsewhere.
+        if _listing_gone(item):
+            if deactivate_listing(conn, int(job.id), variant_id):
                 outcome.deactivated += 1
-        elif item.is_definitive_missing and deactivate_job(conn, int(job.id)):
-            outcome.deactivated += 1
 
         if item.status is DetailFetchStatus.OK:
             outcome.enriched += 1
@@ -668,6 +664,75 @@ def ingest_detail_results(
     return outcome
 
 
+def _listing_gone(item: Any) -> bool:
+    """A FAILED 404/410, or a page the adapter recognised as a closed offer."""
+    return bool(item.is_definitive_missing or getattr(item, "closed", False))
+
+
+def deactivate_listing(conn: Any, job_id: int, variant_id: int | None) -> bool:
+    """Deactivate one provider listing; True when the canonical job turned inactive."""
+    if variant_id is not None:
+        deactivate_job_variant(conn, variant_id)
+        return _sync_job_active(conn, job_id)
+    return deactivate_job(conn, job_id)
+
+
+def closed_listings(conn: Any) -> list[dict[str, Any]]:
+    """Active listings whose last stored detail page says the offer is closed.
+
+    Offline backfill for pages fetched before the detail adapters recognised a
+    closed offer. Each active LinkedIn/GetManfred variant is judged on its most
+    recent stored page with the adapter's own parser; a variant with no stored
+    page, or a truncated one without the marker, is never selected. A fetch from
+    before variants existed is only attributed when the provider has a single
+    variant, so an old closed page never condemns a live repost.
+    """
+    from .collectors.getmanfred_details import parse_detail_closed as getmanfred_closed
+    from .collectors.linkedin_details import parse_detail_closed as linkedin_closed
+
+    parsers = {"linkedin": linkedin_closed, "getmanfred": getmanfred_closed}
+    rows = conn.execute(
+        """
+        SELECT j.id AS job_id, j.title, j.company, v.id AS variant_id, v.source,
+               (SELECT f.id FROM job_detail_fetches f
+                 JOIN raw_documents r ON r.id = f.raw_document_id
+                WHERE f.job_id = j.id AND f.source = v.source
+                  AND (f.variant_id = v.id
+                       OR (f.variant_id IS NULL AND (
+                           SELECT COUNT(*) FROM job_variants o
+                           WHERE o.job_id = j.id AND o.source = v.source) = 1))
+                  AND r.body IS NOT NULL
+                ORDER BY f.id DESC LIMIT 1) AS fetch_id
+        FROM jobs j JOIN job_variants v ON v.job_id = j.id
+        WHERE j.is_active = 1 AND v.is_active = 1 AND v.source IN ('linkedin', 'getmanfred')
+        ORDER BY j.id, v.id
+        """
+    ).fetchall()
+    selected: list[dict[str, Any]] = []
+    for row in rows:
+        if row["fetch_id"] is None:
+            continue
+        body = conn.execute(
+            "SELECT r.body FROM job_detail_fetches f JOIN raw_documents r "
+            "ON r.id = f.raw_document_id WHERE f.id = ?",
+            (int(row["fetch_id"]),),
+        ).fetchone()["body"]
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", errors="replace")
+        if parsers[row["source"]](body or ""):
+            selected.append(
+                {
+                    "job_id": int(row["job_id"]),
+                    "variant_id": int(row["variant_id"]),
+                    "source": row["source"],
+                    "title": row["title"],
+                    "company": row["company"],
+                    "detail_fetch_id": int(row["fetch_id"]),
+                }
+            )
+    return selected
+
+
 def _file_mtime_iso(path: Path) -> str | None:
     from datetime import datetime, timezone
 
@@ -679,6 +744,8 @@ def _file_mtime_iso(path: Path) -> str | None:
 
 __all__ = [
     "DetailIngestOutcome",
+    "closed_listings",
+    "deactivate_listing",
     "IngestOutcome",
     "ingest_collector_result",
     "ingest_detail_results",

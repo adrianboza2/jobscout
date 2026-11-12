@@ -442,6 +442,7 @@ subcommand), and `--version`.
 | `dashboard [--output PATH] [--top N]` | Write a self-contained local HTML report (read-only, offline). |
 | `import-feedback PATH [--project-id ID]` | Store a dashboard feedback export in SQLite (offline, idempotent). |
 | `calibrate [--scorer heuristic\|llm\|opencode]` | Compare each job's latest valid evaluation with imported human feedback (read-only, offline). |
+| `deactivate-closed [--apply]` | List active LinkedIn/GetManfred offers whose stored detail page says they are closed (offline, read-only); `--apply` deactivates them and keeps their history. |
 | `prune [--apply]` | Plan the worst quarter of scored offers and provider-specific keyword series (read-only preview; `--apply` deactivates only the selected offers). |
 | `notify [--deliver] [--min-score S]` | Active offers at or above the score threshold, opt-in and read-only (see "Local notifications"). |
 
@@ -567,6 +568,14 @@ provider republishes the same offer under a new id, it is stored as another
 variant of the same offer, and it is not fetched again when the offer already
 has a full description whose latest successful detail came from that same
 provider. A variant from another provider is still fetched.
+
+A closed offer counts as gone even though its page answers `200`: LinkedIn marks
+it "No longer accepting applications" and GetManfred says `status: CLOSED` in
+the page data. The detail is still stored, the attempt's note reads `offer
+closed on the provider`, and the variant is deactivated as for a `404`/`410`
+(the offer stays active while another variant, such as a repost, is live).
+`deactivate-closed` applies the same rule offline to pages already stored:
+without `--apply` it only lists them.
 
 `--refresh` is mutually exclusive with `--job-id` and `--all`. It only considers
 active offers that already have fetch history and whose latest attempt is one of:

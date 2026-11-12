@@ -94,8 +94,8 @@ DASHBOARD_LEGACY_FEEDBACK_DECISIONS: tuple[str, ...] = LEGACY_FEEDBACK_DECISIONS
 MAX_FIELD_CHARS = 800
 
 #: A posting counts as *fresh* in keyword analytics when it is at most this many
-#: days old. jobscout has no verified "expired on LinkedIn" signal, so freshness
-#: is the honest, schema-supported proxy for how apply-able a keyword's results
+#: days old. jobscout only learns that a posting closed when its detail page is
+#: fetched, so freshness is the honest, schema-supported proxy for how apply-able a keyword's results
 #: still are.
 FRESH_WINDOW_DAYS = 21
 
@@ -698,8 +698,8 @@ def _fetch_keyword_stats(
     (no scored job, no imported human decision, no usable date) stays ``None``
     instead of being guessed as zero.
 
-    ``jobscout`` has no verified "posting expired on LinkedIn" signal, so
-    freshness is measured from the stored dates it actually has: a posting counts
+    ``jobscout`` only learns that a posting closed when its detail page is
+    fetched, so freshness is measured from the stored dates it actually has: a posting counts
     as fresh when it is at most :data:`FRESH_WINDOW_DAYS` days old, using
     ``posted_at`` and falling back to ``first_seen_at``. ``unknown_age_jobs``
     counts jobs where neither date is usable, so a keyword is never credited with

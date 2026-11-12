@@ -449,6 +449,7 @@ subcomando) y `--version`.
 | `dashboard [--output PATH] [--top N]` | Escribe un informe HTML local autocontenido (solo lectura, sin red). |
 | `import-feedback PATH [--project-id ID]` | Guarda una exportación de feedback del tablero en SQLite (sin red, idempotente). |
 | `calibrate [--scorer heuristic\|llm\|opencode]` | Compara la última evaluación válida de cada oferta con el feedback humano importado (solo lectura, sin red). |
+| `deactivate-closed [--apply]` | Lista las ofertas activas de LinkedIn/GetManfred cuya página de detalle guardada dice que están cerradas (sin red, solo lectura); `--apply` las desactiva conservando el historial. |
 | `prune [--apply]` | Planea el peor cuarto de ofertas con puntaje y series de palabras clave por proveedor (vista previa de solo lectura; `--apply` desactiva solo las ofertas seleccionadas). |
 | `notify [--deliver] [--min-score S]` | Ofertas activas con puntaje ≥ umbral, opt-in y de solo lectura (ver «Notificaciones locales»). |
 
@@ -581,6 +582,14 @@ republicaciones: cuando un proveedor publica la misma oferta con un id nuevo, se
 guarda como otra variante de la misma oferta, y no se vuelve a descargar si la
 oferta ya tiene la descripción completa y su último detalle correcto vino de ese
 mismo proveedor. Una variante de otro proveedor se sigue descargando.
+
+Una oferta cerrada cuenta como desaparecida aunque la página responda `200`:
+LinkedIn la marca con «No longer accepting applications» y GetManfred con
+`status: CLOSED` en los datos de la página. El detalle se guarda igual, la nota
+del intento dice `offer closed on the provider` y la variante se desactiva como
+con un `404`/`410` (la oferta sigue activa si otra variante, por ejemplo una
+republicación, sigue viva). `deactivate-closed` aplica lo mismo, sin red, a las
+páginas ya guardadas: sin `--apply` solo lista.
 
 `--refresh` es una selección mutuamente excluyente con `--job-id` y `--all`. Solo
 considera ofertas activas que ya tienen historial de fetch y cuyo último intento

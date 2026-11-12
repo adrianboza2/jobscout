@@ -123,7 +123,13 @@ from .notify import (
     deliver_report,
     disabled_report,
 )
-from .pipeline import ingest_collector_result, ingest_detail_results, ingest_fixture
+from .pipeline import (
+    closed_listings,
+    deactivate_listing,
+    ingest_collector_result,
+    ingest_detail_results,
+    ingest_fixture,
+)
 from .preference import PreferenceAssessment, PreferenceOutcome, assess_preference
 from .pruning import apply_offer_plan, build_plan
 from .seniority import seniority_filter_reason
@@ -882,6 +888,22 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     prune_parser.set_defaults(handler=cmd_prune)
+
+    closed_parser = add_common(
+        subparsers.add_parser(
+            "deactivate-closed",
+            help=(
+                "find active LinkedIn/GetManfred offers whose stored detail page "
+                "says the offer is closed (offline, read-only preview by default)"
+            ),
+        )
+    )
+    closed_parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="deactivate those offers; without it the command only lists them",
+    )
+    closed_parser.set_defaults(handler=cmd_deactivate_closed)
 
     return parser
 
@@ -2540,6 +2562,50 @@ def cmd_prune(args: argparse.Namespace, settings: Settings) -> int:
     payload["changed"] = changed
     text = plan.to_text() + f"\napplied: deactivated {changed} offer(s)"
     _emit(payload, as_json=as_json, text=text)
+    return EXIT_OK
+
+
+def cmd_deactivate_closed(args: argparse.Namespace, settings: Settings) -> int:
+    """List, or with ``--apply`` deactivate, offers whose stored page says closed.
+
+    Reads only pages already in the database: no network. The preview opens the
+    database read-only; ``--apply`` uses the same deactivation path as a detail
+    fetch, so history is kept and other providers' listings stay active.
+    """
+    db_path = Path(settings.db_path)
+    as_json = getattr(args, "as_json", False)
+    apply = bool(getattr(args, "apply", False))
+    if str(db_path) != ":memory:" and not db_path.is_file():
+        _write_line(f"no database found at {db_path}", stream=sys.stderr)
+        return EXIT_ERROR
+    conn = connect(db_path) if apply else _open_existing_readonly(db_path)
+    if conn is None:
+        _write_line(f"database at {db_path} could not be opened read-only", stream=sys.stderr)
+        return EXIT_ERROR
+    try:
+        listings = closed_listings(conn)
+        changed = 0
+        if apply:
+            for listing in listings:
+                if deactivate_listing(conn, listing["job_id"], listing["variant_id"]):
+                    changed += 1
+    except sqlite3.Error as exc:
+        _write_line(f"database error at {db_path}: {exc}", stream=sys.stderr)
+        return EXIT_ERROR
+    finally:
+        conn.close()
+
+    lines = [f"{len(listings)} active listing(s) whose stored page says the offer is closed"]
+    lines.extend(
+        f"  #{item['job_id']} [{item['source']}] {item['title']} - {item['company'] or '?'}"
+        for item in listings
+    )
+    if apply:
+        lines.append(f"applied: deactivated {changed} offer(s)")
+    else:
+        lines.append("run with --apply to deactivate them")
+    payload = {"listings": listings, "applied": apply, "changed": changed}
+    _emit(payload, as_json=as_json, text="\n".join(lines))
     return EXIT_OK
 
 

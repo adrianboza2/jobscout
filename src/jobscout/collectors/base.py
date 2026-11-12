@@ -28,6 +28,10 @@ from .ratelimit import (
 #: Set by :class:`UrllibHttpClient` when a bounded read hit its ceiling.
 TRUNCATION_HEADER = "x-jobscout-truncated"
 
+#: Note recorded on a detail fetch whose page says the offer is closed. Such a
+#: page answers 200, so the pipeline treats it like a definitive 404/410.
+CLOSED_NOTE = "offer closed on the provider"
+
 
 class CollectorError(Exception):
     """Base class for collector failures.
@@ -400,6 +404,7 @@ def fetch_with_policy(
 
 
 __all__ = [
+    "CLOSED_NOTE",
     "TRUNCATION_HEADER",
     "AccessDeniedError",
     "AttemptLog",

@@ -48,6 +48,7 @@ from ..models import (
 from ..normalize import content_hash, extract_linkedin_job_id, html_to_text, normalize_text
 from ..timeutil import utcnow_iso
 from .base import (
+    CLOSED_NOTE,
     TRUNCATION_HEADER,
     AccessDeniedError,
     AttemptLog,
@@ -78,6 +79,13 @@ MIN_DESCRIPTION_CHARS = 10
 #: temporarily unavailable. Only these may trigger a lifecycle transition, and
 #: they are kept machine-readable on :attr:`DetailItem.http_status`.
 DEFINITIVE_MISSING_STATUSES = frozenset({404, 410})
+
+#: Class LinkedIn puts on the "No longer accepting applications" caption of a
+#: closed posting. The page still answers 200 with its description, so this
+#: marker is the only signal that the offer is gone (seen on live pages).
+CLOSED_MARKER_RE = re.compile(
+    r"""class\s*=\s*["'][^"']*\bclosed-job__flavor--closed\b""", re.IGNORECASE
+)
 
 #: A LinkedIn numeric job id: at least 4 ASCII digits and nothing else. This is
 #: the same lower bound used by :func:`jobscout.normalize.extract_linkedin_job_id`,
@@ -121,6 +129,8 @@ class DetailItem:
     notes: str | None = None
     #: Index into :attr:`DetailResult.raw_documents`; resolved to an id on persist.
     raw_document_index: int | None = None
+    #: The page says the posting no longer accepts applications.
+    closed: bool = False
 
     @property
     def is_definitive_missing(self) -> bool:
@@ -360,6 +370,11 @@ class _DescriptionParser(HTMLParser):
         """Close a container left open by truncated HTML."""
         if self._capturing:
             self._finish()
+
+
+def parse_detail_closed(html_text: str) -> bool:
+    """True when the detail page marks the posting as closed. Never raises."""
+    return bool(CLOSED_MARKER_RE.search(html_text or ""))
 
 
 def parse_detail_description(html_text: str) -> str:
@@ -728,6 +743,7 @@ def fetch_linkedin_details(
             item=item,
         )
 
+        item.closed = parse_detail_closed(body)
         description = parse_detail_description(body)
         if description:
             material = "\n".join(
@@ -749,6 +765,8 @@ def fetch_linkedin_details(
             item.status = DetailFetchStatus.PARTIAL
             item.content_status = ContentStatus.PARTIAL
             item.error = "no description container found in the response"
+        if item.closed:
+            item.notes = (item.notes + "; " if item.notes else "") + CLOSED_NOTE
         result.items.append(item)
 
     result.status = SearchRunStatus.COMPLETED
@@ -768,6 +786,7 @@ __all__ = [
     "build_detail_url",
     "fetch_linkedin_details",
     "parse_description_salary",
+    "parse_detail_closed",
     "parse_detail_description",
     "plan_detail_targets",
     "resolve_source_job_id",
