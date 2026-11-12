@@ -232,7 +232,7 @@ detail is built only when a row is opened: the model's full rationale (no longer
 truncated), the stated salary, Puntos fuertes / Carencias / Bloqueos / Incógnitas when the
 evaluation has them, and a footer with model, confidence, date, the imported
 decision, the **✓ aplicar** / **✕ descartar** buttons (the reason field, up to 500
-characters, opens after choosing) and **Ver la oferta ↗**. Report warnings are quiet lines at the end, next
+characters, opens after choosing) and **Ver la oferta ↗**, which opens the most recently seen live listing (same provider first), so a repost never sends you to the old, closed ad. Report warnings are quiet lines at the end, next
 to the metadata.
 
 A stated salary is shown in green with the `indicado` label. When the posting

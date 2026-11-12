@@ -40,6 +40,7 @@ from jobscout.db import (
     connect,
     connect_readonly,
     create_search_run,
+    ensure_job_variant,
     init_db,
     insert_detail_fetch,
     insert_evaluation,
@@ -1064,6 +1065,28 @@ def test_top_limits_the_embedded_offers(db_file: Path) -> None:
     assert payload["summary"]["jobs_shown"] == 2
     # Aggregation still covers every job in the database, not just the shown ones.
     assert payload["summary"]["keywords"] == 2
+
+
+def test_offer_links_to_the_newest_live_listing(tmp_path: Path) -> None:
+    db_path = tmp_path / "links.sqlite3"
+    conn = connect(db_path)
+    init_db(conn)
+    job, _ = store_posting(conn, _posting(), now="2026-09-01T10:00:00Z")
+    old_url = "https://www.linkedin.com/jobs/view/3901234567/"
+    repost_url = "https://www.linkedin.com/jobs/view/3909999999/"
+    repost = ensure_job_variant(
+        conn, int(job.id), source="linkedin", source_job_id="3909999999",
+        url=repost_url, timestamp="2026-10-01T10:00:00Z",
+    )
+    conn.close()
+    assert _payload(db_path)["offers"][0]["url"] == repost_url
+
+    # When the repost closes, the link falls back to the listing still alive.
+    conn = connect(db_path)
+    conn.execute("UPDATE job_variants SET is_active = 0 WHERE id = ?", (repost,))
+    conn.commit()
+    conn.close()
+    assert _payload(db_path)["offers"][0]["url"] == old_url
 
 
 def test_offer_carries_every_field_the_report_promises(db_file: Path) -> None:

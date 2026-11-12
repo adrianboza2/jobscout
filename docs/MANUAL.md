@@ -236,7 +236,8 @@ justificación completa del modelo (ya no se recorta), salario indicado, Puntos 
 / Bloqueos / Incógnitas cuando la evaluación las trae, y un pie con modelo,
 confianza, fecha, la decisión importada, los botones **✓ aplicar** / **✕
 descartar** (el motivo, de hasta 500 caracteres, se abre al elegir) y **Ver la
-oferta ↗**. Los avisos del
+oferta ↗**, que abre el anuncio vivo visto más recientemente (primero del mismo
+proveedor), así una republicación nunca te lleva al anuncio viejo y cerrado. Los avisos del
 informe son líneas discretas al final, junto a los metadatos.
 
 El salario indicado por la oferta se muestra en verde y con la etiqueta

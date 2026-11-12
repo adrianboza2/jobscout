@@ -336,6 +336,9 @@ def _fetch_active_jobs(
     ``list`` use, so the dashboard never disagrees with the CLI. ``top`` is
     ``None`` for the all-active-offers default; SQLite treats a negative
     ``LIMIT`` as "no upper bound", so the same statement serves both cases.
+
+    The link is the most recently seen live listing (same provider first), not
+    the first URL ever stored: a repost's old id often points to a closed ad.
     """
     limit = -1 if top is None else int(top)
     return conn.execute(
@@ -344,7 +347,16 @@ def _fetch_active_jobs(
                j.title AS title,
                j.company AS company,
                j.location AS location,
-               j.url AS url,
+               COALESCE((
+                   SELECT v.url FROM job_variants v
+                   WHERE v.job_id = j.id AND v.is_active = 1 AND v.url IS NOT NULL
+                     AND v.source = j.source
+                   ORDER BY v.last_seen_at DESC, v.id DESC LIMIT 1
+               ), (
+                   SELECT v.url FROM job_variants v
+                   WHERE v.job_id = j.id AND v.is_active = 1 AND v.url IS NOT NULL
+                   ORDER BY v.last_seen_at DESC, v.id DESC LIMIT 1
+               ), j.url) AS url,
                j.description AS description,
                j.salary AS salary,
                j.posted_at AS posted_at,
