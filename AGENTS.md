@@ -33,8 +33,8 @@ an answer only.
 ### Orchestrator and worker sessions
 
 The owner opens one orchestrator session, and every board task runs in its own **worker
-session**: a full Claude Code session (Opus 5.5, effort medium), not an Agent-tool subagent, so
-it can delegate to DeepSeek itself under the rules above. The orchestrator launches, watches,
+session**: a full Claude Code session with `deepseek-flash` as its main model, through the
+LiteLLM router (owner, 2026-11-10), not an Agent-tool subagent. The orchestrator launches, watches,
 reviews and merges workers with the user-level `orquestador` skill; the owner does not paste
 prompts (owner decision, 2026-11-04). What is specific to this repo:
 
@@ -47,11 +47,13 @@ prompts (owner decision, 2026-11-04). What is specific to this repo:
   `PYTHONPATH=src /home/adrian/jobscout/.venv/bin/python -m jobscout`, because the shared
   venv's editable install points at the main checkout; pytest already picks the worktree's
   `src` (`/home/adrian/jobscout/.venv/bin/python -m pytest -q`).
-- **Merge:** for a task the owner approved on the board, the orchestrator commits and merges
-  without asking once it has read the diff and the suite is green; it asks first only when a
+- **Merge:** for a task the owner approved on the board, the orchestrator commits, merges and
+  pushes `master` without asking once the review step of the `orquestador` skill passes; it asks first only when a
   behaviour, data, provider or scope decision is still open (owner, 2026-11-04). Linear
   history: commit on the branch, fast-forward `master`, rebase the next branch onto it, and
-  run the full suite on `master` after the last merge.
+  run the full suite on `master` after the last merge, then `git push origin master`. The main
+  checkout is what the crons and the dashboard run, so a merge to `master` is production
+  (owner, 2026-11-12).
 - **Hermes sweep script** (outside the repo): changed once, after merging, by the orchestrator,
   never by workers.
 
@@ -164,7 +166,8 @@ never "fix" code or tests because of that error.
 
 `data/`, `reports/`, `profile.yaml`, `.env`, `jobscout-feedback.json`, captured pages and
 databases are machine-local and gitignored. Do not read them into commits, do not move them,
-do not push them. Do not push at all unless the user asks.
+do not push them. Push only `master`, and only as the orchestrator's last step for an approved
+board task, or when the user asks.
 
 ## Style
 
