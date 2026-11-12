@@ -261,6 +261,11 @@ def parse_detail_description(html_text: str) -> str:
     return _extract_description(job)
 
 
+def _extract_title(job: dict[str, Any]) -> str | None:
+    value = normalize_text(job.get("title")) if isinstance(job.get("title"), str) else ""
+    return value[:200] or None
+
+
 def _extract_company(job: dict[str, Any]) -> str | None:
     for candidate in _as_sequence(job.get("hiringOrganization")):
         if isinstance(candidate, str):
@@ -464,6 +469,7 @@ class GetManfredDetailFields:
     """Structured detail extracted from a recognized GetManfred offer page."""
 
     description: str = ""
+    title: str | None = None
     company: str | None = None
     location: str | None = None
     posted_at: str | None = None
@@ -487,6 +493,7 @@ def parse_detail_fields(html_text: str) -> GetManfredDetailFields:
         return GetManfredDetailFields()
     return GetManfredDetailFields(
         description=_extract_description(job),
+        title=_extract_title(job),
         company=_extract_company(job),
         location=_extract_location(job),
         posted_at=_extract_posted_at(job),
@@ -605,6 +612,8 @@ class GetManfredDetailItem:
     notes: str | None = None
     raw_document_index: int | None = None
     #: Extracted structured fields, applied to the stored job on persist.
+    #: ``title`` only replaces a title the inventory derived from the URL slug.
+    title: str | None = None
     company: str | None = None
     location: str | None = None
     posted_at: str | None = None
@@ -629,6 +638,7 @@ class GetManfredDetailItem:
             "status": str(self.status),
             "content_status": str(self.content_status),
             "description_chars": len(self.description or ""),
+            "title": self.title,
             "company": self.company,
             "location": self.location,
             "posted_at": self.posted_at,
@@ -959,6 +969,7 @@ def fetch_getmanfred_details(
             item.content_status = ContentStatus.OK
             item.content_hash = content_hash(material)
             item.sha256 = hashlib.sha256(fields.description.encode("utf-8")).hexdigest()
+            item.title = fields.title
             item.company = fields.company
             item.location = fields.location
             item.posted_at = fields.posted_at

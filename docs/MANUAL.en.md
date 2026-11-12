@@ -643,7 +643,10 @@ detail path is disallowed; conservative limits, pacing, and download ceiling.
 It extracts description, company, location, date, employment type, and salary
 **only from the recognized `JobPosting` JSON-LD** on the page. A field the page
 does not expose stays `NULL`: the company is never derived from the slug, and an
-empty locality is never replaced by an inferred value. A recognized detail page
+empty locality is never replaced by an inferred value. The JSON-LD title
+replaces the one the inventory took from the slug (for example "Nubosas junior
+devops sept22" becomes "Junior Devops"); a title that did not come from the slug
+is never touched. A recognized detail page
 leaves the offer at `content_status = ok` with a non-empty description. An
 unrecognized page, a 403, or a truncated body stays `partial`/`failed` with an
 honest error: `ok` is never invented. The pipeline applies the rule that a partial

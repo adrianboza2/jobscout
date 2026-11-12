@@ -482,6 +482,19 @@ def _detail_extra_fields(item: Any) -> dict[str, Any]:
     return fields
 
 
+def _replaces_slug_title(job: Any, title: str | None) -> bool:
+    """A detail title only replaces the one GetManfred's inventory took from the URL.
+
+    A title set by a search card, or already corrected, is never overwritten.
+    """
+    if not title or job.source != "getmanfred":
+        return False
+    from .collectors.getmanfred import title_from_offer_slug
+
+    current = job.title or ""
+    return current != title and current == title_from_offer_slug(job.url or "")
+
+
 def ingest_detail_results(
     conn: Any,
     result: DetailResult,
@@ -568,6 +581,8 @@ def ingest_detail_results(
             ),
         )
         extra_fields = _detail_extra_fields(item)
+        if _replaces_slug_title(job, getattr(item, "title", None)):
+            extra_fields["title"] = item.title
         changed = (
             description != (job.description or "")
             or str(content_status) != str(job.content_status)

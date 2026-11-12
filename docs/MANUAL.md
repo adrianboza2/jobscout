@@ -664,7 +664,9 @@ detalle está deshabilitada; límites, pacing y techo de descarga conservadores.
 Extrae descripción, empresa, ubicación, fecha, tipo de empleo y salario **solo
 del JSON-LD `JobPosting` reconocido** de la página. Un campo que la página no
 expone queda `NULL`: la empresa nunca se deriva del slug y una localidad vacía no
-se reemplaza por un valor inferido. Un detalle reconocido deja la oferta en
+se reemplaza por un valor inferido. El título del JSON-LD sustituye al que el
+inventario sacó del slug (por ejemplo «Nubosas junior devops sept22» pasa a
+«Junior Devops»); un título que no venga del slug nunca se toca. Un detalle reconocido deja la oferta en
 `content_status = ok` con descripción no vacía. Un detalle no reconocido, un 403 o
 un cuerpo truncado quedan en `partial`/`failed` con un error honesto: nunca se
 inventa un `ok`. La decisión de no reemplazar una descripción completa previa por

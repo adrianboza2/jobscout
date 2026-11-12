@@ -16,6 +16,7 @@ from conftest import FakeHttpClient, fixture_text, no_network, response
 
 from jobscout.cli import EXIT_FAIL_CLOSED, EXIT_OK, main
 from jobscout.collectors.base import CollectorDisabledError, TRUNCATION_HEADER
+from jobscout.collectors.getmanfred import title_from_offer_slug
 from jobscout.collectors.getmanfred_details import (
     extract_json_ld_scripts,
     fetch_getmanfred_details,
@@ -72,13 +73,14 @@ def _store_offer(
     source_job_id: str = "8476",
     description: str | None = None,
     content_status: ContentStatus = ContentStatus.PARTIAL,
+    title: str = "Backend Engineer Php Sept26",
 ):
     """Store one active GetManfred inventory offer (partial by default)."""
     raw: dict[str, object] = {
         "source": "getmanfred",
         "source_job_id": source_job_id,
         "url": url,
-        "title": "Backend Engineer Php Sept26",
+        "title": title,
         "company": "",
         "content_status": str(content_status),
     }
@@ -116,6 +118,7 @@ def test_parse_real_captured_json_ld_extracts_recognized_fields() -> None:
     assert fields.recognized is True
     assert "Datcisions nace para resolver este drama" in fields.description
     assert fields.company == "Datcisions"
+    assert fields.title == "Backend Engineer (PHP)"
     # The address carries an empty addressLocality, so location stays absent.
     assert fields.location is None
     assert fields.posted_at == "2026-09-18T07:41:22Z"
@@ -530,6 +533,31 @@ def test_ingest_detail_enriches_job_and_writes_provenance(conn, settings) -> Non
         "SELECT provider FROM search_runs WHERE id = ?", (outcome.run_id,)
     ).fetchone()
     assert run["provider"] == "getmanfred-details"
+
+
+def _fetch_and_ingest(conn, settings, job):
+    client = FakeHttpClient(
+        [response(200, fixture_text(DETAIL_FIXTURE), headers={"content-type": "text/html"}, url=OFFER_URL)]
+    )
+    result = fetch_getmanfred_details(
+        [job], settings=settings, network_enabled=True, client=client,
+        sleep=lambda _: None, robots_text=ROBOTS_ALLOW,
+    )
+    ingest_detail_results(conn, result, settings=settings, provider="getmanfred")
+    return get_job(conn, int(job.id))
+
+
+def test_ingest_detail_replaces_the_title_taken_from_the_url_slug(conn, settings) -> None:
+    job = _store_offer(conn, title=title_from_offer_slug(OFFER_URL))
+    assert job.title == "Datcisions backend engineer php sept26"
+
+    assert _fetch_and_ingest(conn, settings, job).title == "Backend Engineer (PHP)"
+
+
+def test_ingest_detail_keeps_a_title_that_did_not_come_from_the_slug(conn, settings) -> None:
+    job = _store_offer(conn, title="Backend Engineer PHP (remote)")
+
+    assert _fetch_and_ingest(conn, settings, job).title == "Backend Engineer PHP (remote)"
 
 
 def test_ingest_detail_provider_isolation(conn, settings) -> None:

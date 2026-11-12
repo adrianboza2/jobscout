@@ -1864,6 +1864,7 @@ def update_job_content(
     content_status: ContentStatus | str,
     content_hash: str,
     raw_document_id: int | None = None,
+    title: str | None = None,
     company: str | None = None,
     location: str | None = None,
     posted_at: str | None = None,
@@ -1874,7 +1875,7 @@ def update_job_content(
     """Replace a stored job's description without touching unrelated columns.
 
     ``raw_document_id`` is only written when provided, so enriching a job keeps
-    the provenance of the original search payload intact. ``company``,
+    the provenance of the original search payload intact. ``title``, ``company``,
     ``location``, ``posted_at``, ``employment_type``, ``salary``, and ``extra``
     are optional detail-derived fields: each is only written when non-empty, so a
     provider fetch can fill a gap in a partial search card without clobbering
@@ -1894,6 +1895,7 @@ def update_job_content(
         raw_document_id,
     ]
     for column, value in (
+        ("title", title),
         ("company", company),
         ("location", location),
         ("posted_at", posted_at),
