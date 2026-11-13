@@ -7,3 +7,5 @@ Hechos del repo que un brief o un trabajador ha tenido que adivinar. Una línea 
 - En el panel, lo que depende de una constante de Python (ventanas, umbrales) se pinta desde el payload, nunca escrito a mano en el HTML ni con un valor de respaldo en el JS.
 - No hay parser de `jobs.salary` a cifra: el sueldo indicado es texto libre; las cifras salen de `salary_estimate_*` de la evaluación.
 - El scorer de OpenCode registra `OPENCODE_PROMPT_VERSION` (`scoring/opencode.py`); `PROMPT_VERSION` (`scoring/schema.py`) solo versiona el path LLM/HTTP. Cambiar `OPENCODE_OUTPUT_CONTRACT` no altera el fingerprint por sí solo: el re-scoring lo fuerzan el perfil o subir `OPENCODE_PROMPT_VERSION`.
+- El CLI lee `.env` del directorio actual: una corrida de `score` lanzada desde `/tmp` usa el modelo y el esfuerzo por defecto (`#low`), no los de producción. Lánzala desde el worktree o el checkout principal.
+- `score` salta las ofertas que oculta el pre-filtro por título (`seniority.py`): un cambio de prompt sobre un tipo de título no se nota si el pre-filtro lo sigue ocultando.
