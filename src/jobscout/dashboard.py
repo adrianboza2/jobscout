@@ -458,10 +458,16 @@ def _build_status(
 
     New offers are counted over every active job, not only the ``top`` slice, so
     the header never reports a total bounded by the embedded offer list.
+
+    ``scored_since_sweep`` and ``awaiting_score`` feed the "the last sweep scored
+    nothing" warning, decided in the browser. When the database has no sweep,
+    ``scored_since_sweep`` stays at 0 and the browser skips that warning because
+    it has no ``last_sweep_at`` to blame.
     """
     rows = conn.execute(
         """
-        SELECT j.first_seen_at AS first_seen_at,
+        SELECT j.id AS id,
+               j.first_seen_at AS first_seen_at,
                e.overall_score AS score
         FROM jobs j
         LEFT JOIN latest_evaluations e ON e.job_id = j.id
@@ -470,7 +476,14 @@ def _build_status(
     ).fetchall()
     new_jobs = 0
     new_scored = 0
+    awaiting_score = 0
     for row in rows:
+        state = states.get(int(row["id"]))
+        if state is not None and state.stage in (
+            OfferStage.READY_TO_SCORE,
+            OfferStage.NEEDS_RESCORE,
+        ):
+            awaiting_score += 1
         if not _is_new(row["first_seen_at"], last_sweep_at):
             continue
         new_jobs += 1
@@ -489,9 +502,20 @@ def _build_status(
         pending = state is not None and state.stage is OfferStage.PENDING_DETAILS
         pending_details[source] = pending_details.get(source, 0) + int(pending)
 
+    # Successful evaluations saved since the latest sweep began. Timestamps are
+    # parsed, never compared as text, and an unusable one never counts.
+    scored_since_sweep = 0
+    sweep_started = parse_datetime(last_sweep_at)
+    if last_sweep_at is not None and sweep_started is not None:
+        for row in conn.execute(
+            "SELECT created_at FROM evaluations WHERE status = 'ok'"
+        ).fetchall():
+            created = parse_datetime(row["created_at"])
+            if created is not None and created >= sweep_started:
+                scored_since_sweep += 1
+
     failed_searches = 0
     failed_details = 0
-    sweep_started = parse_datetime(last_sweep_at)
     if last_sweep_at is not None and sweep_started is not None:
         failed_rows = conn.execute(
             """
@@ -516,6 +540,8 @@ def _build_status(
         "new_jobs": new_jobs,
         "new_scored": new_scored,
         "pending_details": pending_details,
+        "scored_since_sweep": scored_since_sweep,
+        "awaiting_score": awaiting_score,
         "failed_runs": {"searches": failed_searches, "details": failed_details},
     }
 
@@ -1911,7 +1937,8 @@ _SCRIPT = r"""
   }
 
   // The header status is one line built only from payload.status. Each part is a
-  // span so the signal colour marks exactly the two failure states, never the rest.
+  // span so the signal colour marks exactly the warnings and failures, never the
+  // rest. The first parts are the "the sweep is broken" alerts.
   function renderStatusLine() {
     var host = document.getElementById("status-line");
     if (!host) { return; }
@@ -1921,11 +1948,30 @@ _SCRIPT = r"""
     var totalFailed = (Number(failed.searches) || 0) + (Number(failed.details) || 0);
     var newJobs = Number(status.new_jobs) || 0;
     var newScored = Number(status.new_scored) || 0;
+    var scoredSince = Number(status.scored_since_sweep) || 0;
+    var awaiting = Number(status.awaiting_score) || 0;
+    // The sweep age is measured here, at page open, never when the page was
+    // generated: the sweep writes this HTML, so a stopped sweep means a frozen
+    // page and a generation-time age would stay young forever.
+    var sweepAgeDays = null;
+    if (typeof status.last_sweep_at === "string") {
+      var sweepMs = Date.parse(status.last_sweep_at);
+      if (!isNaN(sweepMs)) {
+        sweepAgeDays = Math.floor((Date.now() - sweepMs) / 86400000);
+      }
+    }
     var pending = status.pending_details || {};
     var pendingKeys = Object.keys(pending).filter(function (source) {
       return (Number(pending[source]) || 0) > 0;
     });
     var parts = [];
+    if (sweepAgeDays !== null && sweepAgeDays > 4) {
+      parts.push(["Barrido parado desde hace " + sweepAgeDays + " días", "bad"]);
+    }
+    // Without a dated sweep there is nothing to blame on it, so no alert.
+    if (sweepAgeDays !== null && scoredSince === 0 && awaiting > 0) {
+      parts.push(["El último barrido no puntuó ninguna oferta", "bad"]);
+    }
     parts.push([status.last_sweep_at
       ? "Último barrido " + displayTimestamp(status.last_sweep_at)
       : "Sin barridos", ""]);

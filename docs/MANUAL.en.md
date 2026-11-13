@@ -215,7 +215,14 @@ English so the report never drifts from the database. The sticky header
 summarises the last sweep (date, new offers, pending details and failures;
 unscored new offers and failures show in red).
 "Detalles pendientes" counts offers, not postings, each under the provider that
-first saw it, so it adds up to the rows marked "Pendiente de detalles". It offers two tabs, **Ofertas** and **Palabras clave**, with **Exportar N
+first saw it, so it adds up to the rows marked "Pendiente de detalles". Ahead of
+everything else, the status line warns in red when the sweep has been stopped
+for more than 4 days ("Barrido parado desde hace N días"; the age is measured in
+the browser when the page opens, because the sweep regenerates this HTML and a
+generation-time date would stay frozen) and when the last sweep scored no offer
+while offers sit in `ready_to_score` or `needs_rescore` ("El último barrido no
+puntuó ninguna oferta"). With no sweep at all, or with a recent, healthy one, it
+adds no alert. It offers two tabs, **Ofertas** and **Palabras clave**, with **Exportar N
 decisiones** on the right, shown only while this browser holds a decision. The offers view uses a single horizontal toolbar
 with text search, the model recommendation, **Solo nuevas** (offers first seen
 in the latest sweep) and a minimum-score select (`Score ≥ 0`, `≥ 50`, `≥ 70`);

@@ -216,7 +216,14 @@ de datos. La cabecera fija resume el último barrido (fecha, ofertas nuevas,
 detalles pendientes y fallos; las nuevas sin evaluar y los fallos salen en rojo).
 «Detalles pendientes» cuenta ofertas, no publicaciones, cada una bajo el
 proveedor que la vio primero, así que suma lo mismo que las filas marcadas
-«Pendiente de detalles». Ofrece dos pestañas, **Ofertas** y **Palabras
+«Pendiente de detalles». Delante de todo, la línea de estado avisa en rojo
+cuando el barrido lleva más de 4 días parado («Barrido parado desde hace N
+días»; la edad se calcula en el navegador al abrir el panel, porque el HTML lo
+regenera el propio barrido y una fecha calculada al generarlo se quedaría
+congelada) y cuando el último barrido no puntuó ninguna oferta aunque haya
+ofertas en `ready_to_score` o `needs_rescore` («El último barrido no puntuó
+ninguna oferta»). Sin barridos, o con un barrido reciente y sano, no añade
+ningún aviso. Ofrece dos pestañas, **Ofertas** y **Palabras
 clave**, y a la derecha **Exportar N decisiones**, que solo aparece cuando este
 navegador guarda alguna decisión. La vista de
 ofertas usa una única barra de herramientas horizontal, con búsqueda por texto,

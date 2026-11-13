@@ -1206,6 +1206,69 @@ def test_pending_details_counts_offers_like_the_rows(dr1_db: Path) -> None:
     assert sum(status["pending_details"].values()) == len(marked)
 
 
+def test_status_counts_successful_evaluations_since_the_sweep(dr1_db: Path) -> None:
+    """DB-12: only ``ok`` evaluations saved from the sweep start count as work."""
+    status = _dr1_payload(dr1_db)["status"]
+
+    # Both fixture evaluations were saved after the 2026-10-19 sweep began.
+    assert status["scored_since_sweep"] == 2
+
+
+def test_status_ignores_evaluations_before_the_sweep_or_not_ok(dr1_db: Path) -> None:
+    """DB-12: an older or failed evaluation is not evidence the sweep scored."""
+    conn = connect(dr1_db)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE evaluations SET created_at = '2026-10-18T23:00:00Z' "
+                "WHERE overall_score = 75.0"
+            )
+            conn.execute(
+                "UPDATE evaluations SET status = 'parse_error' "
+                "WHERE overall_score = 90.0"
+            )
+    finally:
+        conn.close()
+
+    assert _dr1_payload(dr1_db)["status"]["scored_since_sweep"] == 0
+
+
+def test_status_parses_evaluation_timestamps_with_offsets(dr1_db: Path) -> None:
+    """DB-12: an offset timestamp after the sweep counts though it sorts before it."""
+    conn = connect(dr1_db)
+    try:
+        with conn:
+            conn.execute("UPDATE evaluations SET created_at = '2026-10-18T00:00:00Z'")
+            # 06:30-02:00 is 08:30Z, after the 07:00Z sweep start, but as text it
+            # sorts before it: a string comparison would miss it.
+            conn.execute(
+                "UPDATE evaluations SET created_at = '2026-10-19T06:30:00-02:00' "
+                "WHERE overall_score = 90.0"
+            )
+    finally:
+        conn.close()
+
+    assert _dr1_payload(dr1_db)["status"]["scored_since_sweep"] == 1
+
+
+def test_status_counts_active_offers_awaiting_score(dr1_db: Path) -> None:
+    """DB-12: the backlog is the active offers ready to score or needing a rescore."""
+    status = _dr1_payload(dr1_db)["status"]
+
+    # B and C hold a description with no score; E is inactive.
+    assert status["awaiting_score"] == 2
+
+
+def test_status_without_a_sweep_counts_nothing_scored(db_file: Path) -> None:
+    """DB-12: with no sweep, the browser has no sweep to blame, so no alert."""
+    status = _payload(db_file)["status"]
+
+    assert status["last_sweep_at"] is None
+    assert status["scored_since_sweep"] == 0
+    # The third fixture offer has no score and no pending details.
+    assert status["awaiting_score"] == 1
+
+
 def test_offer_payload_marks_offers_waiting_for_details(db_file: Path) -> None:
     """Rule 1: a scoreless offer without a description says so in the payload."""
     conn = connect(db_file)
@@ -2158,11 +2221,35 @@ def test_status_line_is_built_from_payload_status_with_conditional_signal(
     assert "pending_details" in body
     assert "Detalles pendientes:" in body
     assert "failed.searches" in body and "failed.details" in body
-    # The signal class is attached to exactly the two conditional branches:
-    # unscored new offers and failed runs.
-    assert body.count('"bad"') == 2
+    # The signal class is attached to exactly the two existing conditional
+    # branches (unscored new offers, failed runs) plus the two DB-12 sweep
+    # alerts, checked in their own test below.
+    assert body.count('"bad"') == 4
     assert "if (newScored < newJobs)" in body
     assert 'totalFailed > 0 ? "bad" : "calm"' in body
+
+
+def test_status_line_alerts_when_the_sweep_stops_or_scores_nothing(
+    db_file: Path,
+) -> None:
+    """DB-12: the browser dates the sweep and blames a sweep that scored nothing."""
+    html_text = generate_and_read(db_file)
+    match = re.search(
+        r"function renderStatusLine\(\) \{(.*?)\n  \}", html_text, re.DOTALL
+    )
+    assert match is not None
+    body = match.group(1)
+
+    # The stale age must be measured at page open, never baked in at generation.
+    assert "Date.now()" in body
+    assert "Math.floor(" in body
+    assert "sweepAgeDays > 4" in body
+    assert "Barrido parado desde hace \" + sweepAgeDays + \" días" in body
+    assert "scored_since_sweep" in body and "awaiting_score" in body
+    assert "scoredSince === 0 && awaiting > 0" in body
+    assert "El último barrido no puntuó ninguna oferta" in body
+    # Both alerts are pushed before the "Último barrido" part.
+    assert body.index("Barrido parado desde hace") < body.index("parts.push([status.last_sweep_at")
 
 
 def test_no_discrepancias_or_vetos_tabs_before_their_data_exists(db_file: Path) -> None:
