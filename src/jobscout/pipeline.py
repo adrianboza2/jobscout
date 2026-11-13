@@ -705,8 +705,9 @@ def closed_listings(conn: Any) -> list[dict[str, Any]]:
 
     Offline backfill for pages fetched before the detail adapters recognised a
     closed offer. Each active LinkedIn/GetManfred variant is judged on its most
-    recent stored page with the adapter's own parser; a variant with no stored
-    page, or a truncated one without the marker, is never selected. A fetch from
+    recent fetch's stored page with the adapter's own parser; when that fetch
+    kept no page, an older closed page is not trusted, so the variant is not
+    selected, nor is one whose page is truncated before the marker. A fetch from
     before variants existed is only attributed when the provider has a single
     variant, so an old closed page never condemns a live repost.
     """
@@ -718,13 +719,11 @@ def closed_listings(conn: Any) -> list[dict[str, Any]]:
         """
         SELECT j.id AS job_id, j.title, j.company, v.id AS variant_id, v.source,
                (SELECT f.id FROM job_detail_fetches f
-                 JOIN raw_documents r ON r.id = f.raw_document_id
                 WHERE f.job_id = j.id AND f.source = v.source
                   AND (f.variant_id = v.id
                        OR (f.variant_id IS NULL AND (
                            SELECT COUNT(*) FROM job_variants o
                            WHERE o.job_id = j.id AND o.source = v.source) = 1))
-                  AND r.body IS NOT NULL
                 ORDER BY f.id DESC LIMIT 1) AS fetch_id
         FROM jobs j JOIN job_variants v ON v.job_id = j.id
         WHERE j.is_active = 1 AND v.is_active = 1 AND v.source IN ('linkedin', 'getmanfred')
@@ -736,7 +735,7 @@ def closed_listings(conn: Any) -> list[dict[str, Any]]:
         if row["fetch_id"] is None:
             continue
         body = conn.execute(
-            "SELECT r.body FROM job_detail_fetches f JOIN raw_documents r "
+            "SELECT r.body FROM job_detail_fetches f LEFT JOIN raw_documents r "
             "ON r.id = f.raw_document_id WHERE f.id = ?",
             (int(row["fetch_id"]),),
         ).fetchone()["body"]

@@ -117,7 +117,8 @@ def test_linkedin_closed_caption_is_recognised() -> None:
         ({"status": "CLOSED", "active": False}, True),
         ({"status": "ACTIVE", "active": True}, False),
         ({"status": "CLOSED"}, True),
-        ({"active": False}, True),
+        ({"active": False}, False),
+        ({"status": "ACTIVE", "active": False}, False),
         ({}, False),
     ],
 )
@@ -224,6 +225,16 @@ def test_backfill_selects_only_listings_whose_stored_page_is_closed(conn, settin
     assert get_job(conn, closed_job.id).is_active is True
 
     assert [item["job_id"] for item in closed_listings(conn)] == [closed_job.id]
+
+
+def test_backfill_trusts_only_the_latest_fetch_even_without_a_stored_page(conn, settings) -> None:
+    job = _store_linkedin(conn, "4476740910")
+    _ingest_as_old_adapter(conn, job, settings, _linkedin_page(closed=True))
+    _ingest_as_old_adapter(conn, job, settings, _linkedin_page(closed=False))
+    latest = conn.execute("SELECT MAX(id) FROM job_detail_fetches").fetchone()[0]
+    conn.execute("UPDATE job_detail_fetches SET raw_document_id = NULL WHERE id = ?", (latest,))
+
+    assert closed_listings(conn) == []
 
 
 def test_deactivate_closed_command_previews_then_applies(settings, capsys) -> None:

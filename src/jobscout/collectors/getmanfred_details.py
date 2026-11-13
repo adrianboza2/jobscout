@@ -446,7 +446,9 @@ def parse_detail_closed(html_text: str) -> bool:
     """True when the page data marks the offer as closed. Never raises.
 
     Missing or unreadable page data means "not known to be closed": only an
-    explicit ``CLOSED`` status or ``active: false`` deactivates an offer.
+    explicit ``CLOSED`` status deactivates an offer. ``active: false`` alone is
+    not enough, because a closure is permanent and that flag's meaning outside
+    a ``CLOSED`` status was never observed.
     """
     match = _NEXT_DATA_RE.search(html_text or "")
     if match is None:
@@ -461,7 +463,7 @@ def parse_detail_closed(html_text: str) -> bool:
     if not isinstance(offer, dict):
         return False
     status = offer.get("status")
-    return (isinstance(status, str) and status.strip().upper() == "CLOSED") or offer.get("active") is False
+    return isinstance(status, str) and status.strip().upper() == "CLOSED"
 
 
 @dataclass
