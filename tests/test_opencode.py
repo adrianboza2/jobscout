@@ -538,10 +538,25 @@ def test_prompt_requires_compact_closed_json_without_padding(strong_posting, pro
     assert prompt.index("SYSTEM:") < prompt.index("OPENCODE OUTPUT CONTRACT")
 
 
-def test_prompt_version_is_v6_and_distinguishable() -> None:
-    """The salary estimate ships as a new prompt generation, not a silent edit."""
-    assert OPENCODE_PROMPT_VERSION == "opencode-v6-salary-estimate"
-    assert OPENCODE_PROMPT_VERSION != "opencode-v5-seniority-aware"
+def test_contract_bands_labels_and_judges_title_by_requirements() -> None:
+    """AF-02: the label follows the score, and only listed words are senior titles."""
+    flat = " ".join(OPENCODE_OUTPUT_CONTRACT.split())
+
+    # Fixed bands keep the label coherent with the score the owner sees.
+    assert "apply at 60 or above, consider from 40 to 59, and skip below 40" in flat
+    assert "A hard dealbreaker or blocker stays skip even when the rest fits" in flat
+    assert "the score must sit below 40 too" in flat
+
+    # An "Architect" post with no years asked is judged by its requirements.
+    assert "Judge the title by the requirements, not the label" in flat
+    assert "senior, staff, principal, lead, or manager title is a senior title" in flat
+    assert "if it requires no concrete years and a junior could meet its requirements" in flat
+
+
+def test_prompt_version_is_v7_and_distinguishable() -> None:
+    """AF-02's score bands ship as a new prompt generation, not a silent edit."""
+    assert OPENCODE_PROMPT_VERSION == "opencode-v7-score-bands"
+    assert OPENCODE_PROMPT_VERSION != "opencode-v6-salary-estimate"
 
 
 def test_output_contract_allows_salary_keys_and_forbids_extras(strong_posting, profile) -> None:

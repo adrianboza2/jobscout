@@ -201,6 +201,13 @@ deepseek-v4.1-flash applies is:
 - **It keeps the dealbreakers** and the SOC/rotating-shift exclusions, which are
   additionally computed separately in the **preference filters** (offline, without
   touching the score or the stored evaluation).
+- **The label follows fixed bands over the score:** `apply` at 60 or above,
+  `consider` from 40 to 59, and `skip` below 40; a hard dealbreaker or blocker
+  stays `skip` even when the rest fits, and then the score sits below 40 too.
+- **The title does not override the requirements:** only the explicit words in the
+  policy count as a senior title; a title such as *Architect*, *Specialist*, or
+  *Consultant* is judged by what it asks, and with no concrete years and reachable
+  requirements it is not a `skip` because of the title.
 
 The output format is unchanged: a single JSON object with `overall_score`,
 `recommendation`, `confidence`, and `rationale`.
@@ -364,8 +371,7 @@ it cannot be computed trustworthily and is not approximated.
 ### Title-based seniority pre-filter
 
 Offers whose title is clearly senior (`senior`, `sr`, `lead`, `principal`,
-`architect`, `arquitecto`, `arquitecta`, `manager`, `head`, `director`, `staff`,
-`jefe`) are marked as filtered at read time, with no schema change. Junior
+`manager`, `head`, `director`, `staff`, `jefe`) are marked as filtered at read time, with no schema change. *Architect* and *Arquitecto/a* are left out on purpose (AF-02): those offers are scored and judged by their requirements. Junior
 exceptions (`junior`, `jr`, `trainee`, `beca`, `becario`, `becaria`,
 `prácticas`/`practicas`, `intern`, `internship`) cancel the filter. `score` skips
 them before applying `--limit` and prints `skipped N offer(s) filtered by

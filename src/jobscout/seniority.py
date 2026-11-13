@@ -15,9 +15,9 @@ SENIOR_MARKERS: tuple[str, ...] = (
     "sr",
     "lead",
     "principal",
-    "architect",
-    "arquitecto",
-    "arquitecta",
+    # AF-02: "architect" is not here on purpose. The owner applies to Architect
+    # posts that ask for no years and assumable requirements, so the scorer
+    # judges them by their requirements instead of hiding them by title.
     "manager",
     "head",
     "director",

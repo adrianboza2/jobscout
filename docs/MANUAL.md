@@ -201,6 +201,14 @@ política que aplica deepseek-v4.1-flash es:
 - **Mantiene los dealbreakers** y las exclusiones de SOC/turnos rotativos, que
   además se calculan aparte en los **filtros de preferencia** (offline y sin tocar
   el puntaje ni la evaluación guardada).
+- **La etiqueta sigue bandas fijas sobre la puntuación:** `apply` con 60 o más,
+  `consider` de 40 a 59 y `skip` por debajo de 40; un dealbreaker o bloqueo duro
+  sigue siendo `skip` aunque el resto encaje, y entonces el puntaje queda también
+  por debajo de 40.
+- **El título no manda sobre los requisitos:** solo cuentan como título senior las
+  palabras explícitas de la política; un título como *Architect*, *Specialist* o
+  *Consultant* se juzga por lo que pide, y sin años concretos y con requisitos
+  asumibles no es `skip` por el título.
 
 El formato de salida no cambia: un único objeto JSON con `overall_score`,
 `recommendation`, `confidence` y `rationale`.
@@ -374,8 +382,7 @@ en el último ciclo": no se puede calcular de forma confiable y no se aproxima.
 ### Filtro previo de seniority por título
 
 Las ofertas con un título claramente senior (`senior`, `sr`, `lead`, `principal`,
-`architect`, `arquitecto`, `arquitecta`, `manager`, `head`, `director`, `staff`,
-`jefe`) se marcan como filtradas al leer los datos, sin cambiar el esquema. Las
+`manager`, `head`, `director`, `staff`, `jefe`) se marcan como filtradas al leer los datos, sin cambiar el esquema. *Architect* y *Arquitecto/a* no están en la lista a propósito (AF-02): esas ofertas se puntúan y el scorer las juzga por sus requisitos. Las
 excepciones junior (`junior`, `jr`, `trainee`, `beca`, `becario`, `becaria`,
 `prácticas`/`practicas`, `intern`, `internship`) cancelan el filtro. `score` las
 omite antes de aplicar `--limit` y muestra `skipped N offer(s) filtered by
