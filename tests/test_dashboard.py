@@ -26,6 +26,7 @@ from jobscout.dashboard import (
     DASHBOARD_FEEDBACK_DECISIONS,
     DASHBOARD_LEGACY_FEEDBACK_DECISIONS,
     DEFAULT_TOP,
+    DEFAULT_VISIBLE_MAX_AGE_DAYS,
     MAX_TOP,
     DashboardError,
     build_payload,
@@ -832,7 +833,10 @@ def test_default_dashboard_includes_every_active_offer_and_no_top_limit(
 
     payload = _payload(path)
 
-    assert len(payload["offers"]) == 30
+    # Every active offer is embedded, plus the deactivated ones (marked closed)
+    # that the report hides by default; the live counts stay active-only.
+    assert len([offer for offer in payload["offers"] if offer["is_active"]]) == 30
+    assert len(payload["offers"]) == 33
     assert payload["summary"]["jobs_shown"] == 30
     assert payload["summary"]["active_jobs"] == 30
     assert payload["limits"]["top"] is None
@@ -2765,10 +2769,10 @@ def test_imported_review_carries_the_decision_date_in_browser_form(db_file: Path
     assert by_id[jobs["job3"]]["imported_review"]["updated_at"] is None
 
 
-def test_imported_feedback_covers_offers_the_report_no_longer_lists(
+def test_imported_feedback_covers_closed_offers_the_report_hides(
     db_file: Path,
 ) -> None:
-    """An inactive offer's decision still reaches the browser prune, without its reason."""
+    """A closed offer's decision still reaches the browser prune, without its reason."""
     jobs = _seed_dashboard_db(db_file)
     reason = "motivo privado que nunca sale de SQLite"
     conn = connect(db_file)
@@ -2783,7 +2787,10 @@ def test_imported_feedback_covers_offers_the_report_no_longer_lists(
     html_text = generate_and_read(db_file)
     payload = _extract_payload(html_text)
 
-    assert jobs["job1"] not in {offer["id"] for offer in payload["offers"]}
+    # The closed offer stays in the payload, marked closed, so the row history
+    # and its imported decision are still there; the reader can reveal it.
+    closed = {offer["id"]: offer for offer in payload["offers"]}[jobs["job1"]]
+    assert closed["is_active"] is False
     assert payload["imported_feedback"] == {
         str(jobs["job1"]): {
             "reviewed": True,
@@ -3152,8 +3159,18 @@ def test_inactive_jobs_are_excluded_from_keyword_analytics(db_file: Path) -> Non
     assert stats_after["data platform"]["unique_jobs"] == 1
     assert stats_after["data platform"]["sightings"] == 1
     assert after["summary"]["active_jobs"] == 2
-    # The offers list is consistent with the analytics: both drop the job.
-    assert all(offer["title"] != "Platform Engineer" for offer in after["offers"])
+    # The active offers are consistent with the analytics: both drop the job.
+    assert all(
+        offer["title"] != "Platform Engineer"
+        for offer in after["offers"]
+        if offer["is_active"]
+    )
+    # The deactivated job stays in the payload, marked closed, and out of the
+    # live summary that the analytics describe.
+    assert after["summary"]["jobs_shown"] == 2
+    closed = [offer for offer in after["offers"] if offer["title"] == "Platform Engineer"]
+    assert len(closed) == 1
+    assert closed[0]["is_active"] is False
 
 
 def test_keyword_analytics_exclude_smoke_cycles(tmp_path: Path) -> None:
@@ -3958,3 +3975,184 @@ def test_dashboard_html_has_a_seniority_toggle_hidden_by_default(tmp_path: Path)
     assert "filter-show-noise" not in html_text
     assert "noise-note" not in html_text
     assert "showNoise" not in html_text
+
+
+# ---------------------------------------------------------------------------
+# DB-11: the report opens on live offers sighted in the last 30 days
+# ---------------------------------------------------------------------------
+
+
+def test_payload_marks_closed_and_stale_offers_with_their_sighting_age(
+    db_file: Path,
+) -> None:
+    """The payload carries closed and old offers; the live summary ignores them."""
+    jobs = _seed_dashboard_db(db_file)
+    conn = connect(db_file)
+    try:
+        with conn:
+            # job2 is closed; job3 was last sighted 46 days before ``NOW``.
+            conn.execute(
+                "UPDATE jobs SET is_active = 0 WHERE id = ?", (jobs["job2"],)
+            )
+            conn.execute(
+                "UPDATE jobs SET last_seen_at = ? WHERE id = ?",
+                ("2026-08-01T10:00:00Z", jobs["job3"]),
+            )
+    finally:
+        conn.close()
+
+    payload = _payload(db_file, top=None)
+    by_id = {offer["id"]: offer for offer in payload["offers"]}
+
+    # The window is one named constant, and the client receives it in the payload.
+    assert DEFAULT_VISIBLE_MAX_AGE_DAYS == 30
+    assert payload["defaults"] == {"max_age_days": DEFAULT_VISIBLE_MAX_AGE_DAYS}
+
+    # A fresh active offer: one whole day since the last sighting.
+    assert by_id[jobs["job1"]]["is_active"] is True
+    assert by_id[jobs["job1"]]["days_since_seen"] == 1
+    assert by_id[jobs["job1"]]["within_default_window"] is True
+    # A closed offer is still listed, flagged, with its sighting age, but the
+    # default view never shows it whatever its age.
+    assert by_id[jobs["job2"]]["is_active"] is False
+    assert by_id[jobs["job2"]]["days_since_seen"] == 1
+    assert by_id[jobs["job2"]]["within_default_window"] is False
+    # An active but stale offer keeps the real age that the default view filters on.
+    assert by_id[jobs["job3"]]["is_active"] is True
+    assert by_id[jobs["job3"]]["days_since_seen"] == 46
+    assert by_id[jobs["job3"]]["within_default_window"] is False
+
+    # Everything computed over the live inventory still counts active offers only.
+    assert payload["summary"]["active_jobs"] == 2
+    assert payload["summary"]["jobs_shown"] == 2
+    # job2's score leaves the live count with it: only job1 is scored.
+    assert payload["summary"]["scored"] == 1
+
+
+def test_unreadable_last_seen_counts_as_old_without_painting_an_age(
+    db_file: Path,
+) -> None:
+    """A sighting date that cannot be read is old, and the row shows no age."""
+    jobs = _seed_dashboard_db(db_file)
+    conn = connect(db_file)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE jobs SET last_seen_at = '' WHERE id = ?", (jobs["job1"],)
+            )
+    finally:
+        conn.close()
+
+    payload = _payload(db_file, top=None)
+    by_id = {offer["id"]: offer for offer in payload["offers"]}
+
+    assert by_id[jobs["job1"]]["is_active"] is True
+    assert by_id[jobs["job1"]]["days_since_seen"] is None
+    assert by_id[jobs["job1"]]["within_default_window"] is False
+
+
+def test_report_opens_on_live_offers_and_exposes_the_old_and_closed_toggle(
+    db_file: Path,
+) -> None:
+    """The default window and its toggle live in the one filtered path."""
+    html_text = generate_and_read(db_file)
+
+    assert re.search(
+        r'<div class="seg">\s*<button type="button" id="filter-old-closed"\s+'
+        r'aria-pressed="false"',
+        html_text,
+    )
+    assert "Mostrar antiguas y cerradas" in html_text
+    assert (
+        'document.getElementById("filter-old-closed").addEventListener("click"'
+        in html_text
+    )
+
+    # The default view is a filter like any other: it runs through ``matches``
+    # and comes back off when the filters are reset.
+    assert "function isWithinDefaultWindow(offer)" in html_text
+    assert "if (!filters.oldClosed && !isWithinDefaultWindow(offer)) { return false; }" in html_text
+    assert html_text.count("oldClosed: false") >= 2
+    assert 'filters.oldClosed = !filters.oldClosed;' in html_text
+
+    # Closed offers are marked and toned down; every readable row states its age.
+    assert '"chip closed", "cerrada"' in html_text
+    assert ".row.closed > summary { opacity:.55; }" in html_text
+    assert "visto hace " in html_text
+    assert 'return "visto ayer";' in html_text
+
+    # The window value comes from the payload; the client keeps no copy of 30.
+    assert "var defaultMaxAgeDays = 30;" not in html_text
+    assert "var defaultMaxAgeDays = payload.defaults.max_age_days;" in html_text
+    assert "function describeOldClosedToggle()" in html_text
+    assert "describeOldClosedToggle();" in html_text
+
+    # The seniority count and the "N de M" total follow the age/closed filter.
+    assert "offer.seniority_filter" in html_text
+    assert "(filters.oldClosed || isWithinDefaultWindow(offer))" in html_text
+    assert "var scope = filters.oldClosed" in html_text
+
+
+def test_an_offer_thirty_days_and_hours_old_is_hidden(
+    db_file: Path,
+) -> None:
+    """The window is decided on the exact age, not on the truncated day count."""
+    jobs = _seed_dashboard_db(db_file)
+
+    def set_last_seen(value: str) -> None:
+        conn = connect(db_file)
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE jobs SET last_seen_at = ? WHERE id = ?",
+                    (value, jobs["job1"]),
+                )
+        finally:
+            conn.close()
+
+    def offer() -> dict:
+        payload = _payload(db_file, top=None)
+        return {item["id"]: item for item in payload["offers"]}[jobs["job1"]]
+
+    # 30 days and 23 hours before ``NOW``: the painted age still reads 30.
+    set_last_seen("2026-08-16T13:00:00Z")
+    assert offer()["days_since_seen"] == 30
+    assert offer()["within_default_window"] is False
+
+    # Exactly 30 days is inside the window.
+    set_last_seen("2026-08-17T12:00:00Z")
+    assert offer()["days_since_seen"] == 30
+    assert offer()["within_default_window"] is True
+
+
+def test_explicit_top_bounds_active_and_closed_offers_together(
+    tmp_path: Path,
+) -> None:
+    """With ``--top`` the cap still caps the report, closed offers included."""
+    path = tmp_path / "many.sqlite3"
+    _seed_many_active_offers(path, 10, inactive=5)
+
+    output = tmp_path / "bounded.html"
+    summary = generate_dashboard(path, output, top=12)
+    payload = _extract_payload(output.read_text(encoding="utf-8"))
+
+    assert len(payload["offers"]) == 12
+    # The closed offers enter the same ordered list and count towards the cap:
+    # they were seeded last, so the highest ids and the freshest tie-break puts
+    # all five of them inside the twelve.
+    assert sum(1 for offer in payload["offers"] if not offer["is_active"]) == 5
+    # The summary line the sweep logs keeps counting active offers only.
+    assert summary.offers == sum(1 for offer in payload["offers"] if offer["is_active"])
+
+
+def test_summary_offers_counts_active_offers_only(tmp_path: Path) -> None:
+    """The "wrote ...: N offer(s)" line stays comparable across runs."""
+    path = tmp_path / "mixed.sqlite3"
+    _seed_many_active_offers(path, 3, inactive=2)
+
+    output = tmp_path / "mixed.html"
+    summary = generate_dashboard(path, output)
+    payload = _extract_payload(output.read_text(encoding="utf-8"))
+
+    assert len(payload["offers"]) == 5
+    assert summary.offers == 3

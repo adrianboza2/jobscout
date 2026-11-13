@@ -230,15 +230,26 @@ clave** y **Mercado**, y a la derecha **Exportar N decisiones**, que solo aparec
 navegador guarda alguna decisión. La vista de
 ofertas usa una única barra de herramientas horizontal, con búsqueda por texto,
 la recomendación del modelo, **Solo nuevas** (ofertas vistas por primera vez en
-el último barrido) y un selector de score mínimo (`Score ≥ 0`, `≥ 50`, `≥ 70`);
-ya no hay rail lateral ni tarjetas KPI. Las tipografías (Charis SIL, Inter y DM Mono,
+el último barrido), **Mostrar antiguas y cerradas** y un selector de score
+mínimo (`Score ≥ 0`, `≥ 50`, `≥ 70`); ya no hay rail lateral ni tarjetas KPI. Al
+abrirse, la lista enseña solo las ofertas activas vistas en los últimos 30 días
+(`DEFAULT_VISIBLE_MAX_AGE_DAYS`): las más antiguas y las cerradas siguen en la
+base y en el payload, marcadas con su antigüedad y como cerradas, y aparecen al
+pulsar **Mostrar antiguas y cerradas**, que vuelve a desactivarse al recargar.
+El contador de la pestaña Ofertas cuenta lo que la vista enseña, filtros
+incluidos, y el «N de M ofertas» usa como total lo que el conmutador ofrece en
+ese momento (la ventana por defecto, o todas). El contador de «ocultas por
+seniority» también se calcula sobre esas mismas ofertas, no sobre todas las
+activas. Las tipografías (Charis SIL, Inter y DM Mono,
 licencia OFL, en `src/jobscout/fonts/`) también van embebidas como `data:` URIs, así que el archivo se ve igual desde `file://` sin instalar
 fuentes ni pedir nada a la red.
 
 Cada oferta es **una fila de una línea**: puntaje con barra coloreada por banda
 (≥ 70 / ≥ 50), título, empresa y ubicación, etiquetas (recomendación, `nueva`,
 `⚠ flag` o `veto` de la preferencia), salario con su procedencia (`indicado` o
-`sin dato`; nunca se inventa una cifra) y antigüedad. Una evaluación fallida se
+`sin dato`; nunca se inventa una cifra) y antigüedad; la línea de empresa y
+ubicación cierra con «visto hace N días» (hoy / ayer / hace N días) y una oferta
+cerrada se atenúa y lleva la etiqueta `cerrada`. Una evaluación fallida se
 muestra como `sin evaluar (error)`, nunca como 0. Las filas se pintan de 50 en 50
 (**Mostrar 50 más**) y el detalle se construye solo al abrir la fila:
 justificación completa del modelo (ya no se recorta), salario indicado, Puntos fuertes / Carencias
@@ -269,10 +280,12 @@ Start-Process reports\jobscout-dashboard.html
 ```
 
 - Ruta de salida predeterminada: `reports/jobscout-dashboard.html` (ignorada por
-  Git). Por defecto el informe embebe **todas las ofertas activas**; `--top N`
-  limita el informe a las `N` mejores y sigue teniendo el mismo tope explícito de
-  siempre. Las ofertas desactivadas siguen guardadas en SQLite pero quedan fuera
-  por `is_active = 1`. Las barras inclinadas también funcionan en
+  Git). Por defecto el informe embebe todas las ofertas activas y también las
+  cerradas, marcadas como tales; `--top N` limita la lista entera (activas y
+  cerradas, en el mismo orden) a las `N` mejores y sigue teniendo el mismo tope
+  explícito de siempre. Las cerradas no cuentan para ninguna cifra del resumen y
+  la vista las oculta hasta que pulsas **Mostrar antiguas y cerradas**. Las
+  barras inclinadas también funcionan en
   Windows: `--output reports/dashboard.html`.
 - El informe nunca embebe la descripción de la oferta, payloads crudos, el
   perfil, datos de contacto, claves de API ni rutas locales absolutas.
@@ -1188,7 +1201,8 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
   mínimo.
 - El tablero embebe por defecto todas las ofertas activas; `--top N` limita el
   informe a las `N` mejores, pero la analítica de palabras clave se calcula sobre
-  toda la base. Las ofertas desactivadas siguen guardadas pero no se muestran.
+  toda la base. Las ofertas desactivadas siguen guardadas y viajan marcadas como
+  cerradas, ocultas hasta que las pides con **Mostrar antiguas y cerradas**.
 - `keyword-plan` no ejecuta búsquedas: imprime el plan acotado, el bloque de
   Tecnoempleo (`browse` + `prácticas`) y el comando por consulta. No existe una
   corrida por lote que dispare varias búsquedas en vivo; cada query es un

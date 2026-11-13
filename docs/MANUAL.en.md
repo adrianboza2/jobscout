@@ -228,15 +228,25 @@ adds no alert. It offers three tabs, **Ofertas**, **Palabras clave** and
 **Mercado**, with **Exportar N
 decisiones** on the right, shown only while this browser holds a decision. The offers view uses a single horizontal toolbar
 with text search, the model recommendation, **Solo nuevas** (offers first seen
-in the latest sweep) and a minimum-score select (`Score ≥ 0`, `≥ 50`, `≥ 70`);
-there is no side rail and no KPI cards. The typefaces (Charis SIL, Inter and DM Mono,
+in the latest sweep), **Mostrar antiguas y cerradas** and a minimum-score select
+(`Score ≥ 0`, `≥ 50`, `≥ 70`); there is no side rail and no KPI cards. On open,
+the list shows only active offers seen within the last 30 days
+(`DEFAULT_VISIBLE_MAX_AGE_DAYS`): older and closed offers stay in the database
+and in the payload, carry their age and a closed mark, and appear when
+**Mostrar antiguas y cerradas** is pressed, which goes back to off on reload.
+The Ofertas tab counter counts what the view shows, filters included, and the
+"N de M ofertas" line uses as its total whatever the toggle offers right then
+(the default window, or all offers). The "ocultas por seniority" count is
+computed over those same offers too, not over every active one. The typefaces (Charis SIL, Inter and DM Mono,
 OFL-licensed, in `src/jobscout/fonts/`) are embedded as `data:` URIs too, so the file looks the same from `file://` without installed fonts or
 any network request.
 
 Each offer is **a one-line row**: score with a bar coloured by band (≥ 70 / ≥ 50),
 title, company and location, chips (recommendation, `nueva`, the preference's
 `⚠ flag` or `veto`), salary with its provenance (`indicado` or `sin dato`; a
-number is never invented) and age. A failed evaluation shows as `sin evaluar
+number is never invented) and age; the company and location line closes with
+"visto hace N días" (hoy / ayer / hace N días) and a closed offer is toned down
+and carries a `cerrada` chip. A failed evaluation shows as `sin evaluar
 (error)`, never as 0. Rows are painted 50 at a time (**Mostrar 50 más**) and the
 detail is built only when a row is opened: the model's full rationale (no longer
 truncated), the stated salary, Puntos fuertes / Carencias / Bloqueos / Incógnitas when the
@@ -264,9 +274,11 @@ Start-Process reports\jobscout-dashboard.html
 ```
 
 - Default output path: `reports/jobscout-dashboard.html` (git-ignored). By default
-  the report embeds **every active offer**; `--top N` bounds it to the best `N`
-  and keeps the same explicit cap as before. Deactivated offers stay in SQLite but
-  are excluded by `is_active = 1`. Forward slashes also work on Windows:
+  the report embeds every active offer and every closed one, marked as such;
+  `--top N` bounds the whole list (active and closed together, in the same
+  order) to the best `N` and keeps the same explicit cap as before. Closed
+  offers count towards no summary figure, and the view hides them until you
+  press **Mostrar antiguas y cerradas**. Forward slashes also work on Windows:
   `--output reports/dashboard.html`.
 - The report never embeds the job description, raw payloads, the profile,
   contact data, API keys, or absolute local paths.
@@ -1159,7 +1171,8 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
 - Salary parsing is heuristic and only used when the profile defines a minimum.
 - The dashboard embeds every active offer by default; `--top N` bounds the report
   to the best `N`, but keyword analytics are computed over the whole database.
-  Deactivated offers stay saved but are not shown.
+  Deactivated offers stay saved and travel marked closed, hidden until they are
+  asked for with **Mostrar antiguas y cerradas**.
 - `keyword-plan` does not run searches: it prints the bounded plan, the
   Tecnoempleo block (`browse` + `prácticas`), and one command per query. There is
   no batch mode that fires several live searches at once; each query is an

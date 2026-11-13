@@ -799,8 +799,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "maximum offers to embed, best scored first "
-            "(default: every active offer)"
+            "maximum offers to embed, active and closed together, best "
+            "scored first (default: every offer)"
         ),
     )
     dashboard_parser.set_defaults(handler=cmd_dashboard)

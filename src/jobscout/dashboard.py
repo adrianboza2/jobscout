@@ -71,8 +71,14 @@ DEFAULT_OUTPUT = Path("reports/jobscout-dashboard.html")
 #: Default number of ranked offers embedded in the report. ``None`` means every
 #: active offer: the report is a local, read-only inventory, so the default must
 #: not silently hide active offers behind an implicit cap. Deactivated offers
-#: stay in SQLite but are excluded by the ``is_active = 1`` query.
+#: are embedded too (marked closed) but never counted towards ``top``.
 DEFAULT_TOP: int | None = None
+
+#: Age window in days, measured from ``last_seen_at``, the report opens with:
+#: only active offers sighted within it are visible. Older and closed offers
+#: stay in the payload and appear when the reader asks for them, so the top of
+#: the list is always something still worth applying to.
+DEFAULT_VISIBLE_MAX_AGE_DAYS = 30
 
 #: Hard cap on an explicit ``--top``. The whole payload is embedded in one HTML
 #: file, so an unbounded *explicit* value would let a typo build a report large
@@ -331,23 +337,28 @@ def _concisify(text: str | None) -> str:
     return collapsed[: MAX_FIELD_CHARS - 1].rstrip() + "\u2026"
 
 
-def _fetch_active_jobs(
-    conn: sqlite3.Connection, *, top: int | None
+def _fetch_jobs(
+    conn: sqlite3.Connection, *, top: int | None, is_active: int | None = 1
 ) -> list[sqlite3.Row]:
-    """Active jobs ranked by latest successful score, then freshness.
+    """Jobs ranked by score, then freshness, filtered by ``is_active``.
 
     The ``latest_evaluations`` view is the same source of truth ``rank`` and
     ``list`` use, so the dashboard never disagrees with the CLI. ``top`` is
-    ``None`` for the all-active-offers default; SQLite treats a negative
-    ``LIMIT`` as "no upper bound", so the same statement serves both cases.
+    ``None`` for the all-offers default; SQLite treats a negative ``LIMIT`` as
+    "no upper bound", so the same statement serves both cases. ``is_active``
+    ``None`` keeps active and closed offers in one ordered list, so an explicit
+    ``top`` bounds them together.
 
     The link is the most recently seen live listing (same provider first), not
     the first URL ever stored: a repost's old id often points to a closed ad.
     """
     limit = -1 if top is None else int(top)
+    where = "" if is_active is None else "WHERE j.is_active = ?"
+    params = (limit,) if is_active is None else (int(is_active), limit)
     return conn.execute(
-        """
+        f"""
         SELECT j.id AS id,
+               j.is_active AS is_active,
                j.title AS title,
                j.company AS company,
                j.location AS location,
@@ -392,7 +403,7 @@ def _fetch_active_jobs(
             ORDER BY x.id DESC
             LIMIT 1
         )
-        WHERE j.is_active = 1
+        {where}
         ORDER BY (e.overall_score IS NULL),
                  e.overall_score DESC,
                  COALESCE(e.confidence, 0) DESC,
@@ -400,7 +411,7 @@ def _fetch_active_jobs(
                  j.id DESC
         LIMIT ?
         """,
-        (limit,),
+        params,
     ).fetchall()
 
 
@@ -1035,8 +1046,10 @@ def build_payload(
 ) -> dict[str, Any]:
     """Build the serializable dashboard payload from the database.
 
-    ``top=None`` (the default) embeds every active offer; an explicit positive
-    integer bounds the embedded offers. Only report-safe fields are included.
+    ``top=None`` (the default) embeds every active offer plus every deactivated
+    one, marked with ``is_active`` false; an explicit positive integer bounds the
+    whole list, active and closed together in the same order. Only report-safe
+    fields are included.
     ``database_label`` is an optional human label (a filename, never an absolute
     path) shown in the header. ``db_path`` is the database the connection reads
     from; when given, each offer also carries its company's stored dossier
@@ -1050,7 +1063,14 @@ def build_payload(
     top = _validate_top(top)
     reference = now or utcnow()
     dossiers = load_dossiers(db_path) if db_path is not None else {}
-    rows = _fetch_active_jobs(conn, top=top)
+    if top is None:
+        rows = _fetch_jobs(conn, top=None, is_active=1) + _fetch_jobs(
+            conn, top=None, is_active=0
+        )
+    else:
+        # An explicit ``--top`` still caps the report: it bounds the whole list
+        # in one order rather than growing by every closed offer.
+        rows = _fetch_jobs(conn, top=top, is_active=None)
     job_ids = [int(row["id"]) for row in rows]
     keyword_keys_by_job = _fetch_job_keyword_keys(conn, job_ids)
     # The imported decision read does not consult ``cycle_id``; the latest sweep
@@ -1070,6 +1090,18 @@ def build_payload(
         age_days = _age_days(posted_at, now=reference)
         if age_days is None:
             age_days = _age_days(first_seen_at, now=reference)
+        # Whole days since the provider last confirmed the posting, for display
+        # only. ``None`` when the timestamp is missing or unreadable: the client
+        # then paints no age rather than guessing.
+        seen_age = _age_days_exact(row["last_seen_at"], now=reference)
+        days_since_seen = None if seen_age is None else int(seen_age)
+        # The default view's decision, taken on the exact age: truncating to
+        # whole days would let an offer 30 days and 23 hours old pass as 30.
+        within_default_window = bool(
+            row["is_active"]
+            and seen_age is not None
+            and seen_age <= DEFAULT_VISIBLE_MAX_AGE_DAYS
+        )
         score = row["score"]
         state = states[job_id]
         # Preference is a second, independent axis. It is recomputed from the
@@ -1096,6 +1128,14 @@ def build_payload(
                 "url": _safe_url(row["url"]),
                 "is_new": _is_new(first_seen_at, last_sweep_at),
                 "age_days": age_days,
+                # False for a deactivated offer: the report still carries it
+                # (history, feedback) but hides it and marks it closed.
+                "is_active": bool(row["is_active"]),
+                # Whole days since the last sighting, for the card only.
+                "days_since_seen": days_since_seen,
+                # Whether the report's default view shows this offer; decided
+                # here on the exact age so the client never re-does the maths.
+                "within_default_window": within_default_window,
                 "salary": _salary(row["salary"]),
                 "salary_est": _salary_est(row),
                 "score": round(float(score), 2) if score is not None else None,
@@ -1160,9 +1200,12 @@ def build_payload(
     # are rendered so the table can grey them instead of hiding them.
     active_keyword_stats = [item for item in keyword_stats if not item["retired"]]
     retired_keyword_stats = [item for item in keyword_stats if item["retired"]]
+    # Every summary and warning figures below describe the live inventory, so
+    # the closed offers stay out of them even though the payload carries them.
+    active_offers = [offer for offer in offers if offer["is_active"]]
     summary = _summary(
         conn,
-        offers,
+        active_offers,
         keyword_count=len(keyword_stats),
         retired_keyword_count=len(retired_keyword_stats),
     )
@@ -1180,6 +1223,8 @@ def build_payload(
         "database_label": database_label,
         "generated_at": utcnow_iso(),
         "limits": {"top": top},
+        # The window the report opens with, so the client never hardcodes it.
+        "defaults": {"max_age_days": DEFAULT_VISIBLE_MAX_AGE_DAYS},
         "summary": summary,
         "status": status,
         "warnings": _warnings(summary, keyword_count=len(keyword_stats)),
@@ -1365,6 +1410,10 @@ __STYLE__
       <div class="seg">
         <button type="button" id="filter-new" aria-pressed="false"
           title="Muestra solo las ofertas nuevas del último barrido">Solo nuevas</button>
+      </div>
+      <div class="seg">
+        <button type="button" id="filter-old-closed"
+          aria-pressed="false">Mostrar antiguas y cerradas</button>
       </div>
       <div class="seg">
         <button type="button" id="filter-show-seniority" aria-pressed="false"
@@ -1641,6 +1690,10 @@ header.masthead { position:sticky; top:0; z-index:20; background:var(--paper);
 .salbox dd.sal-stated { color:var(--money); font-weight:600; }
 .salbox dd.sal-est .tier, .salbox dd.sal-est .basis { color:var(--ink-3); font-size:var(--fs-12); margin-top:var(--sp-2); }
 .age { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3); text-align:right; font-variant-numeric:tabular-nums; }
+/* A closed offer stays readable as history but is toned down so it never reads
+   as something still worth applying to. */
+.row.closed > summary { opacity:.55; }
+.chip.closed { border-color:var(--rule); color:var(--ink-3); }
 .chev { color:var(--ink-3); transition:transform .15s; }
 .row[open] .chev { transform:rotate(90deg); }
 .row[open] > summary { background:var(--sheet); }
@@ -1791,7 +1844,10 @@ _SCRIPT = r"""
   });
   if (pruned) { saveFeedback(); }
 
-  var filters = { text: "", recommendation: "", isNew: false, showSeniority: false, minScore: null, keyword: "", sort: "score" };
+  var filters = { text: "", recommendation: "", isNew: false, showSeniority: false, oldClosed: false, minScore: null, keyword: "", sort: "score" };
+  // The window the report opens with, sent by Python so it is set in one place.
+  // Old and closed offers stay in the payload and wait behind the toggle.
+  var defaultMaxAgeDays = payload.defaults.max_age_days;
 
   function labelFrom(map, value, fallback) {
     return Object.prototype.hasOwnProperty.call(map, value) ? map[value] : fallback;
@@ -1962,7 +2018,16 @@ _SCRIPT = r"""
     return "unscored";
   }
 
+  // The report's default view, decided in Python on the exact sighting age so
+  // the client never re-does the comparison; an unreadable date is not fresh.
+  function isWithinDefaultWindow(offer) {
+    return offer.within_default_window === true;
+  }
+
   function matches(offer) {
+    // Old and closed offers stay in the payload but are hidden until the toggle
+    // asks for them.
+    if (!filters.oldClosed && !isWithinDefaultWindow(offer)) { return false; }
     // Filtered offers stay in the payload but are hidden until the rail toggle
     // asks for them; a shown filtered offer still displays its reason.
     if (offer.seniority_filter && !filters.showSeniority) { return false; }
@@ -2268,11 +2333,22 @@ _SCRIPT = r"""
     return parts.join(" \u00b7 ");
   }
 
+  // Days since the provider last confirmed the posting, for the metadata line.
+  // An unreadable date paints nothing rather than a made-up age.
+  function seenText(offer) {
+    if (typeof offer.days_since_seen !== "number") { return ""; }
+    if (offer.days_since_seen <= 0) { return "visto hoy"; }
+    if (offer.days_since_seen === 1) { return "visto ayer"; }
+    return "visto hace " + offer.days_since_seen + " días";
+  }
+
   function renderRow(offer) {
     var item = el("li");
     var details = el("details", "row");
     details.setAttribute("data-job-id", String(offer.id));
     if (isReviewed(offer)) { details.classList.add("reviewed"); }
+    // Closed offers are toned down so they never read as still applicable.
+    if (offer.is_active === false) { details.classList.add("closed"); }
 
     var summary = el("summary");
     var scoreNode;
@@ -2309,6 +2385,8 @@ _SCRIPT = r"""
     titleBox.appendChild(el("div", "t", offer.title));
     var subtitle = offer.company;
     if (offer.location) { subtitle += " \u00b7 " + offer.location; }
+    var seen = seenText(offer);
+    if (seen) { subtitle += " \u00b7 " + seen; }
     titleBox.appendChild(el("div", "c", subtitle));
     summary.appendChild(titleBox);
 
@@ -2338,6 +2416,9 @@ _SCRIPT = r"""
       var seniorityChip = el("span", "chip seniority", offer.seniority_filter);
       seniorityChip.title = "Oculta por defecto: " + offer.seniority_filter;
       chips.appendChild(seniorityChip);
+    }
+    if (offer.is_active === false) {
+      chips.appendChild(el("span", "chip closed", "cerrada"));
     }
     summary.appendChild(chips);
 
@@ -2478,22 +2559,41 @@ _SCRIPT = r"""
     shownOffers = 0;
     renderBatch();
     document.getElementById("empty-state").hidden = matchedOffers.length !== 0;
+    // The denominator is what the old/closed toggle currently offers: the
+    // default window, or every embedded offer once it is on.
+    var scope = filters.oldClosed
+      ? payload.offers : payload.offers.filter(isWithinDefaultWindow);
     var resultCount = document.getElementById("result-count");
-    resultCount.textContent = (matchedOffers.length === payload.offers.length)
+    resultCount.textContent = (matchedOffers.length === scope.length)
       ? matchedOffers.length + " ofertas"
-      : matchedOffers.length + " de " + payload.offers.length + " ofertas";
+      : matchedOffers.length + " de " + scope.length + " ofertas";
+    // The tab counts what the reader can actually see: the payload also carries
+    // old and closed offers that the default view hides.
     var offersTab = document.getElementById("tab-offers-count");
-    if (offersTab) { offersTab.textContent = String(payload.offers.length); }
+    if (offersTab) { offersTab.textContent = String(matchedOffers.length); }
   }
 
   // The rail shows the hidden count even while the offers are hidden, so the
   // reader knows the list is filtered and can reveal it from the keyboard.
   function refreshSeniorityFilterState() {
     var button = document.getElementById("filter-show-seniority");
-    var count = Number((payload.summary && payload.summary.seniority_filtered) || 0);
+    // Counted over the offers the age/closed window lets through right now, so
+    // the number is exactly what the toggle would reveal.
+    var count = payload.offers.filter(function (offer) {
+      return Boolean(offer.seniority_filter)
+        && (filters.oldClosed || isWithinDefaultWindow(offer));
+    }).length;
     button.setAttribute("aria-pressed", filters.showSeniority ? "true" : "false");
     button.textContent =
       (filters.showSeniority ? "Ocultar " : "Mostrar ") + count + " ocultas por seniority";
+  }
+
+  // The toggle explains its window with the value Python sent, so the number
+  // lives in one place and never drifts from the actual filter.
+  function describeOldClosedToggle() {
+    document.getElementById("filter-old-closed").title =
+      "Las ofertas vistas hace más de " + defaultMaxAgeDays +
+      " días y las cerradas se ocultan por defecto";
   }
 
   // The toolbar mirrors every control's state, so a filter is never active
@@ -2501,6 +2601,8 @@ _SCRIPT = r"""
   function refreshFilterState() {
     document.getElementById("filter-new").setAttribute(
       "aria-pressed", filters.isNew ? "true" : "false");
+    document.getElementById("filter-old-closed").setAttribute(
+      "aria-pressed", filters.oldClosed ? "true" : "false");
     var buttons = document.getElementById("filter-recommendation").querySelectorAll("button");
     for (var i = 0; i < buttons.length; i++) {
       var selected = buttons[i].getAttribute("data-value") === filters.recommendation;
@@ -2687,7 +2789,7 @@ _SCRIPT = r"""
   }
 
   function resetFilters() {
-    filters = { text: "", recommendation: "", isNew: false, showSeniority: false, minScore: null, keyword: "", sort: "score" };
+    filters = { text: "", recommendation: "", isNew: false, showSeniority: false, oldClosed: false, minScore: null, keyword: "", sort: "score" };
     document.getElementById("filter-text").value = "";
     document.getElementById("filter-min-score").value = "0";
     document.getElementById("filter-keyword").value = "";
@@ -2709,6 +2811,10 @@ _SCRIPT = r"""
     });
     document.getElementById("filter-new").addEventListener("click", function () {
       filters.isNew = !filters.isNew;
+      applyFilters();
+    });
+    document.getElementById("filter-old-closed").addEventListener("click", function () {
+      filters.oldClosed = !filters.oldClosed;
       applyFilters();
     });
     document.getElementById("filter-show-seniority").addEventListener("click", function () {
@@ -2738,6 +2844,7 @@ _SCRIPT = r"""
   bindTabs();
   bindBackToTop();
   populateKeywordFilter();
+  describeOldClosedToggle();
   renderKeywordTable();
   renderMarket();
   bindFilters();
@@ -2948,7 +3055,9 @@ def generate_dashboard(
 
     return DashboardSummary(
         output=target,
-        offers=len(payload["offers"]),
+        # Active offers only: the payload also carries closed ones, and this
+        # count is what the sweep log compares across runs.
+        offers=int(payload["summary"]["jobs_shown"]),
         scored=int(payload["summary"]["scored"]),
         # The CLI reports every analyzed series (retired included), matching
         # ``payload['summary']['keywords']``; the table itself shows active ones.
