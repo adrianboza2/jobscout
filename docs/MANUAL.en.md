@@ -482,10 +482,10 @@ subcommand), and `--version`.
 | `search-getmanfred [--keywords K] [--max-age-days N] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Public GetManfred sitemap inventory. `--keywords` applies a **local** title/slug filter (no fan-out, no private endpoint). `--max-age-days` skips entries whose `lastmod` is older than N days (default 120; `0` = no cut). No ranking. Disabled without `--confirm-network`. |
 | `search-tecnoempleo (--keywords K [--location L] \| --browse) [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Bounded Tecnoempleo public server-rendered search. `--browse` walks Madrid offers by professional function; it is mutually exclusive with `--keywords` and `--location`. Enforces `robots.txt` at run time. Disabled without `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | List the keyword families and the exact command per query (no network, no database). |
-| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N]] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich LinkedIn jobs with the full description. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence. |
+| `fetch-details [--job-id ID… \| --all \| --refresh [--stale-days N] \| --unseen-days N] [--max-items N] [--dry-run \| --fixture PATH \| --confirm-network] [--label L]` | Enrich LinkedIn jobs with the full description. Defaults to jobs that are not yet enriched; `--refresh` revisits already-fetched offers with stale or retryable evidence; `--unseen-days N` re-checks the best offers no search has returned for N days. |
 | `backfill-salary [--dry-run]` | Fill the salary of already-enriched LinkedIn and Tecnoempleo offers from their description or the stored detail page (one-off, offline). |
-| `fetch-tecnoempleo-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enrich Tecnoempleo offers from their public detail page, including the salary when the page publishes it. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
-| `fetch-getmanfred-details [--job-id ID… \| --all] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enrich GetManfred offers from the recognized `JobPosting` JSON-LD on their public page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
+| `fetch-tecnoempleo-details [--job-id ID… \| --all \| --unseen-days N] [--max-items N] [--dry-run \| --confirm-network] [--label L]` | Enrich Tecnoempleo offers from their public detail page, including the salary when the page publishes it. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
+| `fetch-getmanfred-details [--job-id ID… \| --all \| --unseen-days N] [--max-items N] [--dry-run \| --confirm-network] [--robots PATH] [--label L]` | Enrich GetManfred offers from the recognized `JobPosting` JSON-LD on their public page. Re-reads `robots.txt`; no login or cookies. Disabled without `--confirm-network`. |
 | `list [--limit N] [--min-score S] [--include-inactive]` | Recent jobs with their latest score; `[needs re-score]` flags out-of-date scores. |
 | `rank [--top N] [--min-score S]` | Jobs with a successful score, best first; same `[needs re-score]` flag. |
 | `score (--job-id ID… \| --all) [--scorer heuristic\|llm\|opencode] [--scorer-model MODEL] [--effort EFFORT] [--limit N] [--rescore]` | Evaluate jobs and print the explainable result. `--all` skips senior titles and offers waiting for details before `--limit`; `--job-id` forces both. |
@@ -1206,3 +1206,29 @@ The date sort (`sortBy=DD`) was tried on 2026-11-13 and the guest endpoint
 **does not apply it**: the response arrived in the order LinkedIn serves, not
 newest first. It is therefore not sent. The stored position remains observed
 provenance only, never a ranking.
+
+## Re-checking offers that stop appearing (EO-04, 2026-11-13)
+
+Every search returns only the head of its results, so many active offers stop
+showing up even though they are still open, or they close without anyone
+checking. `--unseen-days N` (on `fetch-details`, `fetch-tecnoempleo-details` and
+`fetch-getmanfred-details`) selects active offers no search has returned for N
+days, provided the latest detail attempt from that same provider is not a recent
+real answer: an offer checked in the previous batch is not requested again, but
+a 429/403, a transport failure with no response, or a skipped attempt is not a
+check and does not exclude it. `N` must be between 1 and 3650.
+
+```bash
+python -m jobscout fetch-details --unseen-days 14 --max-items 20 --dry-run --json
+```
+
+It is just another selection, mutually exclusive with `--job-id`, `--all` and
+`--refresh`: nothing changes in how an offer is stored or closed; a detail page
+that answers `404`/`410` or carries the closed marker deactivates the offer as
+always. The order is the latest `ok` score, highest first (unscored last), then
+the stalest sighting, then the id, so the `--max-items` budget is spent on the
+best offers that have gone quiet. When an offer has several active variants of
+the same provider only the most recently seen is requested, as in the
+dashboard. The JSON output adds `"selection": "unseen"`, `"unseen_days": N`
+and `"cutoff"`, like `--refresh`; an empty selection succeeds with no requests,
+exactly like an empty `--refresh`.

@@ -37,6 +37,7 @@ from jobscout.db import (
     all_active_jobs,
     connect,
     count_jobs_needing_refresh,
+    count_variants_unseen_since,
     deactivate_job,
     detail_fetches_for_job,
     get_job,
@@ -53,6 +54,7 @@ from jobscout.db import (
     list_jobs,
     store_posting,
     update_job_content,
+    variants_unseen_since,
 )
 from jobscout.models import (
     ContentStatus,
@@ -62,6 +64,7 @@ from jobscout.models import (
     JobDetailFetch,
     RawDocument,
     RawDocumentKind,
+    Recommendation,
     ScorerName,
     SearchRunStatus,
 )
@@ -541,13 +544,14 @@ def _insert_fetch(
     fetched_at: str | None = None,
     stored_at: str = "2026-09-15T12:00:00Z",
     raw_document_id: int | None = None,
+    source: str = "linkedin",
 ) -> None:
     """Persist one detail-fetch attempt with explicit timestamps/provenance."""
     insert_detail_fetch(
         conn,
         JobDetailFetch(
             job_id=int(job.id),
-            source="linkedin",
+            source=source,
             url=f"https://www.linkedin.com/jobs/view/{job.source_job_id}/role",
             status=status,
             http_status=http_status,
@@ -2207,3 +2211,461 @@ def job_detail_fetch_count_for(db_path: Path) -> int:
         return job_detail_fetch_count(connection)
     finally:
         connection.close()
+
+
+# ---------------------------------------------------------------------------
+# Unseen re-check selection (--unseen-days) — EO-04, 2026-11-13
+# ---------------------------------------------------------------------------
+
+
+#: A sighting/detail attempt before this instant is "unseen" for these tests.
+UNSEEN_CUTOFF = "2026-09-01T00:00:00Z"
+
+
+def _set_job_last_seen(conn, job, *, at: str) -> None:
+    """Overwrite the job-level sighting timestamp (selection reads only it)."""
+    with conn:
+        conn.execute("UPDATE jobs SET last_seen_at = ? WHERE id = ?", (at, int(job.id)))
+
+
+def _score(conn, job, *, overall: float) -> None:
+    insert_evaluation(
+        conn,
+        Evaluation(
+            job_id=int(job.id),
+            scorer=ScorerName.HEURISTIC,
+            overall_score=overall,
+            recommendation=Recommendation.APPLY,
+        ),
+    )
+
+
+def _insert_variant(
+    conn, job, *, source: str, source_job_id: str, url: str, last_seen_at: str
+) -> int:
+    with conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO job_variants (
+                job_id, source, source_job_id, url, first_seen_at, last_seen_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (int(job.id), source, source_job_id, url, last_seen_at, last_seen_at),
+        )
+    return int(cursor.lastrowid)
+
+
+def test_variants_unseen_since_order_scores_first_then_oldest_sighting(conn) -> None:
+    high = _store_card(conn, "3923000001")
+    low = _store_card(conn, "3923000002")
+    unscored = _store_card(conn, "3923000003")
+    unscored_older = _store_card(conn, "3923000004")
+    _set_job_last_seen(conn, high, at="2026-08-10T00:00:00Z")
+    _set_job_last_seen(conn, low, at="2026-08-01T00:00:00Z")
+    _set_job_last_seen(conn, unscored, at="2026-07-01T00:00:00Z")
+    _set_job_last_seen(conn, unscored_older, at="2026-06-01T00:00:00Z")
+    _score(conn, high, overall=91.0)
+    _score(conn, low, overall=47.5)
+
+    selected = [
+        job.id for job in variants_unseen_since(conn, source="linkedin", cutoff=UNSEEN_CUTOFF)
+    ]
+    # Scored offers first (highest score), unscored last; each group oldest
+    # sighting first, so a bounded batch spends the budget on the best offers.
+    assert selected == [high.id, low.id, unscored_older.id, unscored.id]
+    assert count_variants_unseen_since(conn, source="linkedin", cutoff=UNSEEN_CUTOFF) == 4
+    # A cap reports the same prefix; the count stays the full selection.
+    capped = variants_unseen_since(
+        conn, source="linkedin", cutoff=UNSEEN_CUTOFF, limit=2
+    )
+    assert [job.id for job in capped] == [high.id, low.id]
+
+
+def test_variants_unseen_since_skips_recent_sightings_and_checks(conn) -> None:
+    recently_seen = _store_card(conn, "3923100001")
+    recently_checked = _store_card(conn, "3923100002")
+    never_checked = _store_card(conn, "3923100003")
+    stale_check = _store_card(conn, "3923100004")
+    resighted_after_check = _store_card(conn, "3923100005")
+    closed = _store_card(conn, "3923100006")
+
+    # Unseen but sighted after the cutoff: still in the searches' reach.
+    _set_job_last_seen(conn, recently_seen, at="2026-09-10T00:00:00Z")
+    # Quiet offer whose last detail attempt is recent: already been re-checked.
+    _set_job_last_seen(conn, recently_checked, at="2026-08-01T00:00:00Z")
+    _insert_fetch(
+        conn, recently_checked, status=DetailFetchStatus.OK, fetched_at="2026-09-05T00:00:00Z"
+    )
+    # Quiet offer never detail-checked: selected.
+    _set_job_last_seen(conn, never_checked, at="2026-08-01T00:00:00Z")
+    # Quiet offer whose last attempt is older than the cutoff: selected again.
+    _set_job_last_seen(conn, stale_check, at="2026-08-01T00:00:00Z")
+    _insert_fetch(
+        conn, stale_check, status=DetailFetchStatus.OK, fetched_at="2026-08-15T00:00:00Z"
+    )
+    # An older stale attempt followed by a recent one: the latest attempt wins.
+    _set_job_last_seen(conn, resighted_after_check, at="2026-08-01T00:00:00Z")
+    _insert_fetch(
+        conn, resighted_after_check, status=DetailFetchStatus.OK, fetched_at="2026-07-01T00:00:00Z"
+    )
+    _insert_fetch(
+        conn,
+        resighted_after_check,
+        status=DetailFetchStatus.FAILED,
+        http_status=404,
+        stored_at="2026-09-06T00:00:00Z",
+    )
+    # A closed offer is never requested again, whatever its age.
+    _set_job_last_seen(conn, closed, at="2026-06-01T00:00:00Z")
+    deactivate_job(conn, int(closed.id))
+
+    selected = [
+        job.id for job in variants_unseen_since(conn, source="linkedin", cutoff=UNSEEN_CUTOFF)
+    ]
+    assert set(selected) == {never_checked.id, stale_check.id}
+    assert count_variants_unseen_since(conn, source="linkedin", cutoff=UNSEEN_CUTOFF) == 2
+
+
+def test_variants_unseen_since_ignores_non_answers(conn) -> None:
+    rate_limited = _store_card(conn, "3923400001")
+    transport = _store_card(conn, "3923400002")
+    skipped = _store_card(conn, "3923400003")
+    temporary = _store_card(conn, "3923400004")
+    for job in (rate_limited, transport, skipped, temporary):
+        _set_job_last_seen(conn, job, at="2026-07-01T00:00:00Z")
+
+    # A 429/403 is the site refusing, not answering: the offer was not checked.
+    _insert_fetch(
+        conn,
+        rate_limited,
+        status=DetailFetchStatus.FAILED,
+        http_status=429,
+        stored_at="2026-09-10T00:00:00Z",
+    )
+    # No HTTP response at all: a transport failure.
+    _insert_fetch(
+        conn,
+        transport,
+        status=DetailFetchStatus.FAILED,
+        stored_at="2026-09-10T00:00:00Z",
+    )
+    # The fetcher skipped the placeholder without asking anything.
+    _insert_fetch(
+        conn,
+        skipped,
+        status=DetailFetchStatus.SKIPPED,
+        stored_at="2026-09-10T00:00:00Z",
+    )
+    # A 5xx is a real answer but not a definitive one; still not a check.
+    _insert_fetch(
+        conn,
+        temporary,
+        status=DetailFetchStatus.FAILED,
+        http_status=503,
+        stored_at="2026-09-10T00:00:00Z",
+    )
+
+    selected = {
+        job.id
+        for job in variants_unseen_since(conn, source="linkedin", cutoff=UNSEEN_CUTOFF)
+    }
+    assert selected == {rate_limited.id, transport.id, skipped.id, temporary.id}
+    assert count_variants_unseen_since(conn, source="linkedin", cutoff=UNSEEN_CUTOFF) == 4
+
+
+def test_variants_unseen_since_ignores_another_providers_recent_check(conn) -> None:
+    job = _store_card(conn, "3923500001")
+    _set_job_last_seen(conn, job, at="2026-07-01T00:00:00Z")
+    tecno_url = "https://www.tecnoempleo.com/acme/rf-9999"
+    _insert_variant(
+        conn,
+        job,
+        source="tecnoempleo",
+        source_job_id="rf-9999",
+        url=tecno_url,
+        last_seen_at="2026-07-01T00:00:00Z",
+    )
+    # LinkedIn answered recently; Tecnoempleo was never asked.
+    _insert_fetch(
+        conn,
+        job,
+        source="linkedin",
+        status=DetailFetchStatus.OK,
+        fetched_at="2026-09-10T00:00:00Z",
+    )
+
+    assert variants_unseen_since(conn, source="linkedin", cutoff=UNSEEN_CUTOFF) == []
+    tecno_selected = variants_unseen_since(
+        conn, source="tecnoempleo", cutoff=UNSEEN_CUTOFF
+    )
+    assert [entry.id for entry in tecno_selected] == [job.id]
+    assert tecno_selected[0].url == tecno_url
+
+
+def test_variants_unseen_since_returns_only_the_newest_provider_variant(conn) -> None:
+    job = _store_card(conn, "3923200001")
+    _set_job_last_seen(conn, job, at="2026-07-01T00:00:00Z")
+    # A repost under a new id: two active variants of the same provider, the
+    # first one created when the card was stored.
+    older_url = "https://www.linkedin.com/jobs/view/3923200001/old"
+    newer_url = "https://www.linkedin.com/jobs/view/3923200009/new"
+    with conn:
+        conn.execute(
+            "UPDATE job_variants SET url = ?, last_seen_at = ? WHERE job_id = ?",
+            (older_url, "2026-07-01T00:00:00Z", int(job.id)),
+        )
+    _insert_variant(
+        conn,
+        job,
+        source="linkedin",
+        source_job_id="3923200009",
+        url=newer_url,
+        last_seen_at="2026-07-15T00:00:00Z",
+    )
+
+    selected = variants_unseen_since(conn, source="linkedin", cutoff=UNSEEN_CUTOFF)
+    # One entry per offer, carrying the newest variant's own identity.
+    assert [entry.id for entry in selected] == [job.id]
+    assert selected[0].url == newer_url
+    assert selected[0].source_job_id == "3923200009"
+    assert count_variants_unseen_since(conn, source="linkedin", cutoff=UNSEEN_CUTOFF) == 1
+
+
+def test_variants_unseen_since_falls_back_to_last_seen_without_evaluations(conn) -> None:
+    older = _store_card(conn, "3923300001")
+    newer = _store_card(conn, "3923300002")
+    _set_job_last_seen(conn, older, at="2026-06-01T00:00:00Z")
+    _set_job_last_seen(conn, newer, at="2026-08-01T00:00:00Z")
+
+    # No evaluations at all: every row is unscored and the stalest sighting wins.
+    assert [
+        job.id for job in variants_unseen_since(conn, source="linkedin", cutoff=UNSEEN_CUTOFF)
+    ] == [older.id, newer.id]
+
+
+def _seed_unseen_db(db_path: Path) -> dict[str, int]:
+    """Seed one offer per unseen branch, relative to the test's own clock."""
+    reference = utcnow()
+    connection = connect(db_path)
+    try:
+        init_db(connection)
+        good = _store_card(connection, "3924000001")
+        quiet = _store_card(connection, "3924000002")
+        fresh = _store_card(connection, "3924000003")
+        _set_job_last_seen(connection, good, at=iso_days_ago(30, now=reference))
+        _set_job_last_seen(connection, quiet, at=iso_days_ago(20, now=reference))
+        _set_job_last_seen(connection, fresh, at=iso_days_ago(2, now=reference))
+        _score(connection, good, overall=88.0)
+        # The best offer was already re-checked recently and must wait its turn.
+        _insert_fetch(
+            connection,
+            quiet,
+            status=DetailFetchStatus.OK,
+            fetched_at=iso_days_ago(1, now=reference),
+        )
+        return {"good": int(good.id), "quiet": int(quiet.id), "fresh": int(fresh.id)}
+    finally:
+        connection.close()
+
+
+def test_fetch_details_unseen_days_dry_run_json(db_path, capsys, monkeypatch) -> None:
+    no_network(monkeypatch)
+    ids = _seed_unseen_db(db_path)
+    before_bytes = db_path.read_bytes()
+
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "fetch-details",
+                "--unseen-days",
+                "14",
+                "--dry-run",
+                "--json",
+            ]
+        )
+        == EXIT_OK
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["dry_run"] is True
+    assert payload["selection"] == "unseen"
+    assert payload["unseen_days"] == 14
+    assert payload["cutoff"]
+    # Only the stale offer whose last detail attempt is also older than 14 days.
+    assert payload["selected"] == 1
+    assert len(payload["planned_urls"]) == 1
+    assert "3924000001" in payload["planned_urls"][0]
+
+    # The text report carries the same additive unseen context.
+    assert (
+        main(
+            ["--db", str(db_path), "fetch-details", "--unseen-days", "14", "--dry-run"]
+        )
+        == EXIT_OK
+    )
+    output = capsys.readouterr().out
+    assert "unseen selection:" in output
+    assert "unseen for 14 days" in output
+    assert payload["cutoff"] in output
+
+    # A dry run writes nothing, not even a journal sidecar.
+    assert db_path.read_bytes() == before_bytes
+    assert ids["quiet"] != ids["good"]
+
+
+def test_fetch_details_unseen_days_reports_truncation(db_path, capsys, monkeypatch) -> None:
+    no_network(monkeypatch)
+    _seed_unseen_db(db_path)
+    main(
+        [
+            "--db",
+            str(db_path),
+            "fetch-details",
+            "--unseen-days",
+            "14",
+            "--max-items",
+            "1",
+            "--dry-run",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["selected"] == 1
+    assert payload["truncated"] == 0
+
+
+def test_fetch_details_unseen_days_empty_selection_is_a_success(
+    db_path, capsys, monkeypatch, fast_pacing
+) -> None:
+    no_network(monkeypatch)
+    main(["--db", str(db_path), "ingest-fixture", str(CARDS_FIXTURE)])
+    capsys.readouterr()
+
+    # The fixture cards were just seen, so nothing is unseen and nothing is
+    # requested, not even through the offline fixture transport.
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "fetch-details",
+                "--unseen-days",
+                "14",
+                "--fixture",
+                str(DETAIL_RESPONSES),
+                "--json",
+            ]
+        )
+        == EXIT_OK
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["selection"] == "unseen"
+    assert payload["cutoff"]
+    assert payload["requested"] == 0
+    assert payload["enriched"] == 0
+    assert job_detail_fetch_count_for(db_path) == 0
+
+
+def test_fetch_details_unseen_days_rejects_zero(db_path, capsys, monkeypatch) -> None:
+    no_network(monkeypatch)
+    assert (
+        main(
+            ["--db", str(db_path), "fetch-details", "--unseen-days", "0", "--dry-run"]
+        )
+        == EXIT_ERROR
+    )
+    assert "--unseen-days must be 1 or greater" in capsys.readouterr().err
+    assert not db_path.exists()
+
+
+def test_fetch_details_unseen_days_rejects_more_than_a_decade(
+    db_path, capsys, monkeypatch
+) -> None:
+    no_network(monkeypatch)
+    # Huge values would overflow the cutoff arithmetic before any selection.
+    assert (
+        main(
+            ["--db", str(db_path), "fetch-details", "--unseen-days", "4000", "--dry-run"]
+        )
+        == EXIT_ERROR
+    )
+    assert "--unseen-days must be 3650 or less" in capsys.readouterr().err
+    assert not db_path.exists()
+    assert (
+        main(
+            [
+                "--db",
+                str(db_path),
+                "fetch-getmanfred-details",
+                "--unseen-days",
+                "999999999",
+                "--dry-run",
+            ]
+        )
+        == EXIT_ERROR
+    )
+    assert "--unseen-days must be 3650 or less" in capsys.readouterr().err
+
+
+def test_fetch_details_unseen_days_is_exclusive_with_refresh(db_path) -> None:
+    with pytest.raises(SystemExit):
+        main(
+            [
+                "--db",
+                str(db_path),
+                "fetch-details",
+                "--refresh",
+                "--unseen-days",
+                "14",
+                "--dry-run",
+            ]
+        )
+
+
+def test_provider_detail_commands_accept_unseen_days(db_path, capsys, monkeypatch) -> None:
+    no_network(monkeypatch)
+    connection = connect(db_path)
+    try:
+        init_db(connection)
+        tecno = _store_foreign_card(
+            connection,
+            "tecnoempleo",
+            "rf-205650",
+            url="https://www.tecnoempleo.com/aceptacorp/rf-205650",
+        )
+        getmanfred = _store_foreign_card(
+            connection,
+            "getmanfred",
+            "8383",
+            url="https://www.getmanfred.com/ofertas-empleo/8383/backend-8383",
+        )
+        for job in (tecno, getmanfred):
+            _set_job_last_seen(connection, job, at="2026-06-01T00:00:00Z")
+    finally:
+        connection.close()
+
+    for command, source_id in (
+        ("fetch-tecnoempleo-details", "rf-205650"),
+        ("fetch-getmanfred-details", "8383"),
+    ):
+        assert (
+            main(
+                ["--db", str(db_path), command, "--unseen-days", "14", "--dry-run", "--json"]
+            )
+            == EXIT_OK
+        )
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["selection"] == "unseen"
+        assert payload["unseen_days"] == 14
+        assert payload["cutoff"]
+        # Each command only ever selects its own provider's offers.
+        assert payload["selected"] == 1
+        assert len(payload["planned_urls"]) == 1
+        assert source_id in payload["planned_urls"][0]
+
+        assert (
+            main(["--db", str(db_path), command, "--unseen-days", "0", "--dry-run"])
+            == EXIT_ERROR
+        )
+        assert "--unseen-days must be 1 or greater" in capsys.readouterr().err

@@ -90,6 +90,7 @@ from .db import (
     count_jobs,
     count_variants_needing_details,
     count_variants_needing_refresh,
+    count_variants_unseen_since,
     evaluation_count,
     feedback_count,
     get_job,
@@ -107,6 +108,7 @@ from .db import (
     variant_job_for_source,
     variants_needing_details,
     variants_needing_refresh,
+    variants_unseen_since,
 )
 from .dossier import company_slug, dossier_path, generate_dossier
 from .feedback import FeedbackError, import_feedback
@@ -153,6 +155,17 @@ EXIT_FAIL_CLOSED = 2
 #: means "no age floor": every already-fetched offer with stale or retryable
 #: evidence is a candidate, and an explicit ``--stale-days N`` narrows that.
 DEFAULT_REFRESH_STALE_DAYS = 0
+
+#: Upper bound for ``--unseen-days``: a decade. Beyond it a timestamp would
+#: overflow, and no offer is old enough to need it.
+MAX_UNSEEN_DAYS = 3650
+
+#: Shared help for ``--unseen-days`` on the three detail-fetch commands.
+UNSEEN_DAYS_HELP = (
+    "select active offers not seen in any search for DAYS days whose last "
+    "detail attempt from that provider (a real answer, or none) is also older "
+    f"than that; highest score first. DAYS must be 1 to {MAX_UNSEEN_DAYS}"
+)
 
 SCORER_CHOICES = tuple(SCORERS)
 
@@ -530,6 +543,9 @@ def build_parser() -> argparse.ArgumentParser:
             "404/410 refuted by a later re-sighting)"
         ),
     )
+    details_selection.add_argument(
+        "--unseen-days", type=int, default=None, metavar="DAYS", help=UNSEEN_DAYS_HELP
+    )
     details_parser.add_argument(
         "--stale-days",
         type=int,
@@ -578,6 +594,9 @@ def build_parser() -> argparse.ArgumentParser:
     tecno_details_selection.add_argument(
         "--all", action="store_true", help="select every active Tecnoempleo offer"
     )
+    tecno_details_selection.add_argument(
+        "--unseen-days", type=int, default=None, metavar="DAYS", help=UNSEEN_DAYS_HELP
+    )
     tecno_details_parser.add_argument(
         "--max-items", type=int, default=None, help="item cap (bounded)"
     )
@@ -620,6 +639,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     getmanfred_details_selection.add_argument(
         "--all", action="store_true", help="select every active GetManfred offer"
+    )
+    getmanfred_details_selection.add_argument(
+        "--unseen-days", type=int, default=None, metavar="DAYS", help=UNSEEN_DAYS_HELP
     )
     getmanfred_details_parser.add_argument(
         "--max-items", type=int, default=None, help="item cap (bounded)"
@@ -1192,6 +1214,56 @@ def _refresh_text_line(args: argparse.Namespace, cutoff: str) -> str:
     )
 
 
+def _unseen_cutoff(args: argparse.Namespace) -> str | None:
+    """Absolute UTC cutoff for ``--unseen-days`` (``None`` when unset)."""
+    days = getattr(args, "unseen_days", None)
+    if days is None:
+        return None
+    return iso_days_ago(int(days))
+
+
+def _unseen_output_fields(
+    args: argparse.Namespace, cutoff: str | None
+) -> dict[str, Any]:
+    """Additive JSON fields for an unseen selection (``{}`` otherwise)."""
+    if getattr(args, "unseen_days", None) is None or cutoff is None:
+        return {}
+    return {
+        "selection": "unseen",
+        "unseen_days": int(args.unseen_days),
+        "cutoff": cutoff,
+    }
+
+
+def _unseen_text_line(args: argparse.Namespace, cutoff: str) -> str:
+    days = int(args.unseen_days)
+    label = "day" if days == 1 else "days"
+    return (
+        f"unseen selection: active offers unseen for {days} {label} and not "
+        f"detail-checked since (cutoff {cutoff})"
+    )
+
+
+def _detail_selection_error(args: argparse.Namespace) -> str | None:
+    """Reject an invalid detail-selection flag, or return ``None``.
+
+    Checked before any database, fixture or network work so a bad flag costs
+    nothing. ``--stale-days`` only modifies ``--refresh``, which only
+    ``fetch-details`` defines.
+    """
+    stale_days = getattr(args, "stale_days", None)
+    if stale_days is not None and not getattr(args, "refresh", False):
+        return "--stale-days requires --refresh"
+    if stale_days is not None and int(stale_days) < 0:
+        return "--stale-days must be 0 or greater"
+    unseen_days = getattr(args, "unseen_days", None)
+    if unseen_days is not None and int(unseen_days) < 1:
+        return "--unseen-days must be 1 or greater"
+    if unseen_days is not None and int(unseen_days) > MAX_UNSEEN_DAYS:
+        return f"--unseen-days must be {MAX_UNSEEN_DAYS} or less"
+    return None
+
+
 def _select_detail_jobs(
     conn: Any,
     args: argparse.Namespace,
@@ -1200,6 +1272,7 @@ def _select_detail_jobs(
     provider_label: str = "LinkedIn",
     limit: int,
     refresh_cutoff: str | None = None,
+    unseen_cutoff: str | None = None,
 ) -> tuple[list[Any], int]:
     """Resolve the selection for a detail-fetch command.
 
@@ -1208,11 +1281,13 @@ def _select_detail_jobs(
     lets the CLI report truncation instead of always claiming zero.
 
     Every route is restricted to ``source`` (default, ``--all``, ``--refresh``,
-    and explicit ``--job-id``). Each fetcher builds a URL inside its provider's
-    id space, so letting another provider's numeric id into this selection would
-    read a different posting's body. ``provider_label`` only names the provider
-    in the "not found" message; ``--refresh`` is a no-op for providers whose
-    subcommand does not define it.
+    ``--unseen-days``, and explicit ``--job-id``). Each fetcher builds a URL
+    inside its provider's id space, so letting another provider's numeric id
+    into this selection would read a different posting's body.
+    ``provider_label`` only names the provider in the "not found" message;
+    ``--refresh`` is a no-op for providers whose subcommand does not define it.
+    ``unseen_cutoff`` is resolved once by the caller so the selection and the
+    reported cutoff never disagree.
     """
     if args.job_id:
         selected = []
@@ -1240,6 +1315,14 @@ def _select_detail_jobs(
         return (
             variants_needing_refresh(
                 conn, source=source, cutoff=cutoff, limit=limit
+            ),
+            max(0, total - limit),
+        )
+    if unseen_cutoff is not None:
+        total = count_variants_unseen_since(conn, source=source, cutoff=unseen_cutoff)
+        return (
+            variants_unseen_since(
+                conn, source=source, cutoff=unseen_cutoff, limit=limit
             ),
             max(0, total - limit),
         )
@@ -1276,6 +1359,7 @@ def _run_detail_dry_run(
     plan_fn: Callable[..., tuple[list[Any], int]],
     unavailable_label: str,
     refresh_cutoff: str | None = None,
+    unseen_cutoff: str | None = None,
 ) -> int:
     """Plan a detail-fetch command without creating or writing a database.
 
@@ -1293,7 +1377,11 @@ def _run_detail_dry_run(
     else:
         try:
             jobs, omitted = select_fn(
-                conn, args, limit=max_items, refresh_cutoff=refresh_cutoff
+                conn,
+                args,
+                limit=max_items,
+                refresh_cutoff=refresh_cutoff,
+                unseen_cutoff=unseen_cutoff,
             )
         except sqlite3.DatabaseError:
             # Covers a database with no jobscout schema as well as an
@@ -1312,6 +1400,8 @@ def _run_detail_dry_run(
         text += f"\n  {note}"
     if getattr(args, "refresh", False) and refresh_cutoff:
         text += f"\n  {_refresh_text_line(args, refresh_cutoff)}"
+    if getattr(args, "unseen_days", None) is not None and unseen_cutoff:
+        text += f"\n  {_unseen_text_line(args, unseen_cutoff)}"
     if omitted:
         text += f"\n  {omitted} selected job(s) omitted by --max-items"
     if skipped:
@@ -1327,6 +1417,7 @@ def _run_detail_dry_run(
             "skipped_reasons": skipped,
             "note": note,
             **_refresh_output_fields(args, refresh_cutoff),
+            **_unseen_output_fields(args, unseen_cutoff),
         },
         as_json=getattr(args, "as_json", False),
         text=text,
@@ -1340,6 +1431,7 @@ def _finish_detail_run(
     result: Any,
     *,
     refresh_cutoff: str | None = None,
+    unseen_cutoff: str | None = None,
 ) -> int:
     """Emit a detail run's summary and map its status to an exit code."""
     as_json = getattr(args, "as_json", False)
@@ -1351,6 +1443,8 @@ def _finish_detail_run(
     )
     if refresh_cutoff:
         text += f"\n  {_refresh_text_line(args, refresh_cutoff)}"
+    if getattr(args, "unseen_days", None) is not None and unseen_cutoff:
+        text += f"\n  {_unseen_text_line(args, unseen_cutoff)}"
     if result.truncated:
         text += f"\n  {result.truncated} selected job(s) omitted by --max-items"
     _emit(
@@ -1359,6 +1453,7 @@ def _finish_detail_run(
             "planned_urls": result.planned_urls,
             "truncated": result.truncated,
             **_refresh_output_fields(args, refresh_cutoff),
+            **_unseen_output_fields(args, unseen_cutoff),
         },
         as_json=as_json,
         text=text,
@@ -1382,6 +1477,7 @@ def _run_detail_fetch(
     provider: str | None,
     collect_kwargs: dict[str, Any],
     refresh_cutoff: str | None = None,
+    unseen_cutoff: str | None = None,
 ) -> int:
     """Run a confirmed detail fetch and emit its summary.
 
@@ -1394,7 +1490,11 @@ def _run_detail_fetch(
     try:
         init_db(conn)
         jobs, omitted = select_fn(
-            conn, args, limit=max_items, refresh_cutoff=refresh_cutoff
+            conn,
+            args,
+            limit=max_items,
+            refresh_cutoff=refresh_cutoff,
+            unseen_cutoff=unseen_cutoff,
         )
         try:
             result = collect_fn(
@@ -1419,7 +1519,13 @@ def _run_detail_fetch(
     finally:
         conn.close()
 
-    return _finish_detail_run(args, outcome, result, refresh_cutoff=refresh_cutoff)
+    return _finish_detail_run(
+        args,
+        outcome,
+        result,
+        refresh_cutoff=refresh_cutoff,
+        unseen_cutoff=unseen_cutoff,
+    )
 
 
 def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
@@ -1431,16 +1537,15 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
         _write_line(f"invalid detail options: {exc}", stream=sys.stderr)
         return EXIT_ERROR
 
-    # ``--stale-days`` only modifies ``--refresh``; reject it earlier than any
-    # database, fixture, or network work so the failure costs nothing.
-    stale_days = getattr(args, "stale_days", None)
-    if stale_days is not None and not getattr(args, "refresh", False):
-        _write_line("--stale-days requires --refresh", stream=sys.stderr)
-        return EXIT_ERROR
-    if stale_days is not None and int(stale_days) < 0:
-        _write_line("--stale-days must be 0 or greater", stream=sys.stderr)
+    # ``--stale-days`` only modifies ``--refresh`` and ``--unseen-days`` has a
+    # floor; reject a bad flag earlier than any database, fixture, or network
+    # work so the failure costs nothing.
+    selection_error = _detail_selection_error(args)
+    if selection_error:
+        _write_line(selection_error, stream=sys.stderr)
         return EXIT_ERROR
     refresh_cutoff = _refresh_cutoff(args) if getattr(args, "refresh", False) else None
+    unseen_cutoff = _unseen_cutoff(args)
 
     offline_transport = None
     if args.fixture:
@@ -1466,6 +1571,7 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
             ),
             unavailable_label="LinkedIn job id",
             refresh_cutoff=refresh_cutoff,
+            unseen_cutoff=unseen_cutoff,
         )
 
     # Refuse before opening the database: an unconfirmed live run must leave no
@@ -1492,15 +1598,15 @@ def cmd_fetch_details(args: argparse.Namespace, settings: Settings) -> int:
         provider=None,
         collect_kwargs={"client": offline_transport},
         refresh_cutoff=refresh_cutoff,
+        unseen_cutoff=unseen_cutoff,
     )
-
-
 def _select_tecnoempleo_detail_jobs(
     conn: Any,
     args: argparse.Namespace,
     *,
     limit: int,
     refresh_cutoff: str | None = None,
+    unseen_cutoff: str | None = None,
 ) -> tuple[list[Any], int]:
     """Resolve the selection for ``fetch-tecnoempleo-details`` (Tecnoempleo-scoped)."""
     return _select_detail_jobs(
@@ -1510,6 +1616,7 @@ def _select_tecnoempleo_detail_jobs(
         provider_label="Tecnoempleo",
         limit=limit,
         refresh_cutoff=refresh_cutoff,
+        unseen_cutoff=unseen_cutoff,
     )
 
 
@@ -1531,6 +1638,12 @@ def cmd_fetch_tecnoempleo_details(args: argparse.Namespace, settings: Settings) 
         _write_line(f"invalid Tecnoempleo detail options: {exc}", stream=sys.stderr)
         return EXIT_ERROR
 
+    selection_error = _detail_selection_error(args)
+    if selection_error:
+        _write_line(selection_error, stream=sys.stderr)
+        return EXIT_ERROR
+    unseen_cutoff = _unseen_cutoff(args)
+
     robots_text: str | None = None
     if args.robots:
         try:
@@ -1547,6 +1660,7 @@ def cmd_fetch_tecnoempleo_details(args: argparse.Namespace, settings: Settings) 
             select_fn=_select_tecnoempleo_detail_jobs,
             plan_fn=plan_tecnoempleo_detail_targets,
             unavailable_label="Tecnoempleo URL",
+            unseen_cutoff=unseen_cutoff,
         )
 
     if not args.confirm_network:
@@ -1567,6 +1681,7 @@ def cmd_fetch_tecnoempleo_details(args: argparse.Namespace, settings: Settings) 
         collect_fn=fetch_tecnoempleo_details,
         provider="tecnoempleo",
         collect_kwargs={"robots_text": robots_text},
+        unseen_cutoff=unseen_cutoff,
     )
 
 
@@ -1576,6 +1691,7 @@ def _select_getmanfred_detail_jobs(
     *,
     limit: int,
     refresh_cutoff: str | None = None,
+    unseen_cutoff: str | None = None,
 ) -> tuple[list[Any], int]:
     """Resolve the selection for ``fetch-getmanfred-details`` (GetManfred-scoped)."""
     return _select_detail_jobs(
@@ -1585,6 +1701,7 @@ def _select_getmanfred_detail_jobs(
         provider_label="GetManfred",
         limit=limit,
         refresh_cutoff=refresh_cutoff,
+        unseen_cutoff=unseen_cutoff,
     )
 
 
@@ -1606,6 +1723,12 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
         _write_line(f"invalid GetManfred detail options: {exc}", stream=sys.stderr)
         return EXIT_ERROR
 
+    selection_error = _detail_selection_error(args)
+    if selection_error:
+        _write_line(selection_error, stream=sys.stderr)
+        return EXIT_ERROR
+    unseen_cutoff = _unseen_cutoff(args)
+
     robots_text: str | None = None
     if args.robots:
         try:
@@ -1622,6 +1745,7 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
             select_fn=_select_getmanfred_detail_jobs,
             plan_fn=plan_getmanfred_detail_targets,
             unavailable_label="GetManfred URL",
+            unseen_cutoff=unseen_cutoff,
         )
 
     if not args.confirm_network:
@@ -1642,6 +1766,7 @@ def cmd_fetch_getmanfred_details(args: argparse.Namespace, settings: Settings) -
         collect_fn=fetch_getmanfred_details,
         provider="getmanfred",
         collect_kwargs={"robots_text": robots_text},
+        unseen_cutoff=unseen_cutoff,
     )
 
 

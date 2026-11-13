@@ -1697,17 +1697,37 @@ def count_variants_needing_details(conn: sqlite3.Connection, *, source: str) -> 
     )
 
 
-#: Joins a job to its single most recent detail-fetch attempt (highest id,
-#: matching :func:`latest_detail_fetch`). A job with no fetch rows never matches,
-#: so "refresh" only considers offers that already have fetch history.
-_LATEST_DETAIL_FETCH_JOIN = """
-    JOIN job_detail_fetches f ON f.id = (
+#: The ``ON`` clause pairing a job with its single most recent detail-fetch
+#: attempt (highest id, matching :func:`latest_detail_fetch`). ``{scope}`` is
+#: where a provider filter goes; see :func:`_latest_detail_fetch_join`.
+_LATEST_DETAIL_FETCH_ON = """
+    f.id = (
         SELECT latest.id FROM job_detail_fetches latest
-        WHERE latest.job_id = j.id
+        WHERE latest.job_id = j.id{scope}
         ORDER BY latest.id DESC
         LIMIT 1
     )
 """
+
+
+def _latest_detail_fetch_join(*, required: bool = True, provider_scoped: bool = False) -> str:
+    """SQL joining a job to its single most recent detail-fetch attempt.
+
+    ``required=False`` uses a LEFT JOIN, so a job with no attempt still matches;
+    ``required=True`` is what "refresh" wants, since it only considers offers
+    that already have fetch history. ``provider_scoped=True`` adds
+    ``latest.source = ?`` so only that provider's attempt counts; the caller
+    must then pass the provider before any other condition parameter.
+    """
+    scope = " AND latest.source = ?" if provider_scoped else ""
+    keyword = "JOIN" if required else "LEFT JOIN"
+    return f" {keyword} job_detail_fetches f ON " + _LATEST_DETAIL_FETCH_ON.format(
+        scope=scope
+    )
+
+
+#: Joins a job to its single most recent detail-fetch attempt (any provider).
+_LATEST_DETAIL_FETCH_JOIN = _latest_detail_fetch_join()
 
 
 def _jobs_needing_refresh_predicate() -> str:
@@ -1851,6 +1871,86 @@ def count_variants_needing_refresh(
             + " JOIN job_variants v ON v.job_id = j.id AND v.source = ?"
             " WHERE "
             + " AND ".join(clauses),
+            params,
+        ).fetchone()[0]
+    )
+
+
+#: Joins exactly the one active variant a provider would fetch for the job: the
+#: most recently seen one, matching the dashboard's link choice, so a reposted
+#: offer is not requested twice. The single ``?`` is the provider.
+_UNSEEN_VARIANT_JOIN = """
+    JOIN job_variants v ON v.id = (
+        SELECT pick.id FROM job_variants pick
+        WHERE pick.job_id = j.id AND pick.source = ? AND pick.is_active = 1
+        ORDER BY pick.last_seen_at DESC, pick.id DESC
+        LIMIT 1
+    )
+"""
+
+
+def _job_unseen_predicate() -> str:
+    """SQL for "the job was not seen and not re-checked since the cutoff".
+
+    Both placeholders are the same cutoff, which callers pass after the two
+    provider parameters of the joins. Only a real answer to a detail request
+    counts as a check: ``ok``/``partial`` content newer than the cutoff, or a
+    definitive 404/410. A 429/403, a failure that never received an HTTP
+    response, and a ``skipped`` attempt are not answers, so they never exclude
+    the offer from the next batch.
+    """
+    return (
+        "j.last_seen_at < ? AND NOT (f.id IS NOT NULL AND "
+        "COALESCE(f.fetched_at, f.stored_at) >= ? AND "
+        "(f.status IN ('ok', 'partial') OR "
+        "(f.status = 'failed' AND COALESCE(f.http_status, 0) IN (404, 410))))"
+    )
+
+
+def variants_unseen_since(
+    conn: sqlite3.Connection, *, source: str, cutoff: str, limit: int | None = None
+) -> list[Job]:
+    """Active variants for offers neither seen nor re-checked since ``cutoff``.
+
+    Re-checks offers the searches stopped finding: the job's last sighting must
+    be older than the cutoff, and its latest *that provider's* detail attempt
+    must not be a recent real answer (see :func:`_job_unseen_predicate`; another
+    provider's fetch says nothing about this one). Only the most recently seen
+    active variant of ``source`` is returned (see :data:`_UNSEEN_VARIANT_JOIN`).
+    Order: highest latest ``ok`` score first with unscored last, then the
+    stalest sighting, then job id, so a bounded batch spends its budget on the
+    best offers that have gone quiet.
+    """
+    params: list[Any] = [str(source), str(source), cutoff, cutoff]
+    sql = (
+        "SELECT "
+        + _VARIANT_SELECT_COLUMNS
+        + " FROM jobs j "
+        + _UNSEEN_VARIANT_JOIN
+        + _latest_detail_fetch_join(required=False, provider_scoped=True)
+        + " LEFT JOIN latest_evaluations e ON e.job_id = j.id"
+        " WHERE j.is_active = 1 AND "
+        + _job_unseen_predicate()
+        + " ORDER BY (e.overall_score IS NULL) ASC, e.overall_score DESC,"
+        " j.last_seen_at ASC, j.id ASC"
+    )
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    return _jobs_with_variant_identity(conn.execute(sql, params).fetchall())
+
+
+def count_variants_unseen_since(
+    conn: sqlite3.Connection, *, source: str, cutoff: str
+) -> int:
+    params: list[Any] = [str(source), str(source), cutoff, cutoff]
+    return int(
+        conn.execute(
+            "SELECT COUNT(*) FROM jobs j "
+            + _UNSEEN_VARIANT_JOIN
+            + _latest_detail_fetch_join(required=False, provider_scoped=True)
+            + " WHERE j.is_active = 1 AND "
+            + _job_unseen_predicate(),
             params,
         ).fetchone()[0]
     )
