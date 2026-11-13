@@ -124,6 +124,11 @@ The full offline suite is the acceptance gate for any change.
   sweep producing scores. Changing model re-scores offers gradually because the model is part
   of each evaluation's input fingerprint.
 
+## Agent lessons
+
+`docs/lecciones_agentes.md` — repo facts briefs and workers have had to guess. Read it before
+writing a brief or starting a board task.
+
 ## Planning files
 
 - `kanvas.json` — the Kanvas board, the **only** list of pending work (owner, 2026-10-31).
