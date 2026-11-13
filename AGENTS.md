@@ -93,7 +93,9 @@ The full offline suite is the acceptance gate for any change.
   (`0 19 2-31/3 * *`, ~36 h after each sweep, delivery `local`): runs the LinkedIn and
   Tecnoempleo detail batches (`jobscout_sweep.py --linkedin-details`) so the backlogs drain
   without stacking more requests on the sweep's searches; `score` skips offers still waiting
-  for details. Pacing stays at 8 s (owner, 2026-10-20).
+  for details. Pacing stays at 8 s (owner, 2026-10-20). The same pass then re-checks up to 20
+  of the best-scored offers the searches have not seen for 14 days, across the three providers
+  (`fetch-*-details --unseen-days 14`, EO-04), and logs how many it checked and closed.
 - `~/.config/systemd/user/jobscout-dashboard.service` — serves `reports/` over Tailscale on
   port 8080.
 - OpenCode (`~/.local/bin/opencode`) is updated outside this repo. A CLI update broke scoring
