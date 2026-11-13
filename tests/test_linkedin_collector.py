@@ -52,6 +52,20 @@ def test_build_search_url_is_bounded_and_encoded() -> None:
     assert "start=25" in url
     assert "location=Buenos+Aires%2C+Argentina" in url
     assert "distance=25" in url
+    # Every search asks for the last seven days, ahead of the page offset
+    # (owner, 2026-11-13: unfiltered searches repeated the same results). The
+    # date sort is not sent: the guest endpoint was tried live and ignores it.
+    assert "f_TPR=r604800" in url
+    assert url.index("f_TPR=") < url.index("start=")
+    assert "sortBy" not in url
+
+
+def test_every_planned_page_requests_last_week(settings) -> None:
+    config = LinkedInSearchConfig(keywords="devops junior", location="Madrid")
+    assert plan_search_urls(config, settings=settings)
+    for url in plan_search_urls(config, settings=settings):
+        assert "f_TPR=r604800" in url
+        assert "sortBy" not in url
 
 
 def test_search_config_validates_required_fields() -> None:

@@ -120,7 +120,13 @@ class LinkedInSearchConfig:
 
 
 def build_search_url(base_url: str, config: LinkedInSearchConfig, *, start: int = 0) -> str:
-    """Build a bounded guest-search URL for one page."""
+    """Build a bounded guest-search URL for one page.
+
+    Every page asks for postings from the last seven days. Without the age
+    filter an unfiltered search returns the same head of the ranking on every
+    run. The date-descending sort (``sortBy=DD``) was tried live on 2026-11-13
+    and this guest endpoint ignores it, so it is not sent.
+    """
     params: list[tuple[str, Any]] = [("keywords", config.keywords.strip())]
     if config.location:
         params.append(("location", config.location.strip()))
@@ -130,6 +136,11 @@ def build_search_url(base_url: str, config: LinkedInSearchConfig, *, start: int 
         params.append(("f_WT", "2"))
     if config.employment_type:
         params.append(("f_JT", config.employment_type))
+    # Ask for the last seven days. Without this filter the guest endpoint kept
+    # answering the same ~20 results on every run, so a sweep found only a
+    # handful of new offers per query (owner, 2026-11-13). The date-descending
+    # sort was tried live the same day and the endpoint ignored it.
+    params.append(("f_TPR", "r604800"))
     params.append(("start", int(start)))
     return f"{base_url}?{urlencode(params)}"
 

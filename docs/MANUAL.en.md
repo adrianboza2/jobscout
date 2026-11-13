@@ -435,7 +435,7 @@ subcommand), and `--version`.
 |---------|---------|
 | `init-db` | Create or verify the schema. Idempotent. |
 | `ingest-fixture PATH [--source S] [--label L]` | Normalize, deduplicate, and store a JSON fixture (offline). |
-| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Bounded public search. Disabled without `--confirm-network`. |
+| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Bounded public search; it asks only for postings from the last seven days (`f_TPR=r604800`, see "LinkedIn search: last week only"). Disabled without `--confirm-network`. |
 | `search-getmanfred [--keywords K] [--max-age-days N] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Public GetManfred sitemap inventory. `--keywords` applies a **local** title/slug filter (no fan-out, no private endpoint). `--max-age-days` skips entries whose `lastmod` is older than N days (default 120; `0` = no cut). No ranking. Disabled without `--confirm-network`. |
 | `search-tecnoempleo (--keywords K [--location L] \| --browse) [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Bounded Tecnoempleo public server-rendered search. `--browse` walks Madrid offers by professional function; it is mutually exclusive with `--keywords` and `--location`. Enforces `robots.txt` at run time. Disabled without `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | List the keyword families and the exact command per query (no network, no database). |
@@ -1141,3 +1141,23 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
   notifications are opt-in, manual, and read-only (`jobscout notify`, disabled
   by default). Feedback import exists, but it only runs when you invoke
   `import-feedback`.
+
+## LinkedIn search: last week only (FU-06, 2026-11-13)
+
+Every `search-linkedin` run adds one fixed parameter to the search URL, always
+on, with no flag and no environment variable: `f_TPR=r604800`, only postings
+published in the last seven days. It comes before `start` on every page, so
+paging never drops it. No new queries, no extra requests, no change to pacing or
+caps: the same requests with one more parameter.
+
+Without the filter, every search returned the same head of the ranking, mixed
+with postings months old, so a sweep barely found anything new. Verified live on
+2026-11-13 with a real query (`devops junior`, Madrid, one request per variant):
+with the filter, all 10 returned cards were published between November 6 and 12;
+without it, the same query returned 8 of 10 cards older than a week (oldest,
+April 2026).
+
+The date sort (`sortBy=DD`) was tried on 2026-11-13 and the guest endpoint
+**does not apply it**: the response arrived in the order LinkedIn serves, not
+newest first. It is therefore not sent. The stored position remains observed
+provenance only, never a ranking.

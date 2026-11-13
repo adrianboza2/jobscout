@@ -443,7 +443,7 @@ subcomando) y `--version`.
 |---------|-----------|
 | `init-db` | Crea o verifica el esquema. Idempotente. |
 | `ingest-fixture PATH [--source S] [--label L]` | Normaliza, deduplica y guarda un fixture JSON (sin red). |
-| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Búsqueda pública acotada. Deshabilitada sin `--confirm-network`. |
+| `search-linkedin --keywords K [--location L] [--distance N] [--remote] [--employment-type T] [--max-pages N] [--max-items N] [--cycle-id ID] [--dry-run \| --confirm-network]` | Búsqueda pública acotada; pide solo ofertas de los últimos 7 días (`f_TPR=r604800`, ver «Búsqueda de LinkedIn: solo la última semana»). Deshabilitada sin `--confirm-network`. |
 | `search-getmanfred [--keywords K] [--max-age-days N] [--max-documents N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Inventario del sitemap público de GetManfred. `--keywords` aplica un filtro **local** (título/slug), sin fan-out ni endpoint privado. `--max-age-days` descarta las entradas cuyo `lastmod` sea más antiguo que N días (por defecto 120; `0` = sin corte). Sin ranking. Deshabilitado sin `--confirm-network`. |
 | `search-tecnoempleo (--keywords K [--location L] \| --browse) [--max-pages N] [--max-items N] [--cycle-id ID] [--label L] [--dry-run \| --confirm-network]` | Búsqueda pública server-rendered de Tecnoempleo. `--browse` recorre las ofertas de Madrid por función profesional; es mutuamente excluyente con `--keywords` y `--location`. Respeta `robots.txt` en tiempo de ejecución. Deshabilitada sin `--confirm-network`. |
 | `keyword-plan [--family ID…] [--location L] [--remote]` | Lista las familias de palabras clave y el comando exacto por consulta (sin red, sin base de datos). |
@@ -1173,3 +1173,23 @@ python -m jobscout --db data/smoke.sqlite3 dashboard --top 5 --output reports/sm
   (`jobscout notify`, desactivadas por defecto). La importación de feedback
   existe, pero solo se ejecuta cuando invocas
   `import-feedback`.
+
+## Búsqueda de LinkedIn: solo la última semana (FU-06, 2026-11-13)
+
+Cada `search-linkedin` añade a la URL de búsqueda un parámetro fijo, siempre
+activo y sin flag ni variable de entorno: `f_TPR=r604800`, solo ofertas
+publicadas en los últimos 7 días. Va antes de `start` en todas las páginas, así
+que paginar no lo pierde. No hay consultas nuevas, ni peticiones extra, ni
+cambios de ritmo o de topes: son las mismas peticiones con un parámetro más.
+
+Sin el filtro, cada búsqueda devolvía la misma cabeza del ranking, con ofertas
+de meses atrás, y por barrido casi no entraba nada nuevo. Comprobado en vivo el
+2026-11-13 con una consulta real (`devops junior`, Madrid, una petición por
+variante): con el filtro, las 10 tarjetas devueltas estaban publicadas entre el
+6 y el 12 de noviembre; sin él, la misma consulta devolvió 8 de 10 con más de
+una semana de antigüedad (la más vieja, de abril de 2026).
+
+El orden por fecha (`sortBy=DD`) se probó el 2026-11-13 y el endpoint guest **no
+lo aplica**: la respuesta llegaba en el orden que sirve LinkedIn, no de más
+reciente a más antigua. Por eso no se manda. La posición guardada sigue siendo
+solo procedencia observada, nunca un ranking.
