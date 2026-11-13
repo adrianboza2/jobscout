@@ -57,7 +57,7 @@ from .models import (
 )
 from .preference import PreferenceOutcome, assess_text
 from .seniority import seniority_filter_reason
-from .stage import OfferStage, OfferState, offer_states
+from .stage import FAILED_EVALUATION_STATUSES, OfferStage, OfferState, offer_states
 from .timeutil import parse_datetime, utcnow, utcnow_iso
 
 #: Default report location. ``/reports/`` is git-ignored, so a generated report
@@ -467,6 +467,7 @@ def _build_status(
     rows = conn.execute(
         """
         SELECT j.id AS id,
+               j.title AS title,
                j.first_seen_at AS first_seen_at,
                e.overall_score AS score
         FROM jobs j
@@ -478,10 +479,13 @@ def _build_status(
     new_scored = 0
     awaiting_score = 0
     for row in rows:
+        # Same skip as ``score``: a senior title is never scored, so counting it
+        # would raise the "scored nothing" warning after every healthy sweep.
         state = states.get(int(row["id"]))
-        if state is not None and state.stage in (
-            OfferStage.READY_TO_SCORE,
-            OfferStage.NEEDS_RESCORE,
+        if (
+            state is not None
+            and state.stage in (OfferStage.READY_TO_SCORE, OfferStage.NEEDS_RESCORE)
+            and seniority_filter_reason(row["title"]) is None
         ):
             awaiting_score += 1
         if not _is_new(row["first_seen_at"], last_sweep_at):
@@ -502,13 +506,16 @@ def _build_status(
         pending = state is not None and state.stage is OfferStage.PENDING_DETAILS
         pending_details[source] = pending_details.get(source, 0) + int(pending)
 
-    # Successful evaluations saved since the latest sweep began. Timestamps are
-    # parsed, never compared as text, and an unusable one never counts.
+    # Evaluations with a result (``needs_more_info`` included, failures not)
+    # saved since the latest sweep began. Timestamps are parsed, never compared
+    # as text, and an unusable one never counts.
     scored_since_sweep = 0
     sweep_started = parse_datetime(last_sweep_at)
     if last_sweep_at is not None and sweep_started is not None:
+        failed_statuses = sorted(FAILED_EVALUATION_STATUSES)
         for row in conn.execute(
-            "SELECT created_at FROM evaluations WHERE status = 'ok'"
+            "SELECT created_at FROM evaluations WHERE status NOT IN (?, ?, ?)",
+            failed_statuses,
         ).fetchall():
             created = parse_datetime(row["created_at"])
             if created is not None and created >= sweep_started:

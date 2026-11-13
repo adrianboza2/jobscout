@@ -221,7 +221,9 @@ cuando el barrido lleva más de 4 días parado («Barrido parado desde hace N
 días»; la edad se calcula en el navegador al abrir el panel, porque el HTML lo
 regenera el propio barrido y una fecha calculada al generarlo se quedaría
 congelada) y cuando el último barrido no puntuó ninguna oferta aunque haya
-ofertas en `ready_to_score` o `needs_rescore` («El último barrido no puntuó
+ofertas que el scorer cogería en `ready_to_score` o `needs_rescore` (los
+títulos senior, que `score` salta siempre, no cuentan; `needs_more_info` cuenta
+como puntuada) («El último barrido no puntuó
 ninguna oferta»). Sin barridos, o con un barrido reciente y sano, no añade
 ningún aviso. Ofrece dos pestañas, **Ofertas** y **Palabras
 clave**, y a la derecha **Exportar N decisiones**, que solo aparece cuando este

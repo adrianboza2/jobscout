@@ -1259,6 +1259,34 @@ def test_status_counts_active_offers_awaiting_score(dr1_db: Path) -> None:
     assert status["awaiting_score"] == 2
 
 
+def test_status_counts_a_needs_more_info_result_as_scored(dr1_db: Path) -> None:
+    """DB-12: ``needs_more_info`` is a scorer result, not a failure."""
+    conn = connect(dr1_db)
+    try:
+        with conn:
+            conn.execute("UPDATE evaluations SET status = 'needs_more_info'")
+    finally:
+        conn.close()
+
+    assert _dr1_payload(dr1_db)["status"]["scored_since_sweep"] == 2
+
+
+def test_status_backlog_skips_titles_the_scorer_never_scores(dr1_db: Path) -> None:
+    """DB-12: ``score`` skips senior titles, so they never count as waiting."""
+    conn = connect(dr1_db)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE jobs SET title = 'Senior Cloud Engineer' WHERE id = ("
+                "SELECT j.id FROM jobs j LEFT JOIN latest_evaluations e ON e.job_id = j.id "
+                "WHERE j.is_active = 1 AND e.id IS NULL ORDER BY j.id LIMIT 1)"
+            )
+    finally:
+        conn.close()
+
+    assert _dr1_payload(dr1_db)["status"]["awaiting_score"] == 1
+
+
 def test_status_without_a_sweep_counts_nothing_scored(db_file: Path) -> None:
     """DB-12: with no sweep, the browser has no sweep to blame, so no alert."""
     status = _payload(db_file)["status"]
