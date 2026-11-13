@@ -2301,7 +2301,7 @@ def cmd_dashboard(args: argparse.Namespace, settings: Settings) -> int:
                 conn.close()
     try:
         summary = generate_dashboard(
-            settings.db_path, output, top=top, stale_job_ids=stale
+            settings.db_path, output, top=top, stale_job_ids=stale, profile=profile
         )
     except DashboardError as exc:
         _write_line(f"dashboard error: {exc}", stream=sys.stderr)

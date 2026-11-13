@@ -224,7 +224,8 @@ while offers the scorer would pick sit in `ready_to_score` or
 `needs_rescore` (senior titles, which `score` always skips, do not count;
 `needs_more_info` counts as scored) ("El último barrido no
 puntuó ninguna oferta"). With no sweep at all, or with a recent, healthy one, it
-adds no alert. It offers two tabs, **Ofertas** and **Palabras clave**, with **Exportar N
+adds no alert. It offers three tabs, **Ofertas**, **Palabras clave** and
+**Mercado**, with **Exportar N
 decisiones** on the right, shown only while this browser holds a decision. The offers view uses a single horizontal toolbar
 with text search, the model recommendation, **Solo nuevas** (offers first seen
 in the latest sweep) and a minimum-score select (`Score ≥ 0`, `≥ 50`, `≥ 70`);
@@ -425,6 +426,36 @@ since it is a blocker); when opened, the reason and evidence are the first item 
 Incógnitas (`flag`) or Bloqueos (`fail`). The summary counts excluded vs. flagged
 offers. The CLI exposes the same verdict in `list`, `rank`, and `score` (a
 `[preference=...]` marker in text and a `preference` object in `--json`).
+
+### Market tab (MR-01, 2026-11-13)
+
+The **Mercado** tab summarises every stored offer, active and closed, not only
+the ones open right now. It is read-only: it is computed when the HTML is
+generated and makes no network request. It has three blocks:
+
+- **Repeated companies.** Groups non-senior offers by normalised company name
+  (lowercase, collapsed spaces); non-senior means the title filter does not
+  discard the offer and its `jobs.seniority` is not `senior`, `lead`, `manager`
+  or `director`. It lists companies with two or more such offers (up to 25),
+  ordered by offer count and then by last seen, with how many are still active,
+  the last-seen date and the best score.
+- **Technologies.** A fixed cloud, DevOps and security vocabulary is matched
+  against the title and description of offers whose latest successful
+  evaluation reaches 60 points; each technology counts once per offer, through
+  its aliases and as a whole word. The table shows offers, the percentage over
+  those offers, and whether the technology is already in your profile (`sí` /
+  `no`; `—` when no profile is loaded). Only the boolean travels, never the
+  skill list.
+- **Salaries.** Only offers with a successful evaluation: by employer tier (the
+  latest evaluation's `employer_tier`; `sin clasificar` when the evaluation
+  carries no tier) and level (non-senior or senior, same rule as the first
+  block): offer count, median estimated salary and how many offers state a
+  salary. A cell with fewer than three estimates shows no median (`—`). Below
+  the table, a line says how many offers are still unscored.
+
+With no evaluations, or no offer at 60 points or above, the technology block
+says «Aún no hay ofertas de 60+ puntos» and the rest of the report keeps
+working.
 
 ## CLI reference
 
@@ -1069,6 +1100,7 @@ export button is the only way to keep your decisions.
 │   ├── preference.py         # Preference exclusions (offline, score untouched)
 │   ├── notify.py             # Local notification selection and delivery (opt-in, read-only)
 │   ├── dashboard.py          # Self-contained HTML report generator
+│   ├── market.py             # Market tab aggregates (companies, technologies, salaries)
 │   ├── url_policy.py         # URL and redirect validation
 │   ├── collectors/           # LinkedIn guest, fixtures, rate limit, HTTP transport
 │   └── scoring/              # Heuristic, LLM, OpenCode, schema, and profile

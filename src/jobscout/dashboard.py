@@ -45,11 +45,12 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Sequence, TYPE_CHECKING
 
 from .db import connect_readonly
 from .dossier import company_slug, load_dossiers
 from .keywords import retired_search
+from .market import MARKET_MIN_SCORE, build_market
 from .models import (
     ACTIVE_FEEDBACK_DECISIONS,
     LEGACY_FEEDBACK_DECISIONS,
@@ -59,6 +60,9 @@ from .preference import PreferenceOutcome, assess_text
 from .seniority import seniority_filter_reason
 from .stage import FAILED_EVALUATION_STATUSES, OfferStage, OfferState, offer_states
 from .timeutil import parse_datetime, utcnow, utcnow_iso
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .scoring.profile import Profile
 
 #: Default report location. ``/reports/`` is git-ignored, so a generated report
 #: is never published by accident.
@@ -1027,6 +1031,7 @@ def build_payload(
     db_path: str | Path | None = None,
     stale_job_ids: Collection[int] | None = None,
     now: datetime | None = None,
+    profile: "Profile | None" = None,
 ) -> dict[str, Any]:
     """Build the serializable dashboard payload from the database.
 
@@ -1038,6 +1043,9 @@ def build_payload(
     Markdown (``None`` when there is none), so the report stays self-contained.
     ``stale_job_ids`` marks offers whose shown score no longer matches their
     current scoring input; ``None`` means the profile was unavailable.
+    ``profile`` is the loaded candidate profile, used only by the market tab to
+    say whether a technology is already in it; ``None`` leaves that column
+    unknown. Its skills never reach the payload.
     """
     top = _validate_top(top)
     reference = now or utcnow()
@@ -1184,6 +1192,9 @@ def build_payload(
         },
         "keywords": active_keyword_stats,
         "retired_keywords": retired_keyword_stats,
+        # Aggregates over every stored offer, closed ones included; the market
+        # tab reads only this block, never the offer rows.
+        "market": build_market(conn, profile),
     }
 
 
@@ -1325,6 +1336,8 @@ __STYLE__
       aria-controls="panel-offers" data-view="offers">Ofertas <span class="tab-count" id="tab-offers-count">0</span></button>
     <button type="button" role="tab" id="tab-keywords" aria-selected="false"
       aria-controls="panel-keywords" data-view="keywords">Palabras clave <span class="tab-count" id="tab-keywords-count">0</span></button>
+    <button type="button" role="tab" id="tab-market" aria-selected="false"
+      aria-controls="panel-market" data-view="market">Mercado <span class="tab-count" id="tab-market-count">0</span></button>
     <span class="tab-spacer"></span>
     <button type="button" id="export-feedback" class="export"
       title="Exportar feedback local (JSON): solo aparece si hay decisiones en este navegador"
@@ -1386,6 +1399,40 @@ __STYLE__
   <tbody></tbody>
 </table>
 <p class="note" id="keyword-empty" hidden>Todavía no hay procedencia de palabras clave registrada.</p>
+</section>
+
+<section id="panel-market" role="tabpanel" aria-labelledby="tab-market" hidden>
+<section class="market-block">
+  <h2>Empresas que repiten</h2>
+  <p class="market-sub">Ofertas no senior guardadas, activas o cerradas, agrupadas por empresa.</p>
+  <table id="market-companies">
+    <thead><tr><th>Empresa</th><th class="num">Ofertas</th><th class="num">Activas</th><th class="num">Última vista</th><th class="num">Mejor puntuación</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p class="note" id="market-companies-empty" hidden>Aún no hay empresas con dos o más ofertas no senior.</p>
+</section>
+
+<section class="market-block">
+  <h2>Tecnologías</h2>
+  <p class="market-sub">Título y descripción de las ofertas cuya última evaluación llega a __MARKET_MIN_SCORE__ puntos.</p>
+  <p class="market-tech-count" id="market-tech-count"></p>
+  <table id="market-technologies">
+    <thead><tr><th>Tecnología</th><th class="num">Ofertas</th><th class="num">%</th><th>En tu perfil</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p class="note" id="market-technologies-empty" hidden>Aún no hay ofertas de __MARKET_MIN_SCORE__+ puntos</p>
+</section>
+
+<section class="market-block">
+  <h2>Sueldos</h2>
+  <p class="market-sub">Sueldo estimado y sueldo indicado en todas las ofertas guardadas, por tipo de empresa y nivel.</p>
+  <table id="market-salaries">
+    <thead><tr><th>Tipo de empresa</th><th>Nivel</th><th class="num">Ofertas</th><th class="num">Mediana estimada</th><th class="num">Con sueldo indicado</th></tr></thead>
+    <tbody></tbody>
+  </table>
+  <p class="market-sub" id="market-salaries-note"></p>
+  <p class="note" id="market-salaries-empty" hidden>Aún no hay ofertas guardadas que agrupar.</p>
+</section>
 </section>
 </main>
 
@@ -1650,6 +1697,19 @@ tr.retired td:first-child::after { content:" · retirada"; font-family:var(--mon
   font-size:var(--fs-11); }
 .note { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3);
   padding:var(--sp-24) 0; }
+
+/* Market view: three aggregate tables on the same tokens. Each block is
+   separated by a hairline, never by a card. */
+.market-block { border-top:1px solid var(--rule); padding-top:var(--sp-18); }
+.market-block:first-child { border-top:0; padding-top:0; }
+.market-sub { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-3);
+  padding:var(--sp-6) 0 0; }
+.market-tech-count { font-family:var(--mono); font-size:var(--fs-12); color:var(--ink-2);
+  padding:var(--sp-12) 0 0; }
+.market-block .note { padding:var(--sp-12) 0 0; }
+td.yes { color:var(--money); }
+td.no { color:var(--ink-2); }
+td.unknown { color:var(--ink-3); }
 /* The header label is the sort control; only the active column shows its arrow,
    and aria-sort carries the direction so it never rests on the glyph alone. */
 .sort-btn { font:inherit; color:inherit; background:none; border:0; padding:0;
@@ -2500,6 +2560,98 @@ _SCRIPT = r"""
     });
   }
 
+  // Market tab: every number is computed in Python at build time, so this only
+  // paints the aggregates. No description, company dossier or offer row is read.
+  function renderMarket() {
+    var market = payload.market;
+    if (!market) { return; }
+    var dash = "—";
+
+    var companies = market.companies || [];
+    document.getElementById("tab-market-count").textContent = String(companies.length);
+    var companyTable = document.getElementById("market-companies");
+    var companyEmpty = document.getElementById("market-companies-empty");
+    if (!companies.length) {
+      companyTable.hidden = true;
+      companyEmpty.hidden = false;
+    } else {
+      var companyBody = companyTable.querySelector("tbody");
+      companyBody.textContent = "";
+      companies.forEach(function (item) {
+        var row = el("tr");
+        row.appendChild(el("td", null, item.company));
+        row.appendChild(el("td", "num", String(item.offers)));
+        row.appendChild(el("td", "num", String(item.active)));
+        row.appendChild(el("td", "num", item.last_seen || dash));
+        row.appendChild(el("td", "num", (item.score === null || item.score === undefined)
+          ? dash : String(Math.round(item.score))));
+        companyBody.appendChild(row);
+      });
+    }
+
+    var technologies = market.technologies || { scored_offers: 0, rows: [] };
+    var technologyRows = technologies.rows || [];
+    var technologyTable = document.getElementById("market-technologies");
+    var technologyEmpty = document.getElementById("market-technologies-empty");
+    var technologyCount = document.getElementById("market-tech-count");
+    technologyCount.textContent = technologies.scored_offers
+      ? technologies.scored_offers + " ofertas de " + market.min_score + "+ puntos"
+      : "";
+    if (!technologyRows.length) {
+      technologyTable.hidden = true;
+      technologyEmpty.hidden = false;
+    } else {
+      var technologyBody = technologyTable.querySelector("tbody");
+      technologyBody.textContent = "";
+      technologyRows.forEach(function (item) {
+        var row = el("tr");
+        row.appendChild(el("td", null, item.name));
+        row.appendChild(el("td", "num", String(item.offers)));
+        row.appendChild(el("td", "num", item.pct + " %"));
+        var inProfile;
+        if (item.in_profile === null || item.in_profile === undefined) {
+          inProfile = el("td", "unknown", dash);
+        } else {
+          inProfile = el("td", item.in_profile ? "yes" : "no",
+            item.in_profile ? "sí" : "no");
+        }
+        row.appendChild(inProfile);
+        technologyBody.appendChild(row);
+      });
+    }
+
+    var salaries = market.salaries || [];
+    var salaryTable = document.getElementById("market-salaries");
+    var salaryEmpty = document.getElementById("market-salaries-empty");
+    var salaryNote = document.getElementById("market-salaries-note");
+    // Offers with no successful evaluation never enter the table; this line
+    // keeps them visible instead of silently dropping them, even when no cell
+    // has been built yet.
+    salaryNote.textContent = String(market.unscored_offers || 0) +
+      " ofertas aún sin puntuar";
+    if (!salaries.length) {
+      salaryTable.hidden = true;
+      salaryEmpty.hidden = false;
+    } else {
+      var salaryBody = salaryTable.querySelector("tbody");
+      salaryBody.textContent = "";
+      salaries.forEach(function (item) {
+        var row = el("tr");
+        row.appendChild(el("td", null, EMPLOYER_TIER_LABELS[item.tier] || item.tier));
+        // The payload keeps "junior" as the internal key; the reader sees the
+        // honest label, since that bucket also holds mid and unknown levels.
+        row.appendChild(el("td", null, item.level === "junior" ? "no senior" : item.level));
+        row.appendChild(el("td", "num", String(item.offers)));
+        // Fewer than three offers never supports a median; the cell says so
+        // with a dash instead of a number.
+        row.appendChild(el("td", "num", (item.median === null || item.median === undefined)
+          ? dash : String(item.median) + " €"));
+        row.appendChild(el("td", "num", String(item.stated)));
+        salaryBody.appendChild(row);
+      });
+    }
+  }
+
   function populateKeywordFilter() {
     var select = document.getElementById("filter-keyword");
     payload.keywords.forEach(function (item) {
@@ -2587,6 +2739,7 @@ _SCRIPT = r"""
   bindBackToTop();
   populateKeywordFilter();
   renderKeywordTable();
+  renderMarket();
   bindFilters();
   refreshFeedbackCount();
   applyFilters();
@@ -2720,6 +2873,8 @@ def render_dashboard_html(payload: dict[str, Any]) -> str:
         warnings_html = f'<div class="report-warnings">{paragraphs}</div>'
     heading = str(label) if label else "informe local"
     title = html.escape(f"Panel de jobscout \u2014 {heading}")
+    market = payload.get("market") or {}
+    market_min_score = int(market.get("min_score", MARKET_MIN_SCORE))
     return _render_template(
         _HTML_TEMPLATE,
         {
@@ -2730,6 +2885,7 @@ def render_dashboard_html(payload: dict[str, Any]) -> str:
             "WARNINGS": warnings_html,
             "DATA": embed_json(payload),
             "SCRIPT": _SCRIPT,
+            "MARKET_MIN_SCORE": str(market_min_score),
         },
     )
 
@@ -2745,6 +2901,7 @@ def generate_dashboard(
     *,
     top: int | None = DEFAULT_TOP,
     stale_job_ids: Collection[int] | None = None,
+    profile: "Profile | None" = None,
 ) -> DashboardSummary:
     """Read the database and write the self-contained HTML report.
 
@@ -2754,7 +2911,8 @@ def generate_dashboard(
     is produced. An empty output path, an out-of-range explicit ``top``, and an
     output that resolves onto the database are all refused up front, and any
     filesystem failure while writing becomes a :class:`DashboardError` instead
-    of a raw ``OSError``.
+    of a raw ``OSError``. ``profile`` (optional) only feeds the market tab's
+    "in your profile" column.
     """
     if output is None or not str(output).strip():
         raise DashboardError("the output path must not be empty")
@@ -2772,6 +2930,7 @@ def generate_dashboard(
             database_label=Path(db_path).name,
             db_path=db_path,
             stale_job_ids=stale_job_ids,
+            profile=profile,
         )
     except sqlite3.DatabaseError as exc:
         raise DashboardError(f"database at {db_path} could not be read: {exc}") from exc

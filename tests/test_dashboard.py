@@ -1623,16 +1623,21 @@ def test_dashboard_exposes_accessible_tabs_and_status_structure(db_file: Path) -
 
     # The shell exposes the tab pattern and one status line instead of KPI cards.
     assert 'role="tablist"' in html_text
-    assert html_text.count('role="tab" ') == 2
+    assert html_text.count('role="tab" ') == 3
     assert 'aria-selected="true"' in html_text
     assert 'aria-selected="false"' in html_text
     assert 'aria-controls="panel-offers"' in html_text
     assert 'aria-controls="panel-keywords"' in html_text
+    assert 'aria-controls="panel-market"' in html_text
     assert 'id="status-line" aria-label="Estado del último barrido"' in html_text
     assert 'id="summary"' not in html_text
     assert 'id="kpi-reviewed-value"' not in html_text
     assert 'role="search"' in html_text
     assert 'id="keyword-table"' in html_text
+    assert 'id="panel-market" role="tabpanel"' in html_text
+    assert 'id="market-companies"' in html_text
+    assert 'id="market-technologies"' in html_text
+    assert 'id="market-salaries"' in html_text
     assert 'class="skip-link"' in html_text
     # Feedback buttons expose a pressed state so colour is not the only signal.
     assert 'setAttribute("aria-pressed"' in html_text

@@ -225,8 +225,8 @@ ofertas que el scorer cogería en `ready_to_score` o `needs_rescore` (los
 títulos senior, que `score` salta siempre, no cuentan; `needs_more_info` cuenta
 como puntuada) («El último barrido no puntuó
 ninguna oferta»). Sin barridos, o con un barrido reciente y sano, no añade
-ningún aviso. Ofrece dos pestañas, **Ofertas** y **Palabras
-clave**, y a la derecha **Exportar N decisiones**, que solo aparece cuando este
+ningún aviso. Ofrece tres pestañas, **Ofertas**, **Palabras
+clave** y **Mercado**, y a la derecha **Exportar N decisiones**, que solo aparece cuando este
 navegador guarda alguna decisión. La vista de
 ofertas usa una única barra de herramientas horizontal, con búsqueda por texto,
 la recomendación del modelo, **Solo nuevas** (ofertas vistas por primera vez en
@@ -433,6 +433,35 @@ es un bloqueo); al abrirla, la razón y la evidencia son el primer punto de
 Incógnitas (`flag`) o de Bloqueos (`fail`). El resumen agrega cuántas ofertas quedan excluidas y
 cuántas por revisar. El CLI expone el mismo veredicto en `list`, `rank` y `score`
 (marcador `[preference=...]` en texto y un objeto `preference` en `--json`).
+
+### Pestaña Mercado (MR-01, 2026-11-13)
+
+La pestaña **Mercado** resume el conjunto de ofertas guardadas, activas y
+cerradas, sin mirar solo las que están abiertas ahora. Es de solo lectura: se
+calcula al generar el HTML y no hace ninguna petición de red. Son tres bloques:
+
+- **Empresas que repiten.** Agrupa por empresa normalizada (minúsculas y
+  espacios colapsados) las ofertas no senior: las que el filtro de título no
+  descarta y cuyo `jobs.seniority` no es `senior`, `lead`, `manager` ni
+  `director`. Lista las empresas con dos o más ofertas (hasta 25), ordenadas por
+  número de ofertas y luego por la última vista, con cuántas siguen activas, la
+  fecha de la última vista y la mejor puntuación.
+- **Tecnologías.** Busca un vocabulario fijo de tecnologías de cloud, DevOps y
+  seguridad en el título y la descripción de las ofertas cuya última evaluación
+  correcta llega a 60 puntos; cada tecnología cuenta una vez por oferta, con sus
+  alias y por palabra completa. La tabla muestra ofertas, porcentaje sobre esas
+  ofertas y si la tecnología está en tu perfil (`sí` / `no`; `—` si no hay
+  perfil). Solo viaja el booleano, nunca la lista de habilidades.
+- **Sueldos.** Solo ofertas con evaluación correcta: por tipo de empresa
+  (`employer_tier` de la última evaluación; `sin clasificar` si la evaluación no
+  trae tipo) y nivel (no senior o senior, con la misma regla del primer bloque):
+  número de ofertas, mediana del sueldo estimado y cuántas indican sueldo en la
+  oferta. Una celda con menos de tres estimaciones no muestra mediana (`—`).
+  Debajo de la tabla, una línea con cuántas ofertas siguen sin puntuar.
+
+Sin evaluaciones, o sin ofertas de 60 puntos o más, el bloque de tecnologías
+muestra «Aún no hay ofertas de 60+ puntos» y el resto del panel sigue
+funcionando.
 
 ## Referencia de CLI
 
@@ -1097,6 +1126,7 @@ forma de conservar tus decisiones.
 │   ├── preference.py         # Exclusiones de preferencia (offline, sin tocar el puntaje)
 │   ├── notify.py             # Selección y entrega local de notificaciones (opt-in, solo lectura)
 │   ├── dashboard.py          # Generador del informe HTML autocontenido
+│   ├── market.py             # Agregados de la pestaña Mercado (empresas, tecnologías, sueldos)
 │   ├── url_policy.py         # Validación de URLs y redirecciones
 │   ├── collectors/           # LinkedIn guest, fixtures, rate limit, transporte HTTP
 │   └── scoring/              # Heurístico, LLM, OpenCode, esquema y perfil
